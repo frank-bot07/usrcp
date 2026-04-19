@@ -69,6 +69,12 @@ export type Scope =
   | "domain_context"
   | "active_projects";
 
+export interface TamperTracker {
+  count: number;
+  lastTamper: string | null;
+  sessionId: string;
+}
+
 export interface AppendEventInput {
   domain: string;
   summary: string;

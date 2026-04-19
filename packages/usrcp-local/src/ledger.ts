@@ -11,6 +11,7 @@ import type {
   AppendEventInput,
   UserState,
   Scope,
+  TamperTracker,
 } from "./types.js";
 import {
   initializeMasterKey,
@@ -123,6 +124,18 @@ export class Ledger {
     // Encrypt legacy plaintext private keys
     ensurePrivateKeyEncrypted(this.masterKey);
     this.migrate();
+
+    // Key rotation recovery
+    const rotationRow = this.db.prepare("SELECT pending_key, pending_version FROM rotation_state WHERE id = 1").get() as any;
+    if (rotationRow.pending_key) {
+      this.masterKey = Buffer.from(rotationRow.pending_key);
+      const keysDir = path.join(os.homedir(), ".usrcp", "keys");
+      fs.mkdirSync(keysDir, { recursive: true });
+      fs.writeFileSync(path.join(keysDir, "master.key"), this.masterKey);
+      this.db.prepare("UPDATE rotation_state SET pending_key = NULL, pending_version = NULL WHERE id = 1").run();
+      this.logAudit("key_rotation_recovery", ["system"]);
+      this.rebuildBlindIndex();
+    }
   }
 
   private encryptForDomain(plaintext: string, domain: string): string {
@@ -172,6 +185,65 @@ export class Ledger {
       return decrypt(ciphertext, key);
     } catch {
       return fallback;
+    }
+  }
+
+  private getTamperTracker(): TamperTracker {
+    const prefs = this.getPreferences();
+    let tracker = prefs.custom.tamperTracker as TamperTracker | undefined;
+    if (!tracker) {
+      tracker = {
+        count: 0,
+        lastTamper: null,
+        sessionId: this.generateULID(),
+      };
+      this.updatePreferences({ custom: { tamperTracker: tracker } });
+    }
+    return tracker;
+  }
+
+  private updateTamperTracker(updates: Partial<Omit<TamperTracker, 'sessionId'>>): void {
+    const prefs = this.getPreferences();
+    const tracker = this.getTamperTracker();
+    const newTracker = { ...tracker, ...updates };
+    this.updatePreferences({ custom: { tamperTracker: newTracker } });
+  }
+
+  private handleTamper(scope: string, field: string): void {
+    const tracker = this.getTamperTracker();
+    const newCount = tracker.count + 1;
+    const newLast = new Date().toISOString();
+    this.updateTamperTracker({ count: newCount, lastTamper: newLast });
+    if (newCount < 5) {
+      this.logAudit('tamper_detected', [scope], undefined, `field=${field} count=${newCount} session=${tracker.sessionId}`);
+    } else {
+      throw new Error(`Excessive tampering detected in session ${tracker.sessionId}: ${newCount} failures`);
+    }
+  }
+
+  private safeDecryptGlobal(ciphertext: string, fallback: string, field: string): {value: string, tampered: boolean} {
+    if (!isEncrypted(ciphertext)) return {value: ciphertext, tampered: false};
+    try {
+      const key = deriveGlobalEncryptionKey(this.masterKey);
+      const value = decrypt(ciphertext, key);
+      zeroBuffer(key);
+      return {value, tampered: false};
+    } catch {
+      this.handleTamper('global', field);
+      return {value: fallback, tampered: true};
+    }
+  }
+
+  private safeDecryptForDomain(ciphertext: string, domain: string, fallback: string, field: string): {value: string, tampered: boolean} {
+    if (!isEncrypted(ciphertext)) return {value: ciphertext, tampered: false};
+    try {
+      const key = deriveDomainEncryptionKey(this.masterKey, domain);
+      const value = decrypt(ciphertext, key);
+      zeroBuffer(key);
+      return {value, tampered: false};
+    } catch {
+      this.handleTamper(domain, field);
+      return {value: fallback, tampered: true};
     }
   }
 
@@ -392,32 +464,48 @@ export class Ledger {
     const domain = this.resolveDomain(domainPseudo);
     let tampered = false;
 
-    const safeDecrypt = (val: string | null, fallback: string): string => {
-      if (!val) return fallback;
-      try {
-        return this.decryptForDomain(val, domain);
-      } catch {
-        tampered = true;
-        return "[TAMPERED]";
-      }
+    const safeDecrypt = (val: string | null, fallback: string, field: string): {value: string, tampered: boolean} => {
+      if (!val) return {value: fallback, tampered: false};
+      return this.safeDecryptForDomain(val, domain, fallback, field);
     };
+
+    let eventTampered = false;
+
+    const platformRes = safeDecrypt(row.platform, "unknown", 'platform');
+    eventTampered ||= platformRes.tampered;
+    const summaryRes = safeDecrypt(row.summary, "[TAMPERED]", 'summary');
+    eventTampered ||= summaryRes.tampered;
+    const intentRes = row.intent ? safeDecrypt(row.intent, "[TAMPERED]", 'intent') : {value: '', tampered: false};
+    eventTampered ||= intentRes.tampered;
+    const outcomeRes = row.outcome ? safeDecrypt(row.outcome, "failed", 'outcome') : {value: '', tampered: false};
+    eventTampered ||= outcomeRes.tampered;
+    const detailRes = safeDecrypt(row.detail || "{}", "{}", 'detail');
+    eventTampered ||= detailRes.tampered;
+    const artifactsRes = safeDecrypt(row.artifacts || "[]", "[]", 'artifacts');
+    eventTampered ||= artifactsRes.tampered;
+    const tagsRes = safeDecrypt(row.tags || "[]", "[]", 'tags');
+    eventTampered ||= tagsRes.tampered;
+    const sessionRes = row.session_id ? safeDecrypt(row.session_id, '', 'session_id') : {value: '', tampered: false};
+    eventTampered ||= sessionRes.tampered;
+    const parentRes = row.parent_event_id ? safeDecrypt(row.parent_event_id, '', 'parent_event_id') : {value: '', tampered: false};
+    eventTampered ||= parentRes.tampered;
 
     const event: TimelineEvent & { tampered?: boolean } = {
       event_id: row.event_id,
       timestamp: row.timestamp,
-      platform: safeDecrypt(row.platform, "unknown"),
+      platform: platformRes.value,
       domain,
-      summary: safeDecrypt(row.summary, "[TAMPERED]"),
-      intent: row.intent ? safeDecrypt(row.intent, "[TAMPERED]") : undefined,
-      outcome: (row.outcome ? safeDecrypt(row.outcome, "failed") : undefined) as TimelineEvent["outcome"],
-      detail: safeJsonParse(safeDecrypt(row.detail, "{}"), {}),
-      artifacts: safeJsonParse(safeDecrypt(row.artifacts, "[]"), []),
-      tags: safeJsonParse(safeDecrypt(row.tags, "[]"), []),
-      session_id: row.session_id ? safeDecrypt(row.session_id, undefined as any) || undefined : undefined,
-      parent_event_id: row.parent_event_id ? safeDecrypt(row.parent_event_id, undefined as any) || undefined : undefined,
+      summary: summaryRes.value,
+      intent: intentRes.value || undefined,
+      outcome: (outcomeRes.value || undefined) as TimelineEvent["outcome"],
+      detail: safeJsonParse(detailRes.value, {}),
+      artifacts: safeJsonParse(artifactsRes.value, []),
+      tags: safeJsonParse(tagsRes.value, []),
+      session_id: sessionRes.value || undefined,
+      parent_event_id: parentRes.value || undefined,
     };
 
-    if (tampered) {
+    if (eventTampered) {
       event.tampered = true;
     }
 
@@ -467,9 +555,10 @@ export class Ledger {
 
     const globalKey = deriveGlobalEncryptionKey(this.masterKey);
 
-    return rows.map((row) => {
-      // Verify integrity tag — detect forged or tampered entries
-      let verified = false;
+    const results = rows.map((row) => {
+      let entryTampered = false;
+      let verified = true;
+
       if (row.integrity_tag) {
         try {
           const payload = [
@@ -479,47 +568,81 @@ export class Ledger {
           const expected = crypto.createHmac("sha256", globalKey).update(payload).digest("hex").slice(0, 32);
           const tagBuf = Buffer.from(row.integrity_tag);
           const expectedBuf = Buffer.from(expected);
-          // Guard against length mismatch (truncated tags)
           if (tagBuf.length === expectedBuf.length) {
             verified = crypto.timingSafeEqual(tagBuf, expectedBuf);
+          } else {
+            verified = false;
           }
-          // If lengths differ: verified stays false (tampered/truncated)
+          if (!verified) {
+            this.handleTamper('audit', `integrity_${row.id}`);
+            entryTampered = true;
+          }
         } catch {
-          // Any error in verification: treat as unverified
           verified = false;
+          this.handleTamper('audit', `integrity_error_${row.id}`);
+          entryTampered = true;
         }
       }
+
+      const agentRes = this.safeDecryptGlobal(row.agent_id || "", '', 'agent_id');
+      entryTampered ||= agentRes.tampered;
+      const opRes = this.safeDecryptGlobal(row.operation || "", '', 'operation');
+      entryTampered ||= opRes.tampered;
+      const scopesRes = row.scopes_accessed ? this.safeDecryptGlobal(row.scopes_accessed, '', 'scopes_accessed') : {value: null as any, tampered: false};
+      entryTampered ||= scopesRes.tampered;
+      const eventsRes = row.event_ids ? this.safeDecryptGlobal(row.event_ids, '', 'event_ids') : {value: null as any, tampered: false};
+      entryTampered ||= eventsRes.tampered;
+      const detailRes = row.detail ? this.safeDecryptGlobal(row.detail, '', 'detail') : {value: null as any, tampered: false};
+      entryTampered ||= detailRes.tampered;
 
       return {
         id: row.id,
         timestamp: row.timestamp,
-        agent_id: this.decryptGlobal(row.agent_id),
-        operation: this.decryptGlobal(row.operation),
-        scopes_accessed: row.scopes_accessed
-          ? this.decryptGlobal(row.scopes_accessed)
-          : null,
-        event_ids: row.event_ids
-          ? this.decryptGlobal(row.event_ids)
-          : null,
-        detail: row.detail ? this.decryptGlobal(row.detail) : null,
+        agent_id: agentRes.value,
+        operation: opRes.value,
+        scopes_accessed: scopesRes.value || null,
+        event_ids: eventsRes.value || null,
+        detail: detailRes.value || null,
         response_size_bytes: row.response_size_bytes,
         integrity_verified: verified,
+        tampered: entryTampered,
       };
     });
+
+    zeroBuffer(globalKey);
+
+    return results;
   }
 
   // --- Core Identity ---
 
-  getIdentity(): CoreIdentity {
+  getIdentity(): CoreIdentity & {tampered?: boolean} {
     const row = this.db
       .prepare("SELECT * FROM core_identity WHERE id = 1")
       .get() as any;
-    return {
-      display_name: this.decryptGlobal(row.display_name),
-      roles: safeJsonParse(this.decryptGlobal(row.roles), []),
-      expertise_domains: safeJsonParse(this.decryptGlobal(row.expertise_domains), []),
-      communication_style: this.decryptGlobal(row.communication_style) as CoreIdentity["communication_style"],
+    let tampered = false;
+
+    const nameRes = this.safeDecryptGlobal(row.display_name || "", '', 'display_name');
+    tampered ||= nameRes.tampered;
+    const rolesRes = this.safeDecryptGlobal(row.roles || "[]", '[]', 'roles');
+    const roles = safeJsonParse(rolesRes.value, []);
+    tampered ||= rolesRes.tampered;
+    const expertiseRes = this.safeDecryptGlobal(row.expertise_domains || "[]", '[]', 'expertise_domains');
+    const expertise = safeJsonParse(expertiseRes.value, []);
+    tampered ||= expertiseRes.tampered;
+    const styleRes = this.safeDecryptGlobal(row.communication_style || "concise", 'concise', 'communication_style');
+    tampered ||= styleRes.tampered;
+
+    const result: CoreIdentity & {tampered?: boolean} = {
+      display_name: nameRes.value,
+      roles,
+      expertise_domains: expertise,
+      communication_style: styleRes.value as CoreIdentity["communication_style"],
     };
+
+    if (tampered) result.tampered = true;
+
+    return result;
   }
 
   updateIdentity(identity: Partial<CoreIdentity>): void {
@@ -546,17 +669,35 @@ export class Ledger {
 
   // --- Global Preferences ---
 
-  getPreferences(): GlobalPreferences {
+  getPreferences(): GlobalPreferences & {tampered?: boolean} {
     const row = this.db
       .prepare("SELECT * FROM global_preferences WHERE id = 1")
       .get() as any;
-    return {
-      language: this.decryptGlobal(row.language),
-      timezone: this.decryptGlobal(row.timezone),
-      output_format: this.decryptGlobal(row.output_format) as GlobalPreferences["output_format"],
-      verbosity: this.decryptGlobal(row.verbosity) as GlobalPreferences["verbosity"],
-      custom: safeJsonParse(this.decryptGlobal(row.custom), {}),
+    let tampered = false;
+
+    const langRes = this.safeDecryptGlobal(row.language || "en", 'en', 'language');
+    tampered ||= langRes.tampered;
+    const tzRes = this.safeDecryptGlobal(row.timezone || "UTC", 'UTC', 'timezone');
+    tampered ||= tzRes.tampered;
+    const formatRes = this.safeDecryptGlobal(row.output_format || "markdown", 'markdown', 'output_format');
+    tampered ||= formatRes.tampered;
+    const verbRes = this.safeDecryptGlobal(row.verbosity || "standard", 'standard', 'verbosity');
+    tampered ||= verbRes.tampered;
+    const customRes = this.safeDecryptGlobal(row.custom || "{}", '{}', 'custom');
+    const custom = safeJsonParse(customRes.value, {});
+    tampered ||= customRes.tampered;
+
+    const result: GlobalPreferences & {tampered?: boolean} = {
+      language: langRes.value,
+      timezone: tzRes.value,
+      output_format: formatRes.value as GlobalPreferences["output_format"],
+      verbosity: verbRes.value as GlobalPreferences["verbosity"],
+      custom,
     };
+
+    if (tampered) result.tampered = true;
+
+    return result;
   }
 
   updatePreferences(prefs: Partial<GlobalPreferences>): void {
@@ -945,20 +1086,37 @@ export class Ledger {
 
   // --- Active Projects ---
 
-  getProjects(status?: string): ActiveProject[] {
+  getProjects(status?: string): (ActiveProject & {tampered?: boolean})[] {
     // All project fields are encrypted — fetch all and filter in memory
     const rows = this.db
       .prepare("SELECT * FROM active_projects ORDER BY last_touched DESC")
       .all() as any[];
 
-    const projects = rows.map((row: any) => ({
-      project_id: row.project_id,
-      name: this.decryptGlobal(row.name),
-      domain: this.decryptGlobal(row.domain),
-      status: this.decryptGlobal(row.status) as ActiveProject["status"],
-      last_touched: row.last_touched,
-      summary: this.decryptGlobal(row.summary),
-    }));
+    const projects = rows.map((row: any) => {
+      let tampered = false;
+
+      const nameRes = this.safeDecryptGlobal(row.name || "", '', 'project_name');
+      tampered ||= nameRes.tampered;
+      const domainRes = this.safeDecryptGlobal(row.domain || "", '', 'project_domain');
+      tampered ||= domainRes.tampered;
+      const statusRes = this.safeDecryptGlobal(row.status || "active", 'active', 'project_status');
+      tampered ||= statusRes.tampered;
+      const summaryRes = this.safeDecryptGlobal(row.summary || "", '', 'project_summary');
+      tampered ||= summaryRes.tampered;
+
+      const result: ActiveProject & {tampered?: boolean} = {
+        project_id: row.project_id,
+        name: nameRes.value,
+        domain: domainRes.value,
+        status: statusRes.value as ActiveProject["status"],
+        last_touched: row.last_touched,
+        summary: summaryRes.value,
+      };
+
+      if (tampered) result.tampered = true;
+
+      return result;
+    });
 
     if (status) {
       return projects.filter((p) => p.status === status);
@@ -1009,8 +1167,9 @@ export class Ledger {
     const result: Record<string, Record<string, unknown>> = {};
     for (const row of rows) {
       const realDomain = this.resolveDomain(row.domain);
-      const decrypted = this.decryptForDomain(row.context || "{}", realDomain);
-      result[realDomain] = safeJsonParse(decrypted, {});
+      const res = this.safeDecryptForDomain(row.context || "{}", realDomain, "{}", `domain_context_${realDomain}`);
+      result[realDomain] = safeJsonParse(res.value, {});
+      // if (res.tampered) { /* flag if needed */ }
     }
     return result;
   }
@@ -1288,6 +1447,13 @@ export class Ledger {
     const oldMasterKey = this.masterKey;
     this.masterKey = newKey;
     zeroBuffer(oldMasterKey);
+
+    // Reset tamper tracker
+    const tracker = this.getTamperTracker();
+    if (tracker.count > 0) {
+      this.updatePreferences({ custom: { tamperTracker: { ...tracker, count: 0, lastTamper: null } } });
+      this.logAudit("key_rotation_reset_tamper", undefined, undefined, `old_count=${tracker.count}`);
+    }
 
     // Rebuild blind index with new key
     this.rebuildBlindIndex();

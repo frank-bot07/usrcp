@@ -307,3 +307,84 @@ describe("Safe JSON parsing", () => {
     expect(ctx.test).toEqual({});
   });
 });
+
+describe("Advanced Key Rotation", () => {
+  it("rolls back transaction on decrypt error during re-encryption", () => {
+    // Setup data
+    ledger.updateIdentity({ display_name: "Test" });
+    ledger.appendEvent({
+      domain: "test",
+      summary: "event",
+      intent: "test",
+      outcome: "success",
+      detail: { key: "value" },
+    }, "test");
+
+    const oldState = {
+      identity: ledger.getIdentity(),
+      timeline: ledger.getTimeline(),
+    };
+
+    // Corrupt one encrypted field to cause decrypt failure during rotation
+    const event = ledger.getTimeline({ last_n: 1 })[0];
+    const rawDetail = ledger.db.prepare("SELECT detail FROM timeline_events WHERE event_id = ?").get(event.event_id) as any;
+    const parts = rawDetail.detail.split(":");
+    const buf = Buffer.from(parts[1], "base64");
+    buf[buf.length - 16] ^= 0xff; // Corrupt auth tag
+    const corrupted = "enc:" + buf.toString("base64");
+    ledger.db.prepare("UPDATE timeline_events SET detail = ? WHERE event_id = ?").run(corrupted, event.event_id);
+
+    // Rotation should throw during re-encryption decrypt, rollback tx
+    expect(() => ledger.rotateKey()).toThrow();
+
+    // State should be intact (old encryption)
+    const recoveredState = {
+      identity: ledger.getIdentity(),
+      timeline: ledger.getTimeline({ last_n: 1 }),
+    };
+    expect(recoveredState.identity.display_name).toBe("Test");
+    expect(recoveredState.timeline[0].detail).toEqual({}); // tampered fallback
+    // No pending key set
+    const rotation = ledger.db.prepare("SELECT pending_key FROM rotation_state").get() as any;
+    expect(rotation.pending_key).toBe(null);
+  });
+
+  it("handles rotation with mixed encrypted/unencrypted legacy data", () => {
+    // Simulate legacy unencrypted data
+    const pseudo = (ledger as any).domainPseudonym("legacy");
+    (ledger as any).db.prepare("INSERT INTO domain_context (domain, context) VALUES (?, ?)")
+      .run(pseudo, "legacy plaintext context"); // no enc:
+
+    ledger.appendEvent({
+      domain: "legacy",
+      summary: "legacy event",
+      intent: "test",
+      outcome: "success",
+    }, "legacy_platform");
+
+    // The event platform is encrypted, but sim legacy by setting plaintext
+    const event = ledger.getTimeline({ last_n: 1 })[0];
+    (ledger as any).db.prepare("UPDATE timeline_events SET platform = ? WHERE event_id = ?")
+      .run("legacy platform plaintext", event.event_id);
+
+    const oldState = ledger.getDomainContext(["legacy"]);
+    expect(oldState.legacy).toEqual({}); // parsed {}
+
+    // Rotation should encrypt legacy plaintext
+    const result = ledger.rotateKey();
+    expect(result.reencrypted).toBeGreaterThan(0);
+
+    // New state should have the legacy data encrypted but accessible
+    const newState = ledger.getDomainContext(["legacy"]);
+    expect(newState.legacy).toEqual({}); // still {}, but was encrypted
+
+    // Verify raw is now encrypted
+    const rawCtx = ledger.db.prepare("SELECT context FROM domain_context WHERE domain = ?").get(pseudo) as any;
+    expect(rawCtx.context.startsWith("enc:")).toBe(true);
+    expect(rawCtx.context).not.toBe("legacy plaintext context");
+
+    // Check the event platform
+    const newTimeline = ledger.getTimeline({ last_n: 1 });
+    expect(newTimeline[0].platform).toBe("legacy platform plaintext");
+  });
+});

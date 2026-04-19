@@ -217,3 +217,48 @@ describe("usrcp_status", () => {
     expect(result.stats.total_events).toBe(0);
   });
 });
+
+describe("usrcp_rotate_key", () => {
+  it("performs key rotation via tool", async () => {
+    // Setup some data
+    await callTool("usrcp_update_identity", { display_name: "Pre-rotation" });
+    await callTool("usrcp_append_event", {
+      domain: "test",
+      summary: "pre-rotation event",
+      intent: "test",
+      outcome: "success",
+      platform: "server_test",
+    });
+
+    // Get pre-rotation state
+    const preState = await callTool("usrcp_get_state", { scopes: ["core_identity", "recent_timeline"] });
+    expect(preState.state.core_identity.display_name).toBe("Pre-rotation");
+    expect(preState.state.recent_timeline.length).toBe(1);
+
+    // Rotate
+    const rotationResult = await callTool("usrcp_rotate_key", {});
+    expect(rotationResult.status).toBe("rotated");
+    expect(rotationResult.version).toBeGreaterThan(0);
+    expect(rotationResult.reencrypted).toBeGreaterThan(0);
+
+    // Post-rotation state preserved
+    const postState = await callTool("usrcp_get_state", { scopes: ["core_identity", "recent_timeline"] });
+    expect(postState.state.core_identity.display_name).toBe("Pre-rotation");
+    expect(postState.state.recent_timeline.length).toBe(1);
+    expect(postState.state.recent_timeline[0].summary).toBe("pre-rotation event");
+
+    // Audit log should have rotation entry
+    const audit = await callTool("usrcp_audit_log", { limit: 10 });
+    const rotationLog = audit.entries.find((e: any) => e.operation === "key_rotation");
+    expect(rotationLog).toBeDefined();
+  });
+
+  it("logs rotation to audit", async () => {
+    await callTool("usrcp_rotate_key", {});
+    const audit = await callTool("usrcp_audit_log", { limit: 10 });
+    const rotationLog = audit.entries.find((e: any) => e.operation === "key_rotation");
+    expect(rotationLog).toBeDefined();
+    expect(rotationLog.agent_id).toBe("system");
+    expect(rotationLog.detail).toContain("version=");
+  });
+});

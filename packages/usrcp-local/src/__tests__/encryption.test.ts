@@ -323,3 +323,85 @@ describe("Encryption integration with Ledger", () => {
     expect(decrypted).toContain("classified");
   });
 });
+
+describe("Key Rotation", () => {
+  let tmpHome: string;
+  let origHome: string | undefined;
+
+  beforeEach(() => {
+    origHome = process.env.HOME;
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-rotation-test-"));
+    process.env.HOME = tmpHome;
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  it("prepareKeyRotation generates new key and pending files for random mode", () => {
+    const oldKey = crypto.randomBytes(32);
+    const { newKey, version, pendingFiles } = prepareKeyRotation(oldKey);
+    expect(newKey.length).toBe(32);
+    expect(version).toBeGreaterThan(0);
+    expect(pendingFiles["master.key"]).toBeInstanceOf(Buffer);
+    expect(pendingFiles["master.key"].length).toBe(32);
+    expect(pendingFiles.verify).toBeInstanceOf(Buffer);
+    // Verify can be decrypted with new key
+    const decrypted = decrypt(pendingFiles.verify, newKey);
+    expect(decrypted.length).toBe(16);
+  });
+
+  it("prepareKeyRotation with passphrase generates salt and verify", () => {
+    const oldKey = crypto.randomBytes(32);
+    const passphrase = "test passphrase";
+    const { newKey, version, pendingFiles } = prepareKeyRotation(oldKey, passphrase);
+    expect(pendingFiles.salt).toBeInstanceOf(Buffer);
+    expect(pendingFiles.salt.length).toBe(16);
+    expect(pendingFiles.verify).toBeInstanceOf(Buffer);
+    // Derive key from salt + pass
+    const derived = deriveMasterKeyFromPassphrase(pendingFiles.salt, passphrase);
+    expect(derived.equals(newKey)).toBe(true);
+    // Verify decrypts with derived key
+    decrypt(pendingFiles.verify, newKey);
+  });
+
+  it("commitKeyRotation writes files for random mode", () => {
+    const tmpDir = path.join(tmpHome, ".usrcp", "keys");
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const pendingFiles = {
+      "master.key": Buffer.from("fake key data"),
+      verify: Buffer.from("fake verify"),
+    };
+    commitKeyRotation(pendingFiles, tmpHome);
+    const keyPath = path.join(tmpHome, ".usrcp", "keys", "master.key");
+    expect(fs.existsSync(keyPath)).toBe(true);
+    const written = fs.readFileSync(keyPath);
+    expect(written.equals(pendingFiles["master.key"])).toBe(true);
+    const verifyPath = path.join(tmpHome, ".usrcp", "keys", "verify.bin");
+    expect(fs.existsSync(verifyPath)).toBe(true);
+    const writtenVerify = fs.readFileSync(verifyPath);
+    expect(writtenVerify.equals(pendingFiles.verify)).toBe(true);
+  });
+
+  it("commitKeyRotation writes salt and verify for passphrase mode", () => {
+    const tmpDir = path.join(tmpHome, ".usrcp", "keys");
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const pendingFiles = {
+      salt: Buffer.from("fake salt"),
+      verify: Buffer.from("fake verify"),
+    };
+    commitKeyRotation(pendingFiles, tmpHome);
+    const saltPath = path.join(tmpHome, ".usrcp", "keys", "salt.bin");
+    expect(fs.existsSync(saltPath)).toBe(true);
+    const writtenSalt = fs.readFileSync(saltPath);
+    expect(writtenSalt.equals(pendingFiles.salt)).toBe(true);
+    const verifyPath = path.join(tmpHome, ".usrcp", "keys", "verify.bin");
+    expect(fs.existsSync(verifyPath)).toBe(true);
+    const writtenVerify = fs.readFileSync(verifyPath);
+    expect(writtenVerify.equals(pendingFiles.verify)).toBe(true);
+    // No master.key
+    const keyPath = path.join(tmpHome, ".usrcp", "keys", "master.key");
+    expect(fs.existsSync(keyPath)).toBe(false);
+  });
+});

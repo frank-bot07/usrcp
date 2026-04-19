@@ -433,3 +433,132 @@ describe("Stats", () => {
     expect(stats.platforms).toContain("obsidian");
   });
 });
+
+describe("Key Rotation", () => {
+  it("re-encrypts all data and preserves functionality", () => {
+    // Setup diverse data
+    ledger.updateIdentity({ display_name: "Test User", roles: ["developer"] });
+    ledger.updatePreferences({ timezone: "America/Chicago", verbosity: "verbose" });
+    ledger.upsertProject({
+      project_id: "test-project",
+      name: "Test Project",
+      domain: "coding",
+      status: "active",
+      last_touched: new Date().toISOString(),
+      summary: "A test project for rotation",
+    });
+    ledger.upsertDomainContext("coding", { preferred_language: "typescript", framework: "next.js" });
+    ledger.appendEvent({
+      domain: "coding",
+      summary: "Implemented rotation test",
+      intent: "Test key rotation",
+      outcome: "success",
+      detail: { files: 5, lines: 200 },
+      tags: ["test", "encryption"],
+    }, "vitest");
+    ledger.appendEvent({
+      domain: "writing",
+      summary: "Documented rotation process",
+      intent: "Improve docs",
+      outcome: "partial",
+    }, "obsidian");
+
+    const oldState = {
+      identity: ledger.getIdentity(),
+      prefs: ledger.getPreferences(),
+      projects: ledger.getProjects(),
+      timeline: ledger.getTimeline(),
+      domains: ledger.getDomainContext(["coding", "writing"]),
+    };
+
+    const oldMaster = Buffer.from(ledger.masterKey);
+
+    const rotationResult = ledger.rotateKey();
+    expect(rotationResult.version).toBeGreaterThan(0);
+    expect(rotationResult.reencrypted).toBeGreaterThan(0);
+
+    const newState = {
+      identity: ledger.getIdentity(),
+      prefs: ledger.getPreferences(),
+      projects: ledger.getProjects(),
+      timeline: ledger.getTimeline(),
+      domains: ledger.getDomainContext(["coding", "writing"]),
+    };
+
+    // Verify data preserved (ignore tampered flags)
+    expect(newState.identity.display_name).toBe(oldState.identity.display_name);
+    expect(newState.identity.roles).toEqual(oldState.identity.roles);
+    expect(newState.prefs.timezone).toBe(oldState.prefs.timezone);
+    expect(newState.projects[0].name).toBe(oldState.projects[0].name);
+    expect(newState.timeline[0].summary).toBe("Implemented rotation test");
+    expect(newState.timeline[1].domain).toBe("writing");
+    expect(newState.domains.coding.preferred_language).toBe("typescript");
+
+    // Pseudonyms re-derived (changed)
+    const oldEvents = ledger.db.prepare("SELECT domain FROM timeline_events").all() as any[];
+    const oldPseudos = new Set(oldEvents.map((e: any) => e.domain));
+    const newEvents = ledger.db.prepare("SELECT domain FROM timeline_events").all() as any[];
+    const newPseudos = new Set(newEvents.map((e: any) => e.domain));
+    expect([...oldPseudos].every((p) => !newPseudos.has(p))).toBe(true);
+
+    // Old key cannot decrypt new data
+    const rawProject = ledger.db.prepare("SELECT name FROM active_projects LIMIT 1").get() as any;
+    const oldGlobalKey = deriveGlobalEncryptionKey(oldMaster);
+    expect(() => decrypt(rawProject.name, oldGlobalKey)).toThrow();
+    zeroBuffer(oldGlobalKey);
+    zeroBuffer(oldMaster);
+  });
+
+  it("recovers from file write failure during commit", () => {
+    ledger.updateIdentity({ display_name: "Recovery Test" });
+    const oldState = ledger.getIdentity();
+
+    const mockWrite = vi.spyOn(fs, 'writeFileSync').mockImplementation(() => {
+      throw new Error("disk failure");
+    });
+
+    expect(() => ledger.rotateKey()).toThrow("disk failure");
+
+    mockWrite.mockRestore();
+
+    // Create new ledger instance - should recover
+    const recoveredLedger = new Ledger(dbPath);
+    const recoveredState = recoveredLedger.getIdentity();
+    expect(recoveredState.display_name).toBe("Recovery Test");
+    // No pending key left
+    const rotation = recoveredLedger.db.prepare("SELECT pending_key FROM rotation_state").get() as any;
+    expect(rotation.pending_key).toBe(null);
+    recoveredLedger.close();
+  });
+
+  it("resets tamper counter after rotation", () => {
+    // Simulate tampers to set count > 0
+    for (let i = 0; i < 3; i++) {
+      ledger.appendEvent({
+        domain: "test",
+        summary: `tamper event ${i}`,
+        intent: "test",
+        outcome: "success",
+      }, "test");
+      const event = ledger.getTimeline({ last_n: 1 })[0];
+      const row = ledger.db.prepare("SELECT summary FROM timeline_events WHERE event_id = ?").get(event.event_id) as any;
+      const parts = row.summary.split(":");
+      const buf = Buffer.from(parts[1], "base64");
+      buf[buf.length - 16] ^= 0xff;
+      const tampered = "enc:" + buf.toString("base64");
+      ledger.db.prepare("UPDATE timeline_events SET summary = ? WHERE event_id = ?").run(tampered, event.event_id);
+      ledger.getTimeline({ last_n: 1 }); // trigger tamper
+    }
+
+    const preState = ledger.getState(["global_preferences"]);
+    const preTracker = (preState.global_preferences as any).custom.tamperTracker as any;
+    expect(preTracker.count).toBe(3);
+
+    ledger.rotateKey();
+
+    const postState = ledger.getState(["global_preferences"]);
+    const postTracker = (postState.global_preferences as any).custom.tamperTracker as any;
+    expect(postTracker.count).toBe(0);
+    expect(postTracker.lastTamper).toBe(null);
+  });
+});
