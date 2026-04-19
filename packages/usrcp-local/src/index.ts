@@ -23,25 +23,30 @@ function printBanner(): void {
 
 /**
  * Get passphrase from:
- * 1. --passphrase CLI flag
- * 2. USRCP_PASSPHRASE environment variable
+ * 1. USRCP_PASSPHRASE environment variable (preferred — not visible in /proc/cmdline)
+ * 2. --passphrase CLI flag (visible in process list — use only for init)
  * 3. undefined (dev mode)
  */
 function getPassphrase(): string | undefined {
-  // Check CLI flag: --passphrase=xxx or --passphrase xxx
+  // Prefer env var — not visible in /proc/<pid>/cmdline
+  if (process.env.USRCP_PASSPHRASE) {
+    const passphrase = process.env.USRCP_PASSPHRASE;
+    // Clear from environment to reduce exposure window
+    delete process.env.USRCP_PASSPHRASE;
+    return passphrase;
+  }
+
+  // Fall back to CLI flag (warns about /proc visibility)
   const args = process.argv;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--passphrase" && args[i + 1]) {
+      console.error("  Warning: --passphrase is visible in process list. Prefer USRCP_PASSPHRASE env var.");
       return args[i + 1];
     }
     if (args[i].startsWith("--passphrase=")) {
+      console.error("  Warning: --passphrase is visible in process list. Prefer USRCP_PASSPHRASE env var.");
       return args[i].split("=").slice(1).join("=");
     }
-  }
-
-  // Check environment variable
-  if (process.env.USRCP_PASSPHRASE) {
-    return process.env.USRCP_PASSPHRASE;
   }
 
   return undefined;

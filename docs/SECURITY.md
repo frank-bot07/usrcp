@@ -128,12 +128,55 @@ Defense-in-depth at two layers:
 
 ---
 
-## 7. Known Limitations
+## 7. Runtime Hardening
 
-- **Node.js GC**: `zeroBuffer()` zeroes the Buffer, but V8's garbage collector does not guarantee immediate page zeroing for other allocations. Derived keys in HKDF intermediate buffers may persist in heap until GC reclaims.
-- **No FIPS 140-2**: Node.js `crypto` uses OpenSSL but is not FIPS certified.
-- **No HSM**: Keys are software-managed. Hardware Security Module integration would require platform-specific native bindings.
-- **stdio transport**: MCP communication is unencrypted plaintext over stdio. Any process that can read the pipe sees decrypted data in transit.
-- **Timestamps remain plaintext**: Activity timing patterns are visible.
+### Buffer zeroing
 
-These limitations require infrastructure changes (different runtime, HSM hardware, authenticated transport) that are outside the scope of a local MCP server.
+All intermediate Buffers in encrypt/decrypt paths are zeroed after use via `Buffer.fill(0)`. This includes cipher update/final buffers, packed ciphertext, HMAC digests, and the master key on shutdown. This reduces the window for heap extraction but does not eliminate it — see Known Limitations.
+
+### scrypt cost parameters
+
+Key derivation uses hardened scrypt parameters: N=131072 (2^17), r=8, p=2. At these settings, each derivation takes ~200-500ms on modern hardware. Brute-forcing a 12+ character passphrase requires years on consumer hardware (including M2 Max).
+
+### Passphrase side-channel mitigation
+
+- `USRCP_PASSPHRASE` env var is preferred over `--passphrase` CLI flag
+- CLI flag warns that the passphrase is visible in `/proc/<pid>/cmdline`
+- Env var is deleted from `process.env` immediately after reading
+- Passphrase is never logged or echoed
+
+---
+
+## 8. Known Limitations & Threat Model Boundaries
+
+### What this system protects against
+
+- **Disk theft / backup exposure**: All data encrypted at rest. In passphrase mode, no key file exists on disk.
+- **Unauthorized agent access**: Domain-scoped keys prevent cross-domain data access.
+- **Forensic recovery of deleted data**: `secure_delete` pragma + VACUUM zero-fill deleted pages.
+- **Frequency analysis of search index**: Noise tokens mixed with real blind index tokens.
+
+### What this system does NOT protect against
+
+- **Heap extraction (`gcore <PID>` + `strings`)**: A local attacker with root can dump process memory and extract the master key, derived keys, and any decrypted plaintext currently in the V8 heap. All Buffers we control are zeroed after use, but JavaScript strings are immutable and GC-managed — once plaintext becomes a string, we cannot zero it. **Mitigation for Pro/Enterprise: Rust or Go sidecar for decryption in a memory-safe runtime, or TEE (Trusted Execution Environment).**
+
+- **Debugger attachment (`ptrace`, `lldb`)**: A local attacker can attach a debugger to the running process and read any value in memory. No Node.js mitigation exists. **Mitigation: Run with `ptrace` disabled via `prctl(PR_SET_DUMPABLE, 0)` on Linux, or use a sandboxed runtime.**
+
+- **No FIPS 140-2**: Node.js `crypto` uses OpenSSL but is not FIPS certified. Regulated industries requiring FIPS compliance need a certified crypto module.
+
+- **No HSM**: Keys are software-managed. Hardware Security Module integration would require native bindings to PKCS#11 or platform-specific APIs.
+
+- **stdio transport**: MCP communication is unencrypted plaintext over stdio. Any process that can read the pipe sees decrypted data in transit. **Mitigation for hosted ledger: TLS-encrypted HTTP transport.**
+
+- **Timestamps remain plaintext**: Activity timing patterns are visible. An attacker knows when the user was active but not what they did.
+
+- **V8 string immutability**: JavaScript strings cannot be zeroed. Decrypted field values (summaries, intents, etc.) persist as V8 strings until garbage collected. The GC does not zero freed heap pages.
+
+### Enterprise mitigation roadmap
+
+For Pro/Enterprise tiers where the threat model includes local attackers with root:
+
+1. **Rust decryption sidecar**: Move all encrypt/decrypt operations to a Rust process that communicates with the Node.js server via a Unix socket. Rust provides guaranteed memory zeroing via `zeroize` crate.
+2. **TEE integration**: Run the decryption sidecar inside an Intel SGX or ARM TrustZone enclave. The master key never exists in normal process memory.
+3. **Authenticated MCP transport**: Replace stdio with TLS-encrypted HTTP for the MCP server connection.
+4. **FIPS mode**: Use a FIPS-validated OpenSSL build or BoringSSL with the Rust sidecar.

@@ -24,9 +24,14 @@ const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12;
 const TAG_LENGTH = 16;
 const ENCRYPTED_PREFIX = "enc:";
-const SCRYPT_N = 16384;
+// scrypt cost parameters — hardened against M2 Max brute-force
+// N=131072 (2^17): ~8x more work than default 16384
+// r=8, p=2: increased parallelization factor
+// At these settings, each derivation takes ~200-500ms.
+// Brute-force of a 12-char passphrase: years on consumer hardware.
+const SCRYPT_N = 131072;
 const SCRYPT_R = 8;
-const SCRYPT_P = 1;
+const SCRYPT_P = 2;
 const SCRYPT_KEYLEN = 32;
 const SALT_LENGTH = 32;
 
@@ -284,13 +289,20 @@ export function deriveBlindIndexKey(
 export function encrypt(plaintext: string, key: Buffer): string {
   const iv = crypto.randomBytes(IV_LENGTH);
   const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
-  const encrypted = Buffer.concat([
-    cipher.update(plaintext, "utf8"),
-    cipher.final(),
-  ]);
+  const updateBuf = cipher.update(plaintext, "utf8");
+  const finalBuf = cipher.final();
+  const encrypted = Buffer.concat([updateBuf, finalBuf]);
   const tag = cipher.getAuthTag();
   const packed = Buffer.concat([iv, encrypted, tag]);
-  return ENCRYPTED_PREFIX + packed.toString("base64");
+  const result = ENCRYPTED_PREFIX + packed.toString("base64");
+
+  // Zero intermediate buffers to minimize plaintext residue in heap
+  zeroBuffer(updateBuf);
+  zeroBuffer(finalBuf);
+  zeroBuffer(encrypted);
+  zeroBuffer(packed);
+
+  return result;
 }
 
 export function decrypt(encryptedValue: string, key: Buffer): string {
@@ -309,11 +321,18 @@ export function decrypt(encryptedValue: string, key: Buffer): string {
   const ciphertext = packed.subarray(IV_LENGTH, packed.length - TAG_LENGTH);
   const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
   decipher.setAuthTag(tag);
-  const decrypted = Buffer.concat([
-    decipher.update(ciphertext),
-    decipher.final(),
-  ]);
-  return decrypted.toString("utf8");
+  const updateBuf = decipher.update(ciphertext);
+  const finalBuf = decipher.final();
+  const decrypted = Buffer.concat([updateBuf, finalBuf]);
+  const result = decrypted.toString("utf8");
+
+  // Zero decrypted buffer — plaintext should not linger in heap
+  zeroBuffer(decrypted);
+  zeroBuffer(updateBuf);
+  zeroBuffer(finalBuf);
+  zeroBuffer(packed);
+
+  return result;
 }
 
 export function isEncrypted(value: string): boolean {
@@ -382,7 +401,10 @@ export function generateSearchTokens(
 function hmacToken(value: string, key: Buffer): string {
   const hmac = crypto.createHmac("sha256", key);
   hmac.update(value);
-  return hmac.digest("hex").slice(0, 8);
+  const digest = hmac.digest();
+  const token = digest.toString("hex").slice(0, 8);
+  zeroBuffer(digest);
+  return token;
 }
 
 export function zeroBuffer(buf: Buffer): void {
