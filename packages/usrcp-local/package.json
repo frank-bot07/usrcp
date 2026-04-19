@@ -1,0 +1,38 @@
+{
+  "name": "usrcp-local",
+  "version": "0.1.0",
+  "description": "Local MCP server for USRCP — persistent AI memory on your machine",
+  "main": "dist/index.js",
+  "bin": {
+    "usrcp-local": "dist/index.js",
+    "usrcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js serve",
+    "lint": "tsc --noEmit"
+  },
+  "keywords": [
+    "usrcp",
+    "mcp",
+    "ai-memory",
+    "context-protocol",
+    "llm",
+    "agent"
+  ],
+  "author": "USRCP Contributors",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "better-sqlite3": "^11.8.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.15.3",
+    "typescript": "^5.8.3"
+  }
+}
