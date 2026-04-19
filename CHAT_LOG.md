@@ -4,7 +4,7 @@
 **Model:** Claude Opus 4.6 (1M context)  
 **Directory:** /Users/frankbot/usrcp  
 **Repo:** github.com/frank-bot07/usrcp  
-**Final state:** 13 commits | 137 tests | 10 MCP tools | 7 test suites  
+**Final state:** 14 commits | 137 tests | 10 MCP tools | 7 test suites  
 
 ---
 
@@ -232,7 +232,9 @@
 
 **User:** Asked to create a reusable skill for exporting chats.
 
-**Actions:** Created `/export-chat` skill at `~/.claude/skills/export-chat/SKILL.md`. Supports default path, custom path, and `--commit` flag.
+**Actions:** Created `/export-chat` skill at `~/.claude/skills/export-chat/SKILL.md`. Supports default path, custom path, and `--commit` flag. Tested it — user ran `/export-chat --commit` twice to verify it overwrites with updated content.
+
+**Commit:** `1448301` — Update chat session export with complete session through Mythos hardening
 
 ---
 
@@ -240,7 +242,7 @@
 
 | Metric | Value |
 |--------|-------|
-| Commits | 13 |
+| Commits | 14 |
 | Tests | 137 |
 | MCP Tools | 10 |
 | Test Suites | 7 |
@@ -268,6 +270,7 @@
 | 11 | `ea84e23` | Wire passphrase to CLI, add audit/rotation tools, rewrite all docs |
 | 12 | `4a9acd9` | Add full build session chat log |
 | 13 | `249d681` | Harden runtime against Mythos red-team findings |
+| 14 | `1448301` | Update chat session export with complete session through Mythos hardening |
 
 ### Repository Structure
 
