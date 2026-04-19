@@ -15,12 +15,14 @@ import type {
 import {
   initializeMasterKey,
   deriveDomainEncryptionKey,
+  deriveGlobalEncryptionKey,
   deriveBlindIndexKey,
   encrypt,
   decrypt,
   isEncrypted,
   generateBlindTokens,
   generateSearchTokens,
+  rotateMasterKey,
 } from "./encryption.js";
 
 function getDefaultDbPath(): string {
@@ -121,12 +123,27 @@ export class Ledger {
   }
 
   private decryptForDomain(ciphertext: string, domain: string): string {
-    if (!isEncrypted(ciphertext)) return ciphertext; // backward compat
+    if (!isEncrypted(ciphertext)) return ciphertext;
     const key = deriveDomainEncryptionKey(this.masterKey, domain);
     try {
       return decrypt(ciphertext, key);
     } catch {
-      return "{}"; // tampered or wrong key — return safe fallback
+      return "{}";
+    }
+  }
+
+  private encryptGlobal(plaintext: string): string {
+    const key = deriveGlobalEncryptionKey(this.masterKey);
+    return encrypt(plaintext, key);
+  }
+
+  private decryptGlobal(ciphertext: string): string {
+    if (!isEncrypted(ciphertext)) return ciphertext;
+    const key = deriveGlobalEncryptionKey(this.masterKey);
+    try {
+      return decrypt(ciphertext, key);
+    } catch {
+      return "";
     }
   }
 
@@ -194,7 +211,6 @@ export class Ledger {
 
       CREATE INDEX IF NOT EXISTS idx_events_timestamp ON timeline_events(timestamp DESC);
       CREATE INDEX IF NOT EXISTS idx_events_domain ON timeline_events(domain);
-      CREATE INDEX IF NOT EXISTS idx_events_platform ON timeline_events(platform);
       CREATE INDEX IF NOT EXISTS idx_projects_status ON active_projects(status);
 
       CREATE TABLE IF NOT EXISTS audit_log (
@@ -260,14 +276,12 @@ export class Ledger {
     );
     const transaction = this.db.transaction(() => {
       for (const event of events) {
-        // tags may be encrypted — decrypt for tokenization
+        // All fields may be encrypted — decrypt before tokenizing
+        const summary = this.decryptForDomain(event.summary || "", event.domain);
+        const intent = this.decryptForDomain(event.intent || "", event.domain);
         const tagsDecrypted = this.decryptForDomain(event.tags || "[]", event.domain);
         const tagsArray = safeJsonParse<string[]>(tagsDecrypted, []);
-        const searchableText = [
-          event.summary || "",
-          event.intent || "",
-          ...tagsArray,
-        ].join(" ");
+        const searchableText = [summary, intent, ...tagsArray].join(" ");
         const tokens = this.getBlindTokens(searchableText, event.domain);
         for (const token of tokens) {
           insertToken.run(event.event_id, token, event.domain);
@@ -278,19 +292,20 @@ export class Ledger {
   }
 
   private rowToEvent(row: any): TimelineEvent {
+    const domain = row.domain;
     return {
       event_id: row.event_id,
       timestamp: row.timestamp,
-      platform: row.platform,
-      domain: row.domain,
-      summary: row.summary,
-      intent: row.intent || undefined,
-      outcome: row.outcome || undefined,
-      detail: safeJsonParse(this.decryptForDomain(row.detail || "{}", row.domain), {}),
-      artifacts: safeJsonParse(this.decryptForDomain(row.artifacts || "[]", row.domain), []),
-      tags: safeJsonParse(this.decryptForDomain(row.tags || "[]", row.domain), []),
-      session_id: row.session_id || undefined,
-      parent_event_id: row.parent_event_id || undefined,
+      platform: this.decryptForDomain(row.platform || "", domain) || row.platform,
+      domain,
+      summary: this.decryptForDomain(row.summary || "", domain) || row.summary,
+      intent: row.intent ? this.decryptForDomain(row.intent, domain) || undefined : undefined,
+      outcome: (row.outcome ? this.decryptForDomain(row.outcome, domain) : undefined) as TimelineEvent["outcome"],
+      detail: safeJsonParse(this.decryptForDomain(row.detail || "{}", domain), {}),
+      artifacts: safeJsonParse(this.decryptForDomain(row.artifacts || "[]", domain), []),
+      tags: safeJsonParse(this.decryptForDomain(row.tags || "[]", domain), []),
+      session_id: row.session_id ? this.decryptForDomain(row.session_id, domain) || undefined : undefined,
+      parent_event_id: row.parent_event_id ? this.decryptForDomain(row.parent_event_id, domain) || undefined : undefined,
     };
   }
 
@@ -303,7 +318,7 @@ export class Ledger {
    * Called by the MCP server when it knows who's calling.
    */
   setAgentId(agentId: string): void {
-    this.currentAgentId = agentId;
+    this.currentAgentId = agentId || "local";
   }
 
   private logAudit(
@@ -344,10 +359,10 @@ export class Ledger {
       .prepare("SELECT * FROM core_identity WHERE id = 1")
       .get() as any;
     return {
-      display_name: row.display_name,
-      roles: safeJsonParse(row.roles, []),
-      expertise_domains: safeJsonParse(row.expertise_domains, []),
-      communication_style: row.communication_style,
+      display_name: this.decryptGlobal(row.display_name),
+      roles: safeJsonParse(this.decryptGlobal(row.roles), []),
+      expertise_domains: safeJsonParse(this.decryptGlobal(row.expertise_domains), []),
+      communication_style: this.decryptGlobal(row.communication_style) as CoreIdentity["communication_style"],
     };
   }
 
@@ -365,10 +380,10 @@ export class Ledger {
         WHERE id = 1`
       )
       .run(
-        merged.display_name,
-        JSON.stringify(merged.roles),
-        JSON.stringify(merged.expertise_domains),
-        merged.communication_style
+        this.encryptGlobal(merged.display_name),
+        this.encryptGlobal(JSON.stringify(merged.roles)),
+        this.encryptGlobal(JSON.stringify(merged.expertise_domains)),
+        this.encryptGlobal(merged.communication_style)
       );
   }
 
@@ -380,10 +395,10 @@ export class Ledger {
       .get() as any;
     return {
       language: row.language,
-      timezone: row.timezone,
-      output_format: row.output_format,
-      verbosity: row.verbosity,
-      custom: safeJsonParse(row.custom, {}),
+      timezone: this.decryptGlobal(row.timezone),
+      output_format: row.output_format as GlobalPreferences["output_format"],
+      verbosity: row.verbosity as GlobalPreferences["verbosity"],
+      custom: safeJsonParse(this.decryptGlobal(row.custom), {}),
     };
   }
 
@@ -406,10 +421,10 @@ export class Ledger {
       )
       .run(
         merged.language,
-        merged.timezone,
+        this.encryptGlobal(merged.timezone),
         merged.output_format,
         merged.verbosity,
-        JSON.stringify(merged.custom)
+        this.encryptGlobal(JSON.stringify(merged.custom))
       );
   }
 
@@ -491,6 +506,22 @@ export class Ledger {
     const artifactsEncrypted = this.encryptForDomain(artifactsPlain, event.domain);
     const tagsEncrypted = this.encryptForDomain(tagsPlain, event.domain);
 
+    // Encrypt ALL human-readable fields — nothing plaintext except event_id, timestamp, domain, ledger_sequence
+    const summaryEncrypted = this.encryptForDomain(event.summary, event.domain);
+    const intentEncrypted = event.intent
+      ? this.encryptForDomain(event.intent, event.domain)
+      : null;
+    const outcomeEncrypted = event.outcome
+      ? this.encryptForDomain(event.outcome, event.domain)
+      : null;
+    const platformEncrypted = this.encryptForDomain(platform, event.domain);
+    const sessionIdEncrypted = event.session_id
+      ? this.encryptForDomain(event.session_id, event.domain)
+      : null;
+    const parentIdEncrypted = event.parent_event_id
+      ? this.encryptForDomain(event.parent_event_id, event.domain)
+      : null;
+
     this.db
       .prepare(
         `INSERT INTO timeline_events
@@ -500,16 +531,16 @@ export class Ledger {
       .run(
         event_id,
         timestamp,
-        platform,
+        platformEncrypted,
         event.domain,
-        event.summary,
-        event.intent || null,
-        event.outcome || null,
+        summaryEncrypted,
+        intentEncrypted,
+        outcomeEncrypted,
         detailEncrypted,
         artifactsEncrypted,
         tagsEncrypted,
-        event.session_id || null,
-        event.parent_event_id || null,
+        sessionIdEncrypted,
+        parentIdEncrypted,
         ledger_sequence,
         idempotencyKey || null
       );
@@ -867,9 +898,15 @@ export class Ledger {
     const domains = this.db
       .prepare("SELECT DISTINCT domain FROM timeline_events")
       .all() as any[];
-    const platforms = this.db
-      .prepare("SELECT DISTINCT platform FROM timeline_events")
+    // Platforms are encrypted — decrypt to get distinct values
+    const allPlatforms = this.db
+      .prepare("SELECT DISTINCT platform, domain FROM timeline_events")
       .all() as any[];
+    const platformSet = new Set<string>();
+    for (const row of allPlatforms) {
+      const decrypted = this.decryptForDomain(row.platform || "", row.domain);
+      if (decrypted) platformSet.add(decrypted);
+    }
 
     // Get database file size
     const dbSize = this.db
@@ -886,11 +923,100 @@ export class Ledger {
       total_events: eventCount.count,
       total_projects: projectCount.count,
       domains: domains.map((d: any) => d.domain),
-      platforms: platforms.map((p: any) => p.platform),
+      platforms: [...platformSet],
       db_size_bytes: dbSize?.size || 0,
       audit_log_entries: auditCount.count,
       encryption_enabled: true,
     };
+  }
+
+  // --- Key Rotation ---
+
+  /**
+   * Rotate the master encryption key and re-encrypt all data.
+   * This is an atomic operation — either everything is re-encrypted or nothing is.
+   */
+  rotateKey(passphrase?: string): { version: number; reencrypted: number } {
+    const { oldKey, newKey, version } = rotateMasterKey(passphrase);
+    let reencrypted = 0;
+
+    const transaction = this.db.transaction(() => {
+      // Re-encrypt all timeline events
+      const events = this.db
+        .prepare("SELECT event_id, domain, summary, intent, outcome, platform, detail, artifacts, tags, session_id, parent_event_id FROM timeline_events")
+        .all() as any[];
+
+      const updateEvent = this.db.prepare(
+        `UPDATE timeline_events SET summary=?, intent=?, outcome=?, platform=?, detail=?, artifacts=?, tags=?, session_id=?, parent_event_id=? WHERE event_id=?`
+      );
+
+      for (const e of events) {
+        const d = e.domain;
+        const oldDomainKey = deriveDomainEncryptionKey(oldKey, d);
+        const newDomainKey = deriveDomainEncryptionKey(newKey, d);
+
+        const reenc = (val: string | null) => {
+          if (!val) return null;
+          const plain = isEncrypted(val) ? decrypt(val, oldDomainKey) : val;
+          return encrypt(plain, newDomainKey);
+        };
+
+        updateEvent.run(
+          reenc(e.summary), reenc(e.intent), reenc(e.outcome), reenc(e.platform),
+          reenc(e.detail), reenc(e.artifacts), reenc(e.tags),
+          reenc(e.session_id), reenc(e.parent_event_id), e.event_id
+        );
+        reencrypted++;
+      }
+
+      // Re-encrypt domain context
+      const contexts = this.db
+        .prepare("SELECT domain, context FROM domain_context")
+        .all() as any[];
+      const updateCtx = this.db.prepare(
+        "UPDATE domain_context SET context = ? WHERE domain = ?"
+      );
+      for (const c of contexts) {
+        const oldDomainKey = deriveDomainEncryptionKey(oldKey, c.domain);
+        const newDomainKey = deriveDomainEncryptionKey(newKey, c.domain);
+        const plain = isEncrypted(c.context) ? decrypt(c.context, oldDomainKey) : c.context;
+        updateCtx.run(encrypt(plain, newDomainKey), c.domain);
+      }
+
+      // Re-encrypt identity
+      const oldGlobalKey = deriveGlobalEncryptionKey(oldKey);
+      const newGlobalKey = deriveGlobalEncryptionKey(newKey);
+      const identity = this.db.prepare("SELECT * FROM core_identity WHERE id = 1").get() as any;
+      const reencGlobal = (val: string) => {
+        const plain = isEncrypted(val) ? decrypt(val, oldGlobalKey) : val;
+        return encrypt(plain, newGlobalKey);
+      };
+      this.db.prepare(
+        "UPDATE core_identity SET display_name=?, roles=?, expertise_domains=?, communication_style=? WHERE id=1"
+      ).run(
+        reencGlobal(identity.display_name),
+        reencGlobal(identity.roles),
+        reencGlobal(identity.expertise_domains),
+        reencGlobal(identity.communication_style)
+      );
+
+      // Re-encrypt preferences
+      const prefs = this.db.prepare("SELECT * FROM global_preferences WHERE id = 1").get() as any;
+      this.db.prepare(
+        "UPDATE global_preferences SET timezone=?, custom=? WHERE id=1"
+      ).run(reencGlobal(prefs.timezone), reencGlobal(prefs.custom));
+    });
+
+    transaction();
+
+    // Update in-memory key
+    this.masterKey = newKey;
+
+    // Rebuild blind index with new key
+    this.rebuildBlindIndex();
+
+    this.logAudit("key_rotation", undefined, undefined, `version=${version}`);
+    return { version, reencrypted };
   }
 
   // --- Maintenance ---

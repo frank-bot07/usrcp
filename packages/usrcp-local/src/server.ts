@@ -84,12 +84,14 @@ export function createServer(): { server: McpServer; shutdown: () => void } {
         .describe(
           "Filter timeline to specific domains (e.g., ['coding', 'writing'])"
         ),
+      caller: z
+        .string()
+        .max(MAX_STRING_SHORT)
+        .default("unknown")
+        .describe("Identifying name of the calling agent/platform"),
     },
-    async (params, extra) => {
-      // Set agent identity from MCP transport metadata if available
-      const agentId = (extra as any)?.agentId || (extra as any)?._meta?.agentId || "mcp-client";
-      ledger.setAgentId(agentId);
-
+    async (params) => {
+      ledger.setAgentId(params.caller);
       const state = ledger.getState(params.scopes);
 
       if (
@@ -397,8 +399,14 @@ export function createServer(): { server: McpServer; shutdown: () => void } {
         .default(20)
         .optional()
         .describe("Max results"),
+      caller: z
+        .string()
+        .max(MAX_STRING_SHORT)
+        .default("unknown")
+        .describe("Identifying name of the calling agent/platform"),
     },
     async (params) => {
+      ledger.setAgentId(params.caller);
       const results = ledger.searchTimeline(params.query, {
         limit: params.limit,
         domain: params.domain,
