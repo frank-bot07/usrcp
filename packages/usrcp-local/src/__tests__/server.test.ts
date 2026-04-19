@@ -16,7 +16,8 @@ beforeEach(() => {
   process.env.HOME = tmpHome;
 
   initializeIdentity();
-  server = createServer();
+  const created = createServer();
+  server = created.server;
 });
 
 afterEach(() => {

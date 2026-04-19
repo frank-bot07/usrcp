@@ -101,11 +101,19 @@ async function cmdServe(): Promise<void> {
     initializeIdentity();
   }
 
-  const server = createServer();
+  const { server, shutdown } = createServer();
   const transport = new StdioServerTransport();
-  await server.connect(transport);
 
-  // Log to stderr so it doesn't interfere with stdio transport
+  // Graceful shutdown: checkpoint WAL, close SQLite, exit clean
+  const handleShutdown = () => {
+    console.error("[usrcp-local] Shutting down...");
+    shutdown();
+    process.exit(0);
+  };
+  process.on("SIGTERM", handleShutdown);
+  process.on("SIGINT", handleShutdown);
+
+  await server.connect(transport);
   console.error("[usrcp-local] MCP server running on stdio");
 }
 

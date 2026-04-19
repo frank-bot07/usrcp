@@ -27,9 +27,13 @@ function boundedRecord() {
     });
 }
 
-export function createServer(): McpServer {
+export function createServer(): { server: McpServer; shutdown: () => void } {
   const ledger = new Ledger();
   const identity = getIdentity();
+
+  const shutdown = () => {
+    ledger.close();
+  };
 
   const server = new McpServer({
     name: "usrcp-local",
@@ -503,5 +507,5 @@ export function createServer(): McpServer {
     }
   );
 
-  return server;
+  return { server, shutdown };
 }

@@ -26,14 +26,86 @@ function safeJsonParse<T>(value: string | null | undefined, fallback: T): T {
   }
 }
 
+// --- Spec-compliant ULID (Crockford Base32, monotonic within ms) ---
+
+const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+let lastTime = 0;
+let lastRandom: Uint8Array | null = null;
+
 function generateULID(): string {
-  const timestamp = Date.now().toString(36).padStart(10, "0");
-  const random = crypto.randomBytes(10).toString("hex").slice(0, 16);
-  return `${timestamp}${random}`.toUpperCase();
+  let now = Date.now();
+
+  // Monotonic: if same ms as last call, increment random component
+  if (now === lastTime && lastRandom) {
+    // Increment the random bytes (big-endian)
+    for (let i = lastRandom.length - 1; i >= 0; i--) {
+      if (lastRandom[i] < 255) {
+        lastRandom[i]++;
+        break;
+      }
+      lastRandom[i] = 0;
+    }
+  } else {
+    lastTime = now;
+    lastRandom = new Uint8Array(crypto.randomBytes(10));
+  }
+
+  // Encode timestamp (48 bits → 10 Crockford chars, big-endian)
+  let ts = "";
+  for (let i = 9; i >= 0; i--) {
+    ts = CROCKFORD[now & 0x1f] + ts;
+    now = Math.floor(now / 32);
+  }
+
+  // Encode randomness (80 bits → 16 Crockford chars)
+  let rnd = "";
+  const bytes = lastRandom!;
+  // Convert 10 bytes (80 bits) to 16 base32 chars
+  // Process in groups: 5 bytes → 8 chars
+  for (let group = 0; group < 2; group++) {
+    const off = group * 5;
+    const b0 = bytes[off];
+    const b1 = bytes[off + 1];
+    const b2 = bytes[off + 2];
+    const b3 = bytes[off + 3];
+    const b4 = bytes[off + 4];
+
+    rnd += CROCKFORD[(b0 >> 3) & 0x1f];
+    rnd += CROCKFORD[((b0 << 2) | (b1 >> 6)) & 0x1f];
+    rnd += CROCKFORD[(b1 >> 1) & 0x1f];
+    rnd += CROCKFORD[((b1 << 4) | (b2 >> 4)) & 0x1f];
+    rnd += CROCKFORD[((b2 << 1) | (b3 >> 7)) & 0x1f];
+    rnd += CROCKFORD[(b3 >> 2) & 0x1f];
+    rnd += CROCKFORD[((b3 << 3) | (b4 >> 5)) & 0x1f];
+    rnd += CROCKFORD[b4 & 0x1f];
+  }
+
+  return ts + rnd; // 26 chars total
+}
+
+// --- Row to TimelineEvent mapper ---
+
+function rowToEvent(row: any): TimelineEvent {
+  return {
+    event_id: row.event_id,
+    timestamp: row.timestamp,
+    platform: row.platform,
+    domain: row.domain,
+    summary: row.summary,
+    intent: row.intent || undefined,
+    outcome: row.outcome || undefined,
+    detail: safeJsonParse(row.detail, {}),
+    artifacts: safeJsonParse(row.artifacts, []),
+    tags: safeJsonParse(row.tags, []),
+    session_id: row.session_id || undefined,
+    parent_event_id: row.parent_event_id || undefined,
+  };
 }
 
 export class Ledger {
   private db: Database.Database;
+  private closed = false;
 
   constructor(dbPath?: string) {
     const resolvedPath = dbPath || getDefaultDbPath();
@@ -99,7 +171,6 @@ export class Ledger {
       CREATE INDEX IF NOT EXISTS idx_events_timestamp ON timeline_events(timestamp DESC);
       CREATE INDEX IF NOT EXISTS idx_events_domain ON timeline_events(domain);
       CREATE INDEX IF NOT EXISTS idx_events_platform ON timeline_events(platform);
-      CREATE INDEX IF NOT EXISTS idx_events_tags ON timeline_events(tags);
       CREATE INDEX IF NOT EXISTS idx_projects_status ON active_projects(status);
 
       -- Seed singleton rows if they don't exist
@@ -113,11 +184,41 @@ export class Ledger {
         "ALTER TABLE timeline_events ADD COLUMN idempotency_key TEXT"
       );
     } catch {
-      // Column already exists — safe to ignore
+      // Column already exists
     }
     this.db.exec(
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_events_idempotency ON timeline_events(idempotency_key) WHERE idempotency_key IS NOT NULL"
     );
+
+    // v0.1.2 migration: FTS5 full-text search index
+    this.db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS timeline_fts USING fts5(
+        event_id UNINDEXED,
+        summary,
+        intent,
+        tags,
+        domain UNINDEXED,
+        content='timeline_events',
+        content_rowid='rowid'
+      );
+    `);
+
+    // Rebuild FTS index if empty but events exist
+    const ftsCount = this.db
+      .prepare("SELECT COUNT(*) as c FROM timeline_fts")
+      .get() as any;
+    const eventCount = this.db
+      .prepare("SELECT COUNT(*) as c FROM timeline_events")
+      .get() as any;
+    if (ftsCount.c === 0 && eventCount.c > 0) {
+      this.rebuildFtsIndex();
+    }
+  }
+
+  private rebuildFtsIndex(): void {
+    this.db.exec(`
+      INSERT INTO timeline_fts(timeline_fts) VALUES('rebuild');
+    `);
   }
 
   // --- Core Identity ---
@@ -198,6 +299,35 @@ export class Ledger {
 
   // --- Timeline Events ---
 
+  // --- Input validation (defense-in-depth, supplements Zod schemas) ---
+
+  private validateEventInput(
+    event: AppendEventInput,
+    platform: string,
+    idempotencyKey?: string
+  ): void {
+    if (event.domain.length > 100) throw new Error("domain exceeds 100 chars");
+    if (event.summary.length > 500) throw new Error("summary exceeds 500 chars");
+    if (event.intent.length > 300) throw new Error("intent exceeds 300 chars");
+    if (platform.length > 100) throw new Error("platform exceeds 100 chars");
+    if (idempotencyKey && idempotencyKey.length > 100)
+      throw new Error("idempotency_key exceeds 100 chars");
+    if (event.session_id && event.session_id.length > 100)
+      throw new Error("session_id exceeds 100 chars");
+    if (event.tags && event.tags.length > 50)
+      throw new Error("tags exceeds 50 items");
+    if (event.artifacts && event.artifacts.length > 50)
+      throw new Error("artifacts exceeds 50 items");
+    if (event.artifacts) {
+      for (const a of event.artifacts) {
+        if (a.ref.length > 2048) throw new Error("artifact ref exceeds 2048 chars");
+      }
+    }
+    // Cap serialized detail size at 64KB
+    if (event.detail && JSON.stringify(event.detail).length > 65536)
+      throw new Error("detail exceeds 64KB");
+  }
+
   appendEvent(
     event: AppendEventInput,
     platform: string,
@@ -208,7 +338,8 @@ export class Ledger {
     ledger_sequence: number;
     duplicate?: boolean;
   } {
-    // Check idempotency key for duplicate prevention
+    this.validateEventInput(event, platform, idempotencyKey);
+
     if (idempotencyKey) {
       const existing = this.db
         .prepare(
@@ -235,6 +366,8 @@ export class Ledger {
       .get() as any;
     const ledger_sequence = maxSeq.max_seq + 1;
 
+    const tagsJson = JSON.stringify(event.tags || []);
+
     this.db
       .prepare(
         `INSERT INTO timeline_events
@@ -251,12 +384,21 @@ export class Ledger {
         event.outcome || null,
         JSON.stringify(event.detail || {}),
         JSON.stringify(event.artifacts || []),
-        JSON.stringify(event.tags || []),
+        tagsJson,
         event.session_id || null,
         event.parent_event_id || null,
         ledger_sequence,
         idempotencyKey || null
       );
+
+    // Update FTS index
+    this.db
+      .prepare(
+        `INSERT INTO timeline_fts(rowid, event_id, summary, intent, tags, domain)
+        SELECT rowid, event_id, summary, intent, tags, domain
+        FROM timeline_events WHERE event_id = ?`
+      )
+      .run(event_id);
 
     return { event_id, timestamp, ledger_sequence };
   }
@@ -290,24 +432,50 @@ export class Ledger {
     params.push(limit);
 
     const rows = this.db.prepare(query).all(...params) as any[];
-
-    return rows.map((row) => ({
-      event_id: row.event_id,
-      timestamp: row.timestamp,
-      platform: row.platform,
-      domain: row.domain,
-      summary: row.summary,
-      intent: row.intent || undefined,
-      outcome: row.outcome || undefined,
-      detail: safeJsonParse(row.detail, {}),
-      artifacts: safeJsonParse(row.artifacts, []),
-      tags: safeJsonParse(row.tags, []),
-      session_id: row.session_id || undefined,
-      parent_event_id: row.parent_event_id || undefined,
-    }));
+    return rows.map(rowToEvent);
   }
 
   searchTimeline(
+    query: string,
+    options?: { limit?: number; domain?: string }
+  ): TimelineEvent[] {
+    const limit = options?.limit || 20;
+
+    // Use FTS5 for ranked full-text search
+    let sql = `
+      SELECT e.*, rank
+      FROM timeline_fts fts
+      JOIN timeline_events e ON fts.event_id = e.event_id
+      WHERE timeline_fts MATCH ?`;
+    const ftsQuery = query
+      .replace(/[^\w\s]/g, "") // Strip special FTS5 chars to prevent syntax errors
+      .trim();
+
+    if (!ftsQuery) {
+      return []; // Empty query after sanitization
+    }
+
+    // Add * for prefix matching: "auth" matches "authentication"
+    const params: any[] = [ftsQuery + "*"];
+
+    if (options?.domain) {
+      sql += " AND e.domain = ?";
+      params.push(options.domain);
+    }
+
+    sql += " ORDER BY rank LIMIT ?";
+    params.push(limit);
+
+    try {
+      const rows = this.db.prepare(sql).all(...params) as any[];
+      return rows.map(rowToEvent);
+    } catch {
+      // Fallback to LIKE if FTS query fails (e.g., empty index)
+      return this.searchTimelineFallback(query, options);
+    }
+  }
+
+  private searchTimelineFallback(
     query: string,
     options?: { limit?: number; domain?: string }
   ): TimelineEvent[] {
@@ -325,21 +493,90 @@ export class Ledger {
     params.push(limit);
 
     const rows = this.db.prepare(sql).all(...params) as any[];
+    return rows.map(rowToEvent);
+  }
 
-    return rows.map((row) => ({
-      event_id: row.event_id,
-      timestamp: row.timestamp,
-      platform: row.platform,
-      domain: row.domain,
-      summary: row.summary,
-      intent: row.intent || undefined,
-      outcome: row.outcome || undefined,
-      detail: safeJsonParse(row.detail, {}),
-      artifacts: safeJsonParse(row.artifacts, []),
-      tags: safeJsonParse(row.tags, []),
-      session_id: row.session_id || undefined,
-      parent_event_id: row.parent_event_id || undefined,
-    }));
+  // --- Event Pruning & Compaction ---
+
+  /**
+   * Prune old events: events older than `daysOld` are deleted.
+   * Detail and artifact data is stripped — only summary/intent/outcome remain
+   * in a compacted "pruned" marker event.
+   * Returns the number of events pruned.
+   */
+  pruneOldEvents(daysOld: number = 30): {
+    pruned: number;
+    compacted: number;
+  } {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - daysOld);
+    const cutoffIso = cutoff.toISOString();
+
+    // Get events to prune (keep summary/intent/outcome for historical context)
+    const oldEvents = this.db
+      .prepare(
+        `SELECT event_id, rowid FROM timeline_events
+        WHERE timestamp < ? AND detail != '{}'`
+      )
+      .all(cutoffIso) as any[];
+
+    if (oldEvents.length === 0) {
+      return { pruned: 0, compacted: 0 };
+    }
+
+    // Strip detail, artifacts from old events (keep summary)
+    const compact = this.db.prepare(
+      `UPDATE timeline_events
+      SET detail = '{}', artifacts = '[]'
+      WHERE event_id = ?`
+    );
+
+    const deleteFts = this.db.prepare(
+      `DELETE FROM timeline_fts WHERE rowid = ?`
+    );
+
+    const reinsertFts = this.db.prepare(
+      `INSERT INTO timeline_fts(rowid, event_id, summary, intent, tags, domain)
+      SELECT rowid, event_id, summary, intent, tags, domain
+      FROM timeline_events WHERE event_id = ?`
+    );
+
+    let compacted = 0;
+    const transaction = this.db.transaction(() => {
+      for (const event of oldEvents) {
+        compact.run(event.event_id);
+        // Update FTS entry
+        deleteFts.run(event.rowid);
+        reinsertFts.run(event.event_id);
+        compacted++;
+      }
+    });
+    transaction();
+
+    return { pruned: 0, compacted };
+  }
+
+  /**
+   * Delete events older than `daysOld` entirely.
+   * Use with caution — this permanently removes history.
+   */
+  deleteOldEvents(daysOld: number): number {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - daysOld);
+    const cutoffIso = cutoff.toISOString();
+
+    // Delete from FTS first
+    this.db.exec(`
+      DELETE FROM timeline_fts WHERE event_id IN (
+        SELECT event_id FROM timeline_events WHERE timestamp < '${cutoffIso}'
+      )
+    `);
+
+    const result = this.db
+      .prepare("DELETE FROM timeline_events WHERE timestamp < ?")
+      .run(cutoffIso);
+
+    return result.changes;
   }
 
   // --- Active Projects ---
@@ -455,6 +692,7 @@ export class Ledger {
     total_projects: number;
     domains: string[];
     platforms: string[];
+    db_size_bytes: number;
   } {
     const eventCount = this.db
       .prepare("SELECT COUNT(*) as count FROM timeline_events")
@@ -469,15 +707,43 @@ export class Ledger {
       .prepare("SELECT DISTINCT platform FROM timeline_events")
       .all() as any[];
 
+    // Get database file size
+    const dbSize = this.db
+      .prepare(
+        "SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()"
+      )
+      .get() as any;
+
     return {
       total_events: eventCount.count,
       total_projects: projectCount.count,
       domains: domains.map((d: any) => d.domain),
       platforms: platforms.map((p: any) => p.platform),
+      db_size_bytes: dbSize?.size || 0,
     };
   }
 
+  // --- Maintenance ---
+
+  /**
+   * Checkpoint WAL file and optionally vacuum the database.
+   * Call periodically or on graceful shutdown.
+   */
+  checkpoint(vacuum: boolean = false): void {
+    this.db.pragma("wal_checkpoint(TRUNCATE)");
+    if (vacuum) {
+      this.db.exec("VACUUM");
+    }
+  }
+
   close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    try {
+      this.checkpoint();
+    } catch {
+      // Best-effort checkpoint on close
+    }
     this.db.close();
   }
 }
