@@ -2,7 +2,9 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const KEYS_DIR = path.join(process.env.HOME || "~", ".usrcp", "keys");
+function getKeysDir(): string {
+  return path.join(process.env.HOME || "~", ".usrcp", "keys");
+}
 
 export interface KeyPair {
   publicKey: string;
@@ -16,7 +18,7 @@ export interface LedgerIdentity {
 }
 
 export function ensureKeysDir(): void {
-  fs.mkdirSync(KEYS_DIR, { recursive: true });
+  fs.mkdirSync(getKeysDir(), { recursive: true });
 }
 
 export function generateKeyPair(): KeyPair {
@@ -35,9 +37,9 @@ export function deriveUserId(publicKey: string): string {
 export function initializeIdentity(): LedgerIdentity {
   ensureKeysDir();
 
-  const identityPath = path.join(KEYS_DIR, "identity.json");
-  const privateKeyPath = path.join(KEYS_DIR, "private.pem");
-  const publicKeyPath = path.join(KEYS_DIR, "public.pem");
+  const identityPath = path.join(getKeysDir(), "identity.json");
+  const privateKeyPath = path.join(getKeysDir(), "private.pem");
+  const publicKeyPath = path.join(getKeysDir(), "public.pem");
 
   if (fs.existsSync(identityPath)) {
     return JSON.parse(fs.readFileSync(identityPath, "utf-8"));
@@ -63,7 +65,7 @@ export function initializeIdentity(): LedgerIdentity {
 }
 
 export function getIdentity(): LedgerIdentity | null {
-  const identityPath = path.join(KEYS_DIR, "identity.json");
+  const identityPath = path.join(getKeysDir(), "identity.json");
   if (!fs.existsSync(identityPath)) return null;
   return JSON.parse(fs.readFileSync(identityPath, "utf-8"));
 }

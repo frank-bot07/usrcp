@@ -12,8 +12,9 @@ import type {
   Scope,
 } from "./types.js";
 
-const USRCP_DIR = path.join(process.env.HOME || "~", ".usrcp");
-const DB_PATH = path.join(USRCP_DIR, "ledger.db");
+function getDefaultDbPath(): string {
+  return path.join(process.env.HOME || "~", ".usrcp", "ledger.db");
+}
 
 function generateULID(): string {
   const timestamp = Date.now().toString(36).padStart(10, "0");
@@ -25,7 +26,7 @@ export class Ledger {
   private db: Database.Database;
 
   constructor(dbPath?: string) {
-    const resolvedPath = dbPath || DB_PATH;
+    const resolvedPath = dbPath || getDefaultDbPath();
     fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
     this.db = new Database(resolvedPath);
     this.db.pragma("journal_mode = WAL");
@@ -275,7 +276,7 @@ export class Ledger {
       query += " WHERE " + conditions.join(" AND ");
     }
 
-    query += " ORDER BY timestamp DESC LIMIT ?";
+    query += " ORDER BY ledger_sequence DESC LIMIT ?";
     params.push(limit);
 
     const rows = this.db.prepare(query).all(...params) as any[];
@@ -310,7 +311,7 @@ export class Ledger {
       params.push(options.domain);
     }
 
-    sql += " ORDER BY timestamp DESC LIMIT ?";
+    sql += " ORDER BY ledger_sequence DESC LIMIT ?";
     params.push(limit);
 
     const rows = this.db.prepare(sql).all(...params) as any[];

@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createServer } from "./server.js";
+import { Ledger } from "./ledger.js";
 import { initializeIdentity, getIdentity } from "./crypto.js";
 
 const USRCP_DIR = path.join(process.env.HOME || "~", ".usrcp");
@@ -28,7 +29,6 @@ function cmdInit(): void {
   console.error(`  Ledger:   ${USRCP_DIR}/ledger.db`);
 
   // Create the ledger DB (constructor handles migration)
-  const { Ledger } = require("./ledger.js");
   const ledger = new Ledger();
   ledger.close();
 
@@ -81,7 +81,6 @@ function cmdStatus(): void {
     process.exit(1);
   }
 
-  const { Ledger } = require("./ledger.js");
   const ledger = new Ledger();
   const stats = ledger.getStats();
   ledger.close();
