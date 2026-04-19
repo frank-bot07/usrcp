@@ -33,14 +33,14 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.1",
-    "better-sqlite3": "^11.8.1",
-    "zod": "^4.3.6"
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "better-sqlite3": "11.10.0",
+    "zod": "4.3.6"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
-    "@types/node": "^22.15.3",
-    "typescript": "^5.8.3",
-    "vitest": "^4.1.4"
+    "@types/better-sqlite3": "7.6.13",
+    "@types/node": "22.19.17",
+    "typescript": "5.9.3",
+    "vitest": "4.1.4"
   }
 }

@@ -12,6 +12,16 @@ import type {
   UserState,
   Scope,
 } from "./types.js";
+import {
+  initializeMasterKey,
+  deriveDomainEncryptionKey,
+  deriveBlindIndexKey,
+  encrypt,
+  decrypt,
+  isEncrypted,
+  generateBlindTokens,
+  generateSearchTokens,
+} from "./encryption.js";
 
 function getDefaultDbPath(): string {
   return path.join(os.homedir(), ".usrcp", "ledger.db");
@@ -86,26 +96,12 @@ function generateULID(): string {
 
 // --- Row to TimelineEvent mapper ---
 
-function rowToEvent(row: any): TimelineEvent {
-  return {
-    event_id: row.event_id,
-    timestamp: row.timestamp,
-    platform: row.platform,
-    domain: row.domain,
-    summary: row.summary,
-    intent: row.intent || undefined,
-    outcome: row.outcome || undefined,
-    detail: safeJsonParse(row.detail, {}),
-    artifacts: safeJsonParse(row.artifacts, []),
-    tags: safeJsonParse(row.tags, []),
-    session_id: row.session_id || undefined,
-    parent_event_id: row.parent_event_id || undefined,
-  };
-}
+// Note: rowToEvent is now a method on Ledger to access decryption
 
 export class Ledger {
   private db: Database.Database;
   private closed = false;
+  private masterKey: Buffer;
 
   constructor(dbPath?: string) {
     const resolvedPath = dbPath || getDefaultDbPath();
@@ -113,7 +109,35 @@ export class Ledger {
     this.db = new Database(resolvedPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
+    // Overwrite deleted content with zeros — prevents forensic recovery
+    this.db.pragma("secure_delete = ON");
+    this.masterKey = initializeMasterKey();
     this.migrate();
+  }
+
+  private encryptForDomain(plaintext: string, domain: string): string {
+    const key = deriveDomainEncryptionKey(this.masterKey, domain);
+    return encrypt(plaintext, key);
+  }
+
+  private decryptForDomain(ciphertext: string, domain: string): string {
+    if (!isEncrypted(ciphertext)) return ciphertext; // backward compat
+    const key = deriveDomainEncryptionKey(this.masterKey, domain);
+    try {
+      return decrypt(ciphertext, key);
+    } catch {
+      return "{}"; // tampered or wrong key — return safe fallback
+    }
+  }
+
+  private getBlindTokens(text: string, domain: string): string[] {
+    const key = deriveBlindIndexKey(this.masterKey, domain);
+    return generateBlindTokens(text, key);
+  }
+
+  private getSearchTokens(query: string, domain: string): string[] {
+    const key = deriveBlindIndexKey(this.masterKey, domain);
+    return generateSearchTokens(query, key);
   }
 
   private migrate(): void {
@@ -173,6 +197,27 @@ export class Ledger {
       CREATE INDEX IF NOT EXISTS idx_events_platform ON timeline_events(platform);
       CREATE INDEX IF NOT EXISTS idx_projects_status ON active_projects(status);
 
+      CREATE TABLE IF NOT EXISTS audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+        agent_id TEXT NOT NULL DEFAULT 'local',
+        operation TEXT NOT NULL,
+        scopes_accessed TEXT,
+        event_ids TEXT,
+        detail TEXT,
+        response_size_bytes INTEGER DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS blind_index (
+        event_id TEXT NOT NULL,
+        token TEXT NOT NULL,
+        domain TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp DESC);
+      CREATE INDEX IF NOT EXISTS idx_blind_token ON blind_index(token, domain);
+      CREATE INDEX IF NOT EXISTS idx_blind_event ON blind_index(event_id);
+
       -- Seed singleton rows if they don't exist
       INSERT OR IGNORE INTO core_identity (id) VALUES (1);
       INSERT OR IGNORE INTO global_preferences (id) VALUES (1);
@@ -190,16 +235,25 @@ export class Ledger {
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_events_idempotency ON timeline_events(idempotency_key) WHERE idempotency_key IS NOT NULL"
     );
 
-    // v0.1.2 migration: FTS5 full-text search index
+    // v0.1.2 migration: FTS5 full-text search index (standalone, no content sync)
+    // Drop the old content-synced FTS table if it exists and recreate as standalone
+    try {
+      const ftsInfo = this.db
+        .prepare("SELECT sql FROM sqlite_master WHERE name = 'timeline_fts'")
+        .get() as any;
+      if (ftsInfo && ftsInfo.sql && ftsInfo.sql.includes("content=")) {
+        this.db.exec("DROP TABLE IF EXISTS timeline_fts");
+      }
+    } catch {
+      // Table doesn't exist yet
+    }
     this.db.exec(`
       CREATE VIRTUAL TABLE IF NOT EXISTS timeline_fts USING fts5(
         event_id UNINDEXED,
         summary,
         intent,
         tags,
-        domain UNINDEXED,
-        content='timeline_events',
-        content_rowid='rowid'
+        domain UNINDEXED
       );
     `);
 
@@ -216,9 +270,62 @@ export class Ledger {
   }
 
   private rebuildFtsIndex(): void {
+    this.db.exec("DELETE FROM timeline_fts");
     this.db.exec(`
-      INSERT INTO timeline_fts(timeline_fts) VALUES('rebuild');
+      INSERT INTO timeline_fts(event_id, summary, intent, tags, domain)
+      SELECT event_id, summary, COALESCE(intent, ''), COALESCE(tags, ''), domain
+      FROM timeline_events
     `);
+  }
+
+  private rowToEvent(row: any): TimelineEvent {
+    return {
+      event_id: row.event_id,
+      timestamp: row.timestamp,
+      platform: row.platform,
+      domain: row.domain,
+      summary: row.summary,
+      intent: row.intent || undefined,
+      outcome: row.outcome || undefined,
+      detail: safeJsonParse(this.decryptForDomain(row.detail || "{}", row.domain), {}),
+      artifacts: safeJsonParse(this.decryptForDomain(row.artifacts || "[]", row.domain), []),
+      tags: safeJsonParse(this.decryptForDomain(row.tags || "[]", row.domain), []),
+      session_id: row.session_id || undefined,
+      parent_event_id: row.parent_event_id || undefined,
+    };
+  }
+
+  // --- Audit Log ---
+
+  private logAudit(
+    operation: string,
+    scopesOrDomain?: string | string[],
+    eventIds?: string[],
+    detail?: string,
+    responseSize?: number
+  ): void {
+    const scopes = Array.isArray(scopesOrDomain)
+      ? scopesOrDomain.join(",")
+      : scopesOrDomain || null;
+    this.db
+      .prepare(
+        `INSERT INTO audit_log (agent_id, operation, scopes_accessed, event_ids, detail, response_size_bytes)
+        VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        "local",
+        operation,
+        scopes,
+        eventIds ? JSON.stringify(eventIds) : null,
+        detail || null,
+        responseSize || 0
+      );
+  }
+
+  getAuditLog(limit: number = 100): any[] {
+    return this.db
+      .prepare("SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT ?")
+      .all(limit);
   }
 
   // --- Core Identity ---
@@ -366,7 +473,14 @@ export class Ledger {
       .get() as any;
     const ledger_sequence = maxSeq.max_seq + 1;
 
-    const tagsJson = JSON.stringify(event.tags || []);
+    // Encrypt sensitive fields with domain-scoped key
+    const detailPlain = JSON.stringify(event.detail || {});
+    const artifactsPlain = JSON.stringify(event.artifacts || []);
+    const tagsPlain = JSON.stringify(event.tags || []);
+
+    const detailEncrypted = this.encryptForDomain(detailPlain, event.domain);
+    const artifactsEncrypted = this.encryptForDomain(artifactsPlain, event.domain);
+    const tagsEncrypted = this.encryptForDomain(tagsPlain, event.domain);
 
     this.db
       .prepare(
@@ -382,23 +496,39 @@ export class Ledger {
         event.summary,
         event.intent || null,
         event.outcome || null,
-        JSON.stringify(event.detail || {}),
-        JSON.stringify(event.artifacts || []),
-        tagsJson,
+        detailEncrypted,
+        artifactsEncrypted,
+        tagsEncrypted,
         event.session_id || null,
         event.parent_event_id || null,
         ledger_sequence,
         idempotencyKey || null
       );
 
-    // Update FTS index
+    // Update FTS index (summary and intent remain in plaintext for search)
     this.db
       .prepare(
-        `INSERT INTO timeline_fts(rowid, event_id, summary, intent, tags, domain)
-        SELECT rowid, event_id, summary, intent, tags, domain
-        FROM timeline_events WHERE event_id = ?`
+        `INSERT INTO timeline_fts(event_id, summary, intent, tags, domain)
+        VALUES (?, ?, ?, ?, ?)`
       )
-      .run(event_id);
+      .run(event_id, event.summary, event.intent || "", tagsPlain, event.domain);
+
+    // Store blind index tokens for encrypted field search
+    const searchableText = [
+      event.summary,
+      event.intent || "",
+      ...(event.tags || []),
+    ].join(" ");
+    const tokens = this.getBlindTokens(searchableText, event.domain);
+    const insertToken = this.db.prepare(
+      "INSERT INTO blind_index (event_id, token, domain) VALUES (?, ?, ?)"
+    );
+    for (const token of tokens) {
+      insertToken.run(event_id, token, event.domain);
+    }
+
+    // Audit log
+    this.logAudit("append_event", event.domain, [event_id]);
 
     return { event_id, timestamp, ledger_sequence };
   }
@@ -432,7 +562,15 @@ export class Ledger {
     params.push(limit);
 
     const rows = this.db.prepare(query).all(...params) as any[];
-    return rows.map(rowToEvent);
+    const events = rows.map((r) => this.rowToEvent(r));
+    this.logAudit(
+      "get_timeline",
+      options?.domains,
+      events.map((e) => e.event_id),
+      undefined,
+      JSON.stringify(events).length
+    );
+    return events;
   }
 
   searchTimeline(
@@ -468,7 +606,7 @@ export class Ledger {
 
     try {
       const rows = this.db.prepare(sql).all(...params) as any[];
-      return rows.map(rowToEvent);
+      return rows.map((r) => this.rowToEvent(r));
     } catch {
       // Fallback to LIKE if FTS query fails (e.g., empty index)
       return this.searchTimelineFallback(query, options);
@@ -493,7 +631,7 @@ export class Ledger {
     params.push(limit);
 
     const rows = this.db.prepare(sql).all(...params) as any[];
-    return rows.map(rowToEvent);
+    return rows.map((r) => this.rowToEvent(r));
   }
 
   // --- Event Pruning & Compaction ---
@@ -513,10 +651,12 @@ export class Ledger {
     const cutoffIso = cutoff.toISOString();
 
     // Get events to prune (keep summary/intent/outcome for historical context)
+    // Find events with non-empty detail that are older than cutoff
+    // Note: encrypted detail won't equal '{}', so check for non-null and non-empty
     const oldEvents = this.db
       .prepare(
-        `SELECT event_id, rowid FROM timeline_events
-        WHERE timestamp < ? AND detail != '{}'`
+        `SELECT event_id FROM timeline_events
+        WHERE timestamp < ? AND detail IS NOT NULL AND detail != '{}' AND detail != ''`
       )
       .all(cutoffIso) as any[];
 
@@ -531,23 +671,10 @@ export class Ledger {
       WHERE event_id = ?`
     );
 
-    const deleteFts = this.db.prepare(
-      `DELETE FROM timeline_fts WHERE rowid = ?`
-    );
-
-    const reinsertFts = this.db.prepare(
-      `INSERT INTO timeline_fts(rowid, event_id, summary, intent, tags, domain)
-      SELECT rowid, event_id, summary, intent, tags, domain
-      FROM timeline_events WHERE event_id = ?`
-    );
-
     let compacted = 0;
     const transaction = this.db.transaction(() => {
       for (const event of oldEvents) {
         compact.run(event.event_id);
-        // Update FTS entry
-        deleteFts.run(event.rowid);
-        reinsertFts.run(event.event_id);
         compacted++;
       }
     });
@@ -565,18 +692,43 @@ export class Ledger {
     cutoff.setDate(cutoff.getDate() - daysOld);
     const cutoffIso = cutoff.toISOString();
 
-    // Delete from FTS first
-    this.db.exec(`
-      DELETE FROM timeline_fts WHERE event_id IN (
-        SELECT event_id FROM timeline_events WHERE timestamp < '${cutoffIso}'
-      )
-    `);
+    // Get event IDs to delete (for blind index cleanup)
+    const toDelete = this.db
+      .prepare("SELECT event_id FROM timeline_events WHERE timestamp < ?")
+      .all(cutoffIso) as any[];
+    const eventIds = toDelete.map((r: any) => r.event_id);
 
+    if (eventIds.length === 0) return 0;
+
+    const placeholders = eventIds.map(() => "?").join(",");
+
+    // Delete from FTS
+    this.db
+      .prepare(`DELETE FROM timeline_fts WHERE event_id IN (${placeholders})`)
+      .run(...eventIds);
+
+    // Delete from blind index
+    this.db
+      .prepare(`DELETE FROM blind_index WHERE event_id IN (${placeholders})`)
+      .run(...eventIds);
+
+    // Delete events (secure_delete pragma ensures zero-fill)
     const result = this.db
       .prepare("DELETE FROM timeline_events WHERE timestamp < ?")
       .run(cutoffIso);
 
+    this.logAudit("delete_old_events", undefined, eventIds);
     return result.changes;
+  }
+
+  /**
+   * Secure wipe: VACUUM after delete to reclaim and zero-fill pages.
+   * Call after deleteOldEvents() for forensic-grade deletion.
+   */
+  secureWipe(): void {
+    this.db.pragma("wal_checkpoint(TRUNCATE)");
+    this.db.exec("VACUUM");
+    this.logAudit("secure_wipe");
   }
 
   // --- Active Projects ---
@@ -635,7 +787,8 @@ export class Ledger {
     }
     const result: Record<string, Record<string, unknown>> = {};
     for (const row of rows) {
-      result[row.domain] = safeJsonParse(row.context, {});
+      const decrypted = this.decryptForDomain(row.context || "{}", row.domain);
+      result[row.domain] = safeJsonParse(decrypted, {});
     }
     return result;
   }
@@ -646,6 +799,7 @@ export class Ledger {
   ): void {
     const existing = this.getDomainContext([domain]);
     const merged = { ...(existing[domain] || {}), ...context };
+    const encrypted = this.encryptForDomain(JSON.stringify(merged), domain);
     this.db
       .prepare(
         `INSERT INTO domain_context (domain, context, updated_at)
@@ -654,7 +808,8 @@ export class Ledger {
           context = excluded.context,
           updated_at = excluded.updated_at`
       )
-      .run(domain, JSON.stringify(merged));
+      .run(domain, encrypted);
+    this.logAudit("update_domain_context", domain);
   }
 
   // --- Composite State ---
@@ -682,6 +837,13 @@ export class Ledger {
       }
     }
 
+    this.logAudit(
+      "get_state",
+      scopes,
+      undefined,
+      undefined,
+      JSON.stringify(state).length
+    );
     return state;
   }
 
@@ -693,6 +855,8 @@ export class Ledger {
     domains: string[];
     platforms: string[];
     db_size_bytes: number;
+    audit_log_entries: number;
+    encryption_enabled: boolean;
   } {
     const eventCount = this.db
       .prepare("SELECT COUNT(*) as count FROM timeline_events")
@@ -714,12 +878,18 @@ export class Ledger {
       )
       .get() as any;
 
+    const auditCount = this.db
+      .prepare("SELECT COUNT(*) as count FROM audit_log")
+      .get() as any;
+
     return {
       total_events: eventCount.count,
       total_projects: projectCount.count,
       domains: domains.map((d: any) => d.domain),
       platforms: platforms.map((p: any) => p.platform),
       db_size_bytes: dbSize?.size || 0,
+      audit_log_entries: auditCount.count,
+      encryption_enabled: true,
     };
   }
 
