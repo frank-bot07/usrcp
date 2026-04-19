@@ -63,12 +63,9 @@ function registerMcpServer(): void {
     }
   }
 
-  // Find the built index.js path
-  const serverPath = path.resolve(__dirname, "index.js");
-
   config["usrcp-local"] = {
-    command: "node",
-    args: [serverPath, "serve"],
+    command: "usrcp-local",
+    args: ["serve"],
   };
 
   fs.writeFileSync(mcpConfigPath, JSON.stringify(config, null, 2));

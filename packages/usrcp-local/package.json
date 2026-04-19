@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "description": "Local MCP server for USRCP — persistent AI memory on your machine",
   "main": "dist/index.js",
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts"
+  ],
   "bin": {
     "usrcp-local": "dist/index.js",
     "usrcp": "dist/index.js"

@@ -48,10 +48,17 @@ export interface ActiveProject {
   summary: string;
 }
 
+export interface DomainContext {
+  domain: string;
+  context: Record<string, unknown>;
+  updated_at: string;
+}
+
 export interface UserState {
   core_identity?: CoreIdentity;
   global_preferences?: GlobalPreferences;
   recent_timeline?: TimelineEvent[];
+  domain_context?: Record<string, Record<string, unknown>>;
   active_projects?: ActiveProject[];
 }
 
@@ -72,4 +79,5 @@ export interface AppendEventInput {
   tags?: string[];
   session_id?: string;
   parent_event_id?: string;
+  idempotency_key?: string;
 }

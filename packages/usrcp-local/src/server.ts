@@ -1,7 +1,13 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import * as crypto from "node:crypto";
 import { Ledger } from "./ledger.js";
 import { getIdentity } from "./crypto.js";
+import type { CoreIdentity, GlobalPreferences } from "./types.js";
+
+function formatUserId(rawId: string | undefined): string {
+  return `usrcp://local/${rawId || "anonymous"}`;
+}
 
 export function createServer(): McpServer {
   const ledger = new Ledger();
@@ -15,7 +21,7 @@ export function createServer(): McpServer {
   // --- Tool: usrcp_get_state ---
   server.tool(
     "usrcp_get_state",
-    "Query the user's identity, preferences, active projects, and recent interaction timeline from their USRCP State Ledger. Use this at the start of a session to understand who the user is and what they've been working on across all AI platforms.",
+    "Query the user's identity, preferences, active projects, domain context, and recent interaction timeline from their USRCP State Ledger. Use this at the start of a session to understand who the user is and what they've been working on across all AI platforms.",
     {
       scopes: z
         .array(
@@ -23,6 +29,7 @@ export function createServer(): McpServer {
             "core_identity",
             "global_preferences",
             "recent_timeline",
+            "domain_context",
             "active_projects",
           ])
         )
@@ -30,6 +37,7 @@ export function createServer(): McpServer {
           "core_identity",
           "global_preferences",
           "recent_timeline",
+          "domain_context",
           "active_projects",
         ])
         .describe("Which facets of user state to retrieve"),
@@ -40,23 +48,37 @@ export function createServer(): McpServer {
         .default(20)
         .optional()
         .describe("Number of recent timeline events to retrieve"),
+      timeline_since: z
+        .string()
+        .optional()
+        .describe(
+          "ISO 8601 timestamp — retrieve timeline events after this time"
+        ),
       timeline_domains: z
         .array(z.string())
         .optional()
-        .describe("Filter timeline to specific domains (e.g., ['coding', 'writing'])"),
+        .describe(
+          "Filter timeline to specific domains (e.g., ['coding', 'writing'])"
+        ),
     },
     async (params) => {
       const state = ledger.getState(params.scopes);
 
       if (
         params.scopes.includes("recent_timeline") &&
-        (params.timeline_last_n || params.timeline_domains)
+        (params.timeline_last_n ||
+          params.timeline_since ||
+          params.timeline_domains)
       ) {
         state.recent_timeline = ledger.getTimeline({
           last_n: params.timeline_last_n,
+          since: params.timeline_since,
           domains: params.timeline_domains,
         });
       }
+
+      const stateJson = JSON.stringify(state);
+      const etag = `W/"${crypto.createHash("md5").update(stateJson).digest("hex").slice(0, 8)}"`;
 
       return {
         content: [
@@ -65,8 +87,12 @@ export function createServer(): McpServer {
             text: JSON.stringify(
               {
                 usrcp_version: "0.1.0",
-                user_id: identity?.user_id || "local",
+                user_id: formatUserId(identity?.user_id),
                 resolved_at: new Date().toISOString(),
+                cache_hint: {
+                  ttl_seconds: 300,
+                  etag,
+                },
                 state,
               },
               null,
@@ -102,7 +128,9 @@ export function createServer(): McpServer {
       platform: z
         .string()
         .default("unknown")
-        .describe("Platform this event originated from (e.g., 'claude_code', 'cursor')"),
+        .describe(
+          "Platform this event originated from (e.g., 'claude_code', 'cursor')"
+        ),
       detail: z
         .record(z.string(), z.unknown())
         .optional()
@@ -128,11 +156,20 @@ export function createServer(): McpServer {
         .array(z.string())
         .optional()
         .describe("Freeform tags for filtering and search"),
-      session_id: z.string().optional().describe("Session identifier to group related events"),
+      session_id: z
+        .string()
+        .optional()
+        .describe("Session identifier to group related events"),
+      idempotency_key: z
+        .string()
+        .optional()
+        .describe(
+          "Client-generated key to prevent duplicate writes on retry"
+        ),
     },
     async (params) => {
-      const { platform, ...eventInput } = params;
-      const result = ledger.appendEvent(eventInput, platform);
+      const { platform, idempotency_key, ...eventInput } = params;
+      const result = ledger.appendEvent(eventInput, platform, idempotency_key);
 
       return {
         content: [
@@ -141,7 +178,7 @@ export function createServer(): McpServer {
             text: JSON.stringify(
               {
                 usrcp_version: "0.1.0",
-                status: "accepted",
+                status: result.duplicate ? "duplicate" : "accepted",
                 ...result,
               },
               null,
@@ -167,7 +204,12 @@ export function createServer(): McpServer {
         .array(
           z.object({
             domain: z.string(),
-            level: z.enum(["beginner", "intermediate", "advanced", "expert"]),
+            level: z.enum([
+              "beginner",
+              "intermediate",
+              "advanced",
+              "expert",
+            ]),
           })
         )
         .optional()
@@ -178,7 +220,16 @@ export function createServer(): McpServer {
         .describe("How the user prefers AI to communicate"),
     },
     async (params) => {
-      ledger.updateIdentity(params as any);
+      const update: Partial<CoreIdentity> = {};
+      if (params.display_name !== undefined)
+        update.display_name = params.display_name;
+      if (params.roles !== undefined) update.roles = params.roles;
+      if (params.expertise_domains !== undefined)
+        update.expertise_domains = params.expertise_domains;
+      if (params.communication_style !== undefined)
+        update.communication_style = params.communication_style;
+
+      ledger.updateIdentity(update);
       const updated = ledger.getIdentity();
 
       return {
@@ -201,8 +252,14 @@ export function createServer(): McpServer {
     "usrcp_update_preferences",
     "Update the user's global preferences in the USRCP State Ledger. These preferences apply across all AI platforms.",
     {
-      language: z.string().optional().describe("Preferred language code (e.g., 'en')"),
-      timezone: z.string().optional().describe("IANA timezone (e.g., 'America/Los_Angeles')"),
+      language: z
+        .string()
+        .optional()
+        .describe("Preferred language code (e.g., 'en')"),
+      timezone: z
+        .string()
+        .optional()
+        .describe("IANA timezone (e.g., 'America/Los_Angeles')"),
       output_format: z
         .enum(["markdown", "plain", "structured"])
         .optional()
@@ -217,7 +274,16 @@ export function createServer(): McpServer {
         .describe("Custom key-value preferences"),
     },
     async (params) => {
-      ledger.updatePreferences(params as any);
+      const update: Partial<GlobalPreferences> = {};
+      if (params.language !== undefined) update.language = params.language;
+      if (params.timezone !== undefined) update.timezone = params.timezone;
+      if (params.output_format !== undefined)
+        update.output_format = params.output_format;
+      if (params.verbosity !== undefined) update.verbosity = params.verbosity;
+      if (params.custom !== undefined)
+        update.custom = params.custom as Record<string, unknown>;
+
+      ledger.updatePreferences(update);
       const updated = ledger.getPreferences();
 
       return {
@@ -235,14 +301,64 @@ export function createServer(): McpServer {
     }
   );
 
+  // --- Tool: usrcp_update_domain_context ---
+  server.tool(
+    "usrcp_update_domain_context",
+    "Store or update domain-scoped context in the USRCP State Ledger. Use this to persist domain-specific knowledge that should be available to any agent working in that domain (e.g., coding preferences, writing style notes, research topics).",
+    {
+      domain: z
+        .string()
+        .describe(
+          "Domain name (e.g., 'coding', 'writing', 'research', 'design')"
+        ),
+      context: z
+        .record(z.string(), z.unknown())
+        .describe(
+          "Key-value context to merge into the domain (e.g., { preferred_framework: 'nextjs', css: 'tailwind' })"
+        ),
+    },
+    async (params) => {
+      ledger.upsertDomainContext(
+        params.domain,
+        params.context as Record<string, unknown>
+      );
+      const updated = ledger.getDomainContext([params.domain]);
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(
+              {
+                status: "updated",
+                domain: params.domain,
+                context: updated[params.domain],
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+  );
+
   // --- Tool: usrcp_search_timeline ---
   server.tool(
     "usrcp_search_timeline",
     "Search the user's interaction timeline by keyword. Useful for finding past interactions, decisions, or context about specific topics.",
     {
-      query: z.string().describe("Search query — matches against summary, intent, and tags"),
+      query: z
+        .string()
+        .describe("Search query — matches against summary, intent, and tags"),
       domain: z.string().optional().describe("Filter to a specific domain"),
-      limit: z.number().min(1).max(100).default(20).optional().describe("Max results"),
+      limit: z
+        .number()
+        .min(1)
+        .max(100)
+        .default(20)
+        .optional()
+        .describe("Max results"),
     },
     async (params) => {
       const results = ledger.searchTimeline(params.query, {
@@ -274,11 +390,22 @@ export function createServer(): McpServer {
     "usrcp_manage_project",
     "Create or update a project in the user's USRCP State Ledger. Projects track what the user is actively working on across platforms.",
     {
-      project_id: z.string().describe("Unique project identifier (e.g., 'usrcp', 'blog-redesign')"),
+      project_id: z
+        .string()
+        .describe(
+          "Unique project identifier (e.g., 'usrcp', 'blog-redesign')"
+        ),
       name: z.string().describe("Human-readable project name"),
-      domain: z.string().describe("Project domain (coding, writing, research, etc.)"),
-      status: z.enum(["active", "paused", "completed"]).default("active").describe("Project status"),
-      summary: z.string().describe("Brief project description or current state"),
+      domain: z
+        .string()
+        .describe("Project domain (coding, writing, research, etc.)"),
+      status: z
+        .enum(["active", "paused", "completed"])
+        .default("active")
+        .describe("Project status"),
+      summary: z
+        .string()
+        .describe("Brief project description or current state"),
     },
     async (params) => {
       ledger.upsertProject({
@@ -317,7 +444,7 @@ export function createServer(): McpServer {
             text: JSON.stringify(
               {
                 usrcp_version: "0.1.0",
-                user_id: identity?.user_id || "local",
+                user_id: formatUserId(identity?.user_id),
                 ledger: "local (SQLite)",
                 stats,
                 active_projects: projects.filter(

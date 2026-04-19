@@ -79,6 +79,12 @@ export class Ledger {
         summary TEXT NOT NULL DEFAULT ''
       );
 
+      CREATE TABLE IF NOT EXISTS domain_context (
+        domain TEXT PRIMARY KEY,
+        context TEXT NOT NULL DEFAULT '{}',
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
       CREATE INDEX IF NOT EXISTS idx_events_timestamp ON timeline_events(timestamp DESC);
       CREATE INDEX IF NOT EXISTS idx_events_domain ON timeline_events(domain);
       CREATE INDEX IF NOT EXISTS idx_events_platform ON timeline_events(platform);
@@ -89,6 +95,18 @@ export class Ledger {
       INSERT OR IGNORE INTO core_identity (id) VALUES (1);
       INSERT OR IGNORE INTO global_preferences (id) VALUES (1);
     `);
+
+    // v0.1.1 migration: add idempotency_key column
+    try {
+      this.db.exec(
+        "ALTER TABLE timeline_events ADD COLUMN idempotency_key TEXT"
+      );
+    } catch {
+      // Column already exists — safe to ignore
+    }
+    this.db.exec(
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_events_idempotency ON timeline_events(idempotency_key) WHERE idempotency_key IS NOT NULL"
+    );
   }
 
   // --- Core Identity ---
@@ -171,8 +189,31 @@ export class Ledger {
 
   appendEvent(
     event: AppendEventInput,
-    platform: string
-  ): { event_id: string; timestamp: string; ledger_sequence: number } {
+    platform: string,
+    idempotencyKey?: string
+  ): {
+    event_id: string;
+    timestamp: string;
+    ledger_sequence: number;
+    duplicate?: boolean;
+  } {
+    // Check idempotency key for duplicate prevention
+    if (idempotencyKey) {
+      const existing = this.db
+        .prepare(
+          "SELECT event_id, timestamp, ledger_sequence FROM timeline_events WHERE idempotency_key = ?"
+        )
+        .get(idempotencyKey) as any;
+      if (existing) {
+        return {
+          event_id: existing.event_id,
+          timestamp: existing.timestamp,
+          ledger_sequence: existing.ledger_sequence,
+          duplicate: true,
+        };
+      }
+    }
+
     const event_id = generateULID();
     const timestamp = new Date().toISOString();
 
@@ -186,8 +227,8 @@ export class Ledger {
     this.db
       .prepare(
         `INSERT INTO timeline_events
-          (event_id, timestamp, platform, domain, summary, intent, outcome, detail, artifacts, tags, session_id, parent_event_id, ledger_sequence)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          (event_id, timestamp, platform, domain, summary, intent, outcome, detail, artifacts, tags, session_id, parent_event_id, ledger_sequence, idempotency_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         event_id,
@@ -202,7 +243,8 @@ export class Ledger {
         JSON.stringify(event.tags || []),
         event.session_id || null,
         event.parent_event_id || null,
-        ledger_sequence
+        ledger_sequence,
+        idempotencyKey || null
       );
 
     return { event_id, timestamp, ledger_sequence };
@@ -327,6 +369,46 @@ export class Ledger {
       );
   }
 
+  // --- Domain Context ---
+
+  getDomainContext(
+    domains?: string[]
+  ): Record<string, Record<string, unknown>> {
+    let rows: any[];
+    if (domains && domains.length > 0) {
+      const placeholders = domains.map(() => "?").join(", ");
+      rows = this.db
+        .prepare(
+          `SELECT * FROM domain_context WHERE domain IN (${placeholders})`
+        )
+        .all(...domains) as any[];
+    } else {
+      rows = this.db.prepare("SELECT * FROM domain_context").all() as any[];
+    }
+    const result: Record<string, Record<string, unknown>> = {};
+    for (const row of rows) {
+      result[row.domain] = JSON.parse(row.context);
+    }
+    return result;
+  }
+
+  upsertDomainContext(
+    domain: string,
+    context: Record<string, unknown>
+  ): void {
+    const existing = this.getDomainContext([domain]);
+    const merged = { ...(existing[domain] || {}), ...context };
+    this.db
+      .prepare(
+        `INSERT INTO domain_context (domain, context, updated_at)
+        VALUES (?, ?, datetime('now'))
+        ON CONFLICT(domain) DO UPDATE SET
+          context = excluded.context,
+          updated_at = excluded.updated_at`
+      )
+      .run(domain, JSON.stringify(merged));
+  }
+
   // --- Composite State ---
 
   getState(scopes: Scope[]): UserState {
@@ -342,6 +424,9 @@ export class Ledger {
           break;
         case "recent_timeline":
           state.recent_timeline = this.getTimeline({ last_n: 50 });
+          break;
+        case "domain_context":
+          state.domain_context = this.getDomainContext();
           break;
         case "active_projects":
           state.active_projects = this.getProjects("active");
