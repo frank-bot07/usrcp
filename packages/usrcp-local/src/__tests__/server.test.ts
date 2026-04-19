@@ -72,9 +72,6 @@ describe("usrcp_get_state", () => {
     expect(result.usrcp_version).toBe("0.1.0");
     expect(result.user_id).toMatch(/^usrcp:\/\/local\//);
     expect(result.resolved_at).toBeTruthy();
-    expect(result.cache_hint).toBeDefined();
-    expect(result.cache_hint.ttl_seconds).toBe(300);
-    expect(result.cache_hint.etag).toMatch(/^W\//);
     expect(result.state.core_identity).toBeDefined();
     expect(result.state.global_preferences).toBeDefined();
     expect(result.state.recent_timeline).toBeDefined();

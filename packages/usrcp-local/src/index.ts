@@ -64,9 +64,11 @@ function registerMcpServer(): void {
     }
   }
 
+  // Use absolute path to the built server — works regardless of PATH
+  const serverPath = path.resolve(__dirname, "index.js");
   config["usrcp-local"] = {
-    command: "usrcp-local",
-    args: ["serve"],
+    command: "node",
+    args: [serverPath, "serve"],
   };
 
   fs.writeFileSync(mcpConfigPath, JSON.stringify(config, null, 2));

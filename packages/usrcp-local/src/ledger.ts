@@ -235,47 +235,46 @@ export class Ledger {
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_events_idempotency ON timeline_events(idempotency_key) WHERE idempotency_key IS NOT NULL"
     );
 
-    // v0.1.2 migration: FTS5 full-text search index (standalone, no content sync)
-    // Drop the old content-synced FTS table if it exists and recreate as standalone
-    try {
-      const ftsInfo = this.db
-        .prepare("SELECT sql FROM sqlite_master WHERE name = 'timeline_fts'")
-        .get() as any;
-      if (ftsInfo && ftsInfo.sql && ftsInfo.sql.includes("content=")) {
-        this.db.exec("DROP TABLE IF EXISTS timeline_fts");
-      }
-    } catch {
-      // Table doesn't exist yet
-    }
-    this.db.exec(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS timeline_fts USING fts5(
-        event_id UNINDEXED,
-        summary,
-        intent,
-        tags,
-        domain UNINDEXED
-      );
-    `);
+    // v0.1.3: Drop FTS5 table — replaced by blind index to prevent plaintext leakage
+    this.db.exec("DROP TABLE IF EXISTS timeline_fts");
 
-    // Rebuild FTS index if empty but events exist
-    const ftsCount = this.db
-      .prepare("SELECT COUNT(*) as c FROM timeline_fts")
+    // Rebuild blind index if empty but events exist
+    const blindCount = this.db
+      .prepare("SELECT COUNT(*) as c FROM blind_index")
       .get() as any;
     const eventCount = this.db
       .prepare("SELECT COUNT(*) as c FROM timeline_events")
       .get() as any;
-    if (ftsCount.c === 0 && eventCount.c > 0) {
-      this.rebuildFtsIndex();
+    if (blindCount.c === 0 && eventCount.c > 0) {
+      this.rebuildBlindIndex();
     }
   }
 
-  private rebuildFtsIndex(): void {
-    this.db.exec("DELETE FROM timeline_fts");
-    this.db.exec(`
-      INSERT INTO timeline_fts(event_id, summary, intent, tags, domain)
-      SELECT event_id, summary, COALESCE(intent, ''), COALESCE(tags, ''), domain
-      FROM timeline_events
-    `);
+  private rebuildBlindIndex(): void {
+    this.db.exec("DELETE FROM blind_index");
+    const events = this.db
+      .prepare("SELECT event_id, summary, intent, tags, domain FROM timeline_events")
+      .all() as any[];
+    const insertToken = this.db.prepare(
+      "INSERT INTO blind_index (event_id, token, domain) VALUES (?, ?, ?)"
+    );
+    const transaction = this.db.transaction(() => {
+      for (const event of events) {
+        // tags may be encrypted — decrypt for tokenization
+        const tagsDecrypted = this.decryptForDomain(event.tags || "[]", event.domain);
+        const tagsArray = safeJsonParse<string[]>(tagsDecrypted, []);
+        const searchableText = [
+          event.summary || "",
+          event.intent || "",
+          ...tagsArray,
+        ].join(" ");
+        const tokens = this.getBlindTokens(searchableText, event.domain);
+        for (const token of tokens) {
+          insertToken.run(event.event_id, token, event.domain);
+        }
+      }
+    });
+    transaction();
   }
 
   private rowToEvent(row: any): TimelineEvent {
@@ -297,6 +296,16 @@ export class Ledger {
 
   // --- Audit Log ---
 
+  private currentAgentId = "local";
+
+  /**
+   * Set the agent identity for audit logging.
+   * Called by the MCP server when it knows who's calling.
+   */
+  setAgentId(agentId: string): void {
+    this.currentAgentId = agentId;
+  }
+
   private logAudit(
     operation: string,
     scopesOrDomain?: string | string[],
@@ -313,7 +322,7 @@ export class Ledger {
         VALUES (?, ?, ?, ?, ?, ?)`
       )
       .run(
-        "local",
+        this.currentAgentId,
         operation,
         scopes,
         eventIds ? JSON.stringify(eventIds) : null,
@@ -505,15 +514,7 @@ export class Ledger {
         idempotencyKey || null
       );
 
-    // Update FTS index (summary and intent remain in plaintext for search)
-    this.db
-      .prepare(
-        `INSERT INTO timeline_fts(event_id, summary, intent, tags, domain)
-        VALUES (?, ?, ?, ?, ?)`
-      )
-      .run(event_id, event.summary, event.intent || "", tagsPlain, event.domain);
-
-    // Store blind index tokens for encrypted field search
+    // Store blind index tokens for search (no plaintext leakage)
     const searchableText = [
       event.summary,
       event.intent || "",
@@ -579,59 +580,54 @@ export class Ledger {
   ): TimelineEvent[] {
     const limit = options?.limit || 20;
 
-    // Use FTS5 for ranked full-text search
-    let sql = `
-      SELECT e.*, rank
-      FROM timeline_fts fts
-      JOIN timeline_events e ON fts.event_id = e.event_id
-      WHERE timeline_fts MATCH ?`;
-    const ftsQuery = query
-      .replace(/[^\w\s]/g, "") // Strip special FTS5 chars to prevent syntax errors
-      .trim();
+    // Determine which domains to search
+    const domains = options?.domain ? [options.domain] : this.getAllDomains();
 
-    if (!ftsQuery) {
-      return []; // Empty query after sanitization
+    if (domains.length === 0) return [];
+
+    // Generate blind tokens for the query across all target domains
+    // and collect matching event IDs
+    const matchingEventIds = new Set<string>();
+
+    for (const domain of domains) {
+      const searchTokens = this.getSearchTokens(query, domain);
+      if (searchTokens.length === 0) continue;
+
+      // Find events that match ANY of the search tokens in this domain
+      for (const token of searchTokens) {
+        const matches = this.db
+          .prepare(
+            "SELECT DISTINCT event_id FROM blind_index WHERE token = ? AND domain = ?"
+          )
+          .all(token, domain) as any[];
+        for (const m of matches) {
+          matchingEventIds.add(m.event_id);
+        }
+      }
     }
 
-    // Add * for prefix matching: "auth" matches "authentication"
-    const params: any[] = [ftsQuery + "*"];
+    if (matchingEventIds.size === 0) return [];
 
-    if (options?.domain) {
-      sql += " AND e.domain = ?";
-      params.push(options.domain);
-    }
+    // Fetch the actual events
+    const ids = [...matchingEventIds];
+    const placeholders = ids.map(() => "?").join(",");
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM timeline_events
+        WHERE event_id IN (${placeholders})
+        ORDER BY ledger_sequence DESC
+        LIMIT ?`
+      )
+      .all(...ids, limit) as any[];
 
-    sql += " ORDER BY rank LIMIT ?";
-    params.push(limit);
-
-    try {
-      const rows = this.db.prepare(sql).all(...params) as any[];
-      return rows.map((r) => this.rowToEvent(r));
-    } catch {
-      // Fallback to LIKE if FTS query fails (e.g., empty index)
-      return this.searchTimelineFallback(query, options);
-    }
+    return rows.map((r) => this.rowToEvent(r));
   }
 
-  private searchTimelineFallback(
-    query: string,
-    options?: { limit?: number; domain?: string }
-  ): TimelineEvent[] {
-    const limit = options?.limit || 20;
-    let sql =
-      "SELECT * FROM timeline_events WHERE (summary LIKE ? OR intent LIKE ? OR tags LIKE ?)";
-    const params: any[] = [`%${query}%`, `%${query}%`, `%${query}%`];
-
-    if (options?.domain) {
-      sql += " AND domain = ?";
-      params.push(options.domain);
-    }
-
-    sql += " ORDER BY ledger_sequence DESC LIMIT ?";
-    params.push(limit);
-
-    const rows = this.db.prepare(sql).all(...params) as any[];
-    return rows.map((r) => this.rowToEvent(r));
+  private getAllDomains(): string[] {
+    const rows = this.db
+      .prepare("SELECT DISTINCT domain FROM timeline_events")
+      .all() as any[];
+    return rows.map((r: any) => r.domain);
   }
 
   // --- Event Pruning & Compaction ---
@@ -665,17 +661,26 @@ export class Ledger {
     }
 
     // Strip detail, artifacts from old events (keep summary)
-    const compact = this.db.prepare(
+    // Write encrypted empty values to maintain encryption-at-rest consistency
+    const compactStmt = this.db.prepare(
       `UPDATE timeline_events
-      SET detail = '{}', artifacts = '[]'
+      SET detail = ?, artifacts = ?
       WHERE event_id = ?`
     );
 
     let compacted = 0;
     const transaction = this.db.transaction(() => {
       for (const event of oldEvents) {
-        compact.run(event.event_id);
-        compacted++;
+        // Need the domain to encrypt with the correct key
+        const row = this.db
+          .prepare("SELECT domain FROM timeline_events WHERE event_id = ?")
+          .get(event.event_id) as any;
+        if (row) {
+          const emptyDetail = this.encryptForDomain("{}", row.domain);
+          const emptyArtifacts = this.encryptForDomain("[]", row.domain);
+          compactStmt.run(emptyDetail, emptyArtifacts, event.event_id);
+          compacted++;
+        }
       }
     });
     transaction();
@@ -701,11 +706,6 @@ export class Ledger {
     if (eventIds.length === 0) return 0;
 
     const placeholders = eventIds.map(() => "?").join(",");
-
-    // Delete from FTS
-    this.db
-      .prepare(`DELETE FROM timeline_fts WHERE event_id IN (${placeholders})`)
-      .run(...eventIds);
 
     // Delete from blind index
     this.db

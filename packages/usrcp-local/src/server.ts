@@ -1,6 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import * as crypto from "node:crypto";
 import { Ledger } from "./ledger.js";
 import { getIdentity } from "./crypto.js";
 import type { CoreIdentity, GlobalPreferences } from "./types.js";
@@ -86,7 +85,11 @@ export function createServer(): { server: McpServer; shutdown: () => void } {
           "Filter timeline to specific domains (e.g., ['coding', 'writing'])"
         ),
     },
-    async (params) => {
+    async (params, extra) => {
+      // Set agent identity from MCP transport metadata if available
+      const agentId = (extra as any)?.agentId || (extra as any)?._meta?.agentId || "mcp-client";
+      ledger.setAgentId(agentId);
+
       const state = ledger.getState(params.scopes);
 
       if (
@@ -102,9 +105,6 @@ export function createServer(): { server: McpServer; shutdown: () => void } {
         });
       }
 
-      const stateJson = JSON.stringify(state);
-      const etag = `W/"${crypto.createHash("md5").update(stateJson).digest("hex").slice(0, 8)}"`;
-
       return {
         content: [
           {
@@ -114,10 +114,6 @@ export function createServer(): { server: McpServer; shutdown: () => void } {
                 usrcp_version: "0.1.0",
                 user_id: formatUserId(identity?.user_id),
                 resolved_at: new Date().toISOString(),
-                cache_hint: {
-                  ttl_seconds: 300,
-                  etag,
-                },
                 state,
               },
               null,
@@ -199,6 +195,7 @@ export function createServer(): { server: McpServer; shutdown: () => void } {
     },
     async (params) => {
       const { platform, idempotency_key, ...eventInput } = params;
+      ledger.setAgentId(platform);
       const result = ledger.appendEvent(eventInput, platform, idempotency_key);
 
       return {
