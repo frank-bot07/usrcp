@@ -23,6 +23,7 @@ import {
   generateBlindTokens,
   generateSearchTokens,
   rotateMasterKey,
+  zeroBuffer,
 } from "./encryption.js";
 
 function getDefaultDbPath(): string {
@@ -157,6 +158,45 @@ export class Ledger {
     return generateSearchTokens(query, key);
   }
 
+  /**
+   * Generate a deterministic pseudonym for a domain name.
+   * HMAC ensures same domain always maps to same pseudonym,
+   * but the real domain name is not exposed in the database.
+   */
+  private domainPseudonym(domain: string): string {
+    const hmac = crypto.createHmac("sha256", this.masterKey);
+    hmac.update(`usrcp-domain-pseudo:${domain}`);
+    return "d_" + hmac.digest("hex").slice(0, 12);
+  }
+
+  /**
+   * Resolve a domain pseudonym back to the real domain name.
+   * Uses a lookup table stored encrypted in the database.
+   */
+  private resolveDomain(pseudonym: string): string {
+    const row = this.db
+      .prepare("SELECT encrypted_name FROM domain_map WHERE pseudonym = ?")
+      .get(pseudonym) as any;
+    if (!row) return pseudonym; // Fallback
+    return this.decryptGlobal(row.encrypted_name) || pseudonym;
+  }
+
+  /**
+   * Ensure a domain mapping exists.
+   */
+  private ensureDomainMapping(domain: string): string {
+    const pseudo = this.domainPseudonym(domain);
+    const existing = this.db
+      .prepare("SELECT pseudonym FROM domain_map WHERE pseudonym = ?")
+      .get(pseudo);
+    if (!existing) {
+      this.db
+        .prepare("INSERT OR IGNORE INTO domain_map (pseudonym, encrypted_name) VALUES (?, ?)")
+        .run(pseudo, this.encryptGlobal(domain));
+    }
+    return pseudo;
+  }
+
   private migrate(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS core_identity (
@@ -213,10 +253,15 @@ export class Ledger {
       CREATE INDEX IF NOT EXISTS idx_events_domain ON timeline_events(domain);
       CREATE INDEX IF NOT EXISTS idx_projects_status ON active_projects(status);
 
+      CREATE TABLE IF NOT EXISTS domain_map (
+        pseudonym TEXT PRIMARY KEY,
+        encrypted_name TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS audit_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         timestamp TEXT NOT NULL DEFAULT (datetime('now')),
-        agent_id TEXT NOT NULL DEFAULT 'local',
+        agent_id TEXT NOT NULL,
         operation TEXT NOT NULL,
         scopes_accessed TEXT,
         event_ids TEXT,
@@ -276,15 +321,15 @@ export class Ledger {
     );
     const transaction = this.db.transaction(() => {
       for (const event of events) {
-        // All fields may be encrypted — decrypt before tokenizing
-        const summary = this.decryptForDomain(event.summary || "", event.domain);
-        const intent = this.decryptForDomain(event.intent || "", event.domain);
-        const tagsDecrypted = this.decryptForDomain(event.tags || "[]", event.domain);
+        const realDomain = this.resolveDomain(event.domain);
+        const summary = this.decryptForDomain(event.summary || "", realDomain);
+        const intent = this.decryptForDomain(event.intent || "", realDomain);
+        const tagsDecrypted = this.decryptForDomain(event.tags || "[]", realDomain);
         const tagsArray = safeJsonParse<string[]>(tagsDecrypted, []);
         const searchableText = [summary, intent, ...tagsArray].join(" ");
-        const tokens = this.getBlindTokens(searchableText, event.domain);
+        const tokens = this.getBlindTokens(searchableText, realDomain);
         for (const token of tokens) {
-          insertToken.run(event.event_id, token, event.domain);
+          insertToken.run(event.event_id, token, event.domain); // Store with pseudonym
         }
       }
     });
@@ -292,7 +337,8 @@ export class Ledger {
   }
 
   private rowToEvent(row: any): TimelineEvent {
-    const domain = row.domain;
+    const domainPseudo = row.domain;
+    const domain = this.resolveDomain(domainPseudo);
     return {
       event_id: row.event_id,
       timestamp: row.timestamp,
@@ -331,25 +377,40 @@ export class Ledger {
     const scopes = Array.isArray(scopesOrDomain)
       ? scopesOrDomain.join(",")
       : scopesOrDomain || null;
+    // Encrypt audit fields — audit log should not be readable without the key
     this.db
       .prepare(
         `INSERT INTO audit_log (agent_id, operation, scopes_accessed, event_ids, detail, response_size_bytes)
         VALUES (?, ?, ?, ?, ?, ?)`
       )
       .run(
-        this.currentAgentId,
-        operation,
-        scopes,
-        eventIds ? JSON.stringify(eventIds) : null,
-        detail || null,
+        this.encryptGlobal(this.currentAgentId),
+        this.encryptGlobal(operation),
+        scopes ? this.encryptGlobal(scopes) : null,
+        eventIds ? this.encryptGlobal(JSON.stringify(eventIds)) : null,
+        detail ? this.encryptGlobal(detail) : null,
         responseSize || 0
       );
   }
 
   getAuditLog(limit: number = 100): any[] {
-    return this.db
+    const rows = this.db
       .prepare("SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT ?")
-      .all(limit);
+      .all(limit) as any[];
+    return rows.map((row) => ({
+      id: row.id,
+      timestamp: row.timestamp,
+      agent_id: this.decryptGlobal(row.agent_id),
+      operation: this.decryptGlobal(row.operation),
+      scopes_accessed: row.scopes_accessed
+        ? this.decryptGlobal(row.scopes_accessed)
+        : null,
+      event_ids: row.event_ids
+        ? this.decryptGlobal(row.event_ids)
+        : null,
+      detail: row.detail ? this.decryptGlobal(row.detail) : null,
+      response_size_bytes: row.response_size_bytes,
+    }));
   }
 
   // --- Core Identity ---
@@ -489,6 +550,7 @@ export class Ledger {
 
     const event_id = generateULID();
     const timestamp = new Date().toISOString();
+    const domainPseudo = this.ensureDomainMapping(event.domain);
 
     const maxSeq = this.db
       .prepare(
@@ -497,7 +559,7 @@ export class Ledger {
       .get() as any;
     const ledger_sequence = maxSeq.max_seq + 1;
 
-    // Encrypt sensitive fields with domain-scoped key
+    // Encrypt ALL fields with domain-scoped key
     const detailPlain = JSON.stringify(event.detail || {});
     const artifactsPlain = JSON.stringify(event.artifacts || []);
     const tagsPlain = JSON.stringify(event.tags || []);
@@ -505,8 +567,6 @@ export class Ledger {
     const detailEncrypted = this.encryptForDomain(detailPlain, event.domain);
     const artifactsEncrypted = this.encryptForDomain(artifactsPlain, event.domain);
     const tagsEncrypted = this.encryptForDomain(tagsPlain, event.domain);
-
-    // Encrypt ALL human-readable fields — nothing plaintext except event_id, timestamp, domain, ledger_sequence
     const summaryEncrypted = this.encryptForDomain(event.summary, event.domain);
     const intentEncrypted = event.intent
       ? this.encryptForDomain(event.intent, event.domain)
@@ -532,7 +592,7 @@ export class Ledger {
         event_id,
         timestamp,
         platformEncrypted,
-        event.domain,
+        domainPseudo,
         summaryEncrypted,
         intentEncrypted,
         outcomeEncrypted,
@@ -556,11 +616,11 @@ export class Ledger {
       "INSERT INTO blind_index (event_id, token, domain) VALUES (?, ?, ?)"
     );
     for (const token of tokens) {
-      insertToken.run(event_id, token, event.domain);
+      insertToken.run(event_id, token, domainPseudo);
     }
 
     // Audit log
-    this.logAudit("append_event", event.domain, [event_id]);
+    this.logAudit("append_event", domainPseudo, [event_id]);
 
     return { event_id, timestamp, ledger_sequence };
   }
@@ -581,9 +641,10 @@ export class Ledger {
     }
 
     if (options?.domains && options.domains.length > 0) {
-      const placeholders = options.domains.map(() => "?").join(", ");
+      const pseudonyms = options.domains.map((d) => this.domainPseudonym(d));
+      const placeholders = pseudonyms.map(() => "?").join(", ");
       conditions.push(`domain IN (${placeholders})`);
-      params.push(...options.domains);
+      params.push(...pseudonyms);
     }
 
     if (conditions.length > 0) {
@@ -611,26 +672,26 @@ export class Ledger {
   ): TimelineEvent[] {
     const limit = options?.limit || 20;
 
-    // Determine which domains to search
-    const domains = options?.domain ? [options.domain] : this.getAllDomains();
+    // Determine which domains to search (using real domain names for key derivation)
+    const realDomains = options?.domain
+      ? [options.domain]
+      : this.getAllRealDomains();
 
-    if (domains.length === 0) return [];
+    if (realDomains.length === 0) return [];
 
-    // Generate blind tokens for the query across all target domains
-    // and collect matching event IDs
     const matchingEventIds = new Set<string>();
 
-    for (const domain of domains) {
+    for (const domain of realDomains) {
+      const pseudo = this.domainPseudonym(domain);
       const searchTokens = this.getSearchTokens(query, domain);
       if (searchTokens.length === 0) continue;
 
-      // Find events that match ANY of the search tokens in this domain
       for (const token of searchTokens) {
         const matches = this.db
           .prepare(
             "SELECT DISTINCT event_id FROM blind_index WHERE token = ? AND domain = ?"
           )
-          .all(token, domain) as any[];
+          .all(token, pseudo) as any[];
         for (const m of matches) {
           matchingEventIds.add(m.event_id);
         }
@@ -654,11 +715,11 @@ export class Ledger {
     return rows.map((r) => this.rowToEvent(r));
   }
 
-  private getAllDomains(): string[] {
+  private getAllRealDomains(): string[] {
     const rows = this.db
-      .prepare("SELECT DISTINCT domain FROM timeline_events")
+      .prepare("SELECT pseudonym, encrypted_name FROM domain_map")
       .all() as any[];
-    return rows.map((r: any) => r.domain);
+    return rows.map((r: any) => this.decryptGlobal(r.encrypted_name)).filter(Boolean);
   }
 
   // --- Event Pruning & Compaction ---
@@ -707,8 +768,9 @@ export class Ledger {
           .prepare("SELECT domain FROM timeline_events WHERE event_id = ?")
           .get(event.event_id) as any;
         if (row) {
-          const emptyDetail = this.encryptForDomain("{}", row.domain);
-          const emptyArtifacts = this.encryptForDomain("[]", row.domain);
+          const realDomain = this.resolveDomain(row.domain);
+          const emptyDetail = this.encryptForDomain("{}", realDomain);
+          const emptyArtifacts = this.encryptForDomain("[]", realDomain);
           compactStmt.run(emptyDetail, emptyArtifacts, event.event_id);
           compacted++;
         }
@@ -807,19 +869,21 @@ export class Ledger {
   ): Record<string, Record<string, unknown>> {
     let rows: any[];
     if (domains && domains.length > 0) {
-      const placeholders = domains.map(() => "?").join(", ");
+      const pseudonyms = domains.map((d) => this.domainPseudonym(d));
+      const placeholders = pseudonyms.map(() => "?").join(", ");
       rows = this.db
         .prepare(
           `SELECT * FROM domain_context WHERE domain IN (${placeholders})`
         )
-        .all(...domains) as any[];
+        .all(...pseudonyms) as any[];
     } else {
       rows = this.db.prepare("SELECT * FROM domain_context").all() as any[];
     }
     const result: Record<string, Record<string, unknown>> = {};
     for (const row of rows) {
-      const decrypted = this.decryptForDomain(row.context || "{}", row.domain);
-      result[row.domain] = safeJsonParse(decrypted, {});
+      const realDomain = this.resolveDomain(row.domain);
+      const decrypted = this.decryptForDomain(row.context || "{}", realDomain);
+      result[realDomain] = safeJsonParse(decrypted, {});
     }
     return result;
   }
@@ -828,6 +892,7 @@ export class Ledger {
     domain: string,
     context: Record<string, unknown>
   ): void {
+    const pseudo = this.ensureDomainMapping(domain);
     const existing = this.getDomainContext([domain]);
     const merged = { ...(existing[domain] || {}), ...context };
     const encrypted = this.encryptForDomain(JSON.stringify(merged), domain);
@@ -839,8 +904,8 @@ export class Ledger {
           context = excluded.context,
           updated_at = excluded.updated_at`
       )
-      .run(domain, encrypted);
-    this.logAudit("update_domain_context", domain);
+      .run(pseudo, encrypted);
+    this.logAudit("update_domain_context", pseudo);
   }
 
   // --- Composite State ---
@@ -895,16 +960,17 @@ export class Ledger {
     const projectCount = this.db
       .prepare("SELECT COUNT(*) as count FROM active_projects")
       .get() as any;
-    const domains = this.db
+    const domainPseudos = this.db
       .prepare("SELECT DISTINCT domain FROM timeline_events")
       .all() as any[];
-    // Platforms are encrypted — decrypt to get distinct values
+    // Platforms are encrypted — decrypt using resolved domain names
     const allPlatforms = this.db
       .prepare("SELECT DISTINCT platform, domain FROM timeline_events")
       .all() as any[];
     const platformSet = new Set<string>();
     for (const row of allPlatforms) {
-      const decrypted = this.decryptForDomain(row.platform || "", row.domain);
+      const realDomain = this.resolveDomain(row.domain);
+      const decrypted = this.decryptForDomain(row.platform || "", realDomain);
       if (decrypted) platformSet.add(decrypted);
     }
 
@@ -922,7 +988,7 @@ export class Ledger {
     return {
       total_events: eventCount.count,
       total_projects: projectCount.count,
-      domains: domains.map((d: any) => d.domain),
+      domains: domainPseudos.map((d: any) => this.resolveDomain(d.domain)),
       platforms: [...platformSet],
       db_size_bytes: dbSize?.size || 0,
       audit_log_entries: auditCount.count,
@@ -937,7 +1003,7 @@ export class Ledger {
    * This is an atomic operation — either everything is re-encrypted or nothing is.
    */
   rotateKey(passphrase?: string): { version: number; reencrypted: number } {
-    const { oldKey, newKey, version } = rotateMasterKey(passphrase);
+    const { oldKey, newKey, version } = rotateMasterKey(this.masterKey, passphrase);
     let reencrypted = 0;
 
     const transaction = this.db.transaction(() => {
@@ -1041,5 +1107,7 @@ export class Ledger {
       // Best-effort checkpoint on close
     }
     this.db.close();
+    // Zero the master key in memory — prevent heap dump exposure
+    zeroBuffer(this.masterKey);
   }
 }

@@ -128,10 +128,13 @@ describe("Blind index tokens", () => {
     tokens.forEach((t) => expect(t).toMatch(/^[0-9a-f]{8}$/));
   });
 
-  it("generates same tokens for same words", () => {
+  it("generates deterministic real tokens (noise differs)", () => {
     const t1 = generateBlindTokens("authentication", key);
     const t2 = generateBlindTokens("authentication", key);
-    expect(t1).toEqual(t2);
+    // Noise tokens are random, but real tokens should overlap
+    const overlap = t1.filter((t) => t2.includes(t));
+    // At least the real tokens (word + n-grams) should be consistent
+    expect(overlap.length).toBeGreaterThan(5);
   });
 
   it("search tokens match stored tokens", () => {
@@ -160,8 +163,9 @@ describe("Blind index tokens", () => {
 
   it("skips single-character words", () => {
     const tokens = generateBlindTokens("a b cd ef", key);
-    // "a" and "b" should be skipped
-    expect(tokens.length).toBe(2);
+    // "a" and "b" should be skipped, "cd" and "ef" tokenized + noise
+    // 2 word tokens + 3 noise tokens = 5
+    expect(tokens.length).toBe(5);
   });
 });
 

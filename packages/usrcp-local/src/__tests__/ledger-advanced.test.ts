@@ -295,11 +295,13 @@ describe("Safe JSON parsing", () => {
   });
 
   it("survives corrupted domain context", () => {
+    // First create a real domain context so domain_map exists
+    ledger.upsertDomainContext("test", { key: "value" });
+    // Then corrupt it directly
+    const pseudo = (ledger as any).domainPseudonym("test");
     (ledger as any).db
-      .prepare(
-        "INSERT INTO domain_context (domain, context) VALUES ('test', 'nope')"
-      )
-      .run();
+      .prepare("UPDATE domain_context SET context = 'nope' WHERE domain = ?")
+      .run(pseudo);
 
     const ctx = ledger.getDomainContext(["test"]);
     expect(ctx.test).toEqual({});
