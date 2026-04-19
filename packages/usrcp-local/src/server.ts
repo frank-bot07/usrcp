@@ -26,8 +26,8 @@ function boundedRecord() {
     });
 }
 
-export function createServer(): { server: McpServer; shutdown: () => void } {
-  const ledger = new Ledger();
+export function createServer(passphrase?: string): { server: McpServer; shutdown: () => void; ledger: Ledger } {
+  const ledger = new Ledger(undefined, passphrase);
   const identity = getIdentity();
 
   const shutdown = () => {
@@ -480,6 +480,75 @@ export function createServer(): { server: McpServer; shutdown: () => void } {
     }
   );
 
+  // --- Tool: usrcp_audit_log ---
+  server.tool(
+    "usrcp_audit_log",
+    "View the USRCP audit log — every read, write, search, and delete operation recorded with timestamps, agent identity, and scopes accessed.",
+    {
+      limit: z
+        .number()
+        .min(1)
+        .max(500)
+        .default(50)
+        .optional()
+        .describe("Number of audit log entries to retrieve"),
+    },
+    async (params) => {
+      const entries = ledger.getAuditLog(params.limit);
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(
+              {
+                total_entries: entries.length,
+                entries,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+  );
+
+  // --- Tool: usrcp_rotate_key ---
+  server.tool(
+    "usrcp_rotate_key",
+    "Rotate the master encryption key. Re-encrypts ALL data in the ledger with a new key. Use when the current key may be compromised or as part of regular key hygiene.",
+    {
+      new_passphrase: z
+        .string()
+        .max(MAX_STRING_MEDIUM)
+        .optional()
+        .describe(
+          "New passphrase for key derivation. If omitted, generates a random key (dev mode)."
+        ),
+    },
+    async (params) => {
+      const result = ledger.rotateKey(params.new_passphrase);
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(
+              {
+                status: "rotated",
+                key_version: result.version,
+                events_reencrypted: result.reencrypted,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+  );
+
   // --- Tool: usrcp_status ---
   server.tool(
     "usrcp_status",
@@ -512,5 +581,5 @@ export function createServer(): { server: McpServer; shutdown: () => void } {
     }
   );
 
-  return { server, shutdown };
+  return { server, shutdown, ledger };
 }

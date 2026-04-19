@@ -1,215 +1,139 @@
 # USRCP Security & Privacy Model
 
-**Scoped Context Keys, Encryption Architecture, and Domain Isolation**
+**Implemented encryption architecture for the local MCP server.**
 
 ---
 
-## 1. Threat Model
+## 1. Encryption at Rest
 
-USRCP aggregates a user's cross-platform AI interaction history into a single ledger. This creates a high-value target. The security model must ensure:
+Every human-readable field in the database is encrypted with AES-256-GCM before storage. The only plaintext columns are structural: `event_id` (opaque ULID), `timestamp`, `ledger_sequence`, and domain pseudonyms.
 
-1. **Domain isolation** — A coding agent cannot read therapy bot logs
-2. **Agent containment** — A compromised agent cannot escalate its access
-3. **User sovereignty** — The user controls what is stored and who can read it
-4. **Forward secrecy** — Revoking an agent's access makes past-granted data unreadable
-5. **Ledger integrity** — Events cannot be tampered with post-write
+### What's encrypted
 
----
+| Table | Encrypted columns |
+|-------|------------------|
+| `timeline_events` | summary, intent, outcome, platform, detail, artifacts, tags, session_id, parent_event_id |
+| `core_identity` | display_name, roles, expertise_domains, communication_style |
+| `global_preferences` | timezone, custom |
+| `domain_context` | context |
+| `audit_log` | agent_id, operation, scopes_accessed, event_ids, detail |
+| `domain_map` | encrypted_name |
 
-## 2. Scoped Context Keys
+### Domain pseudonyms
 
-This is the core innovation. Context keys are not simple API tokens — they are **cryptographically scoped access grants** that enforce domain isolation at the protocol level.
-
-### 2.1 Architecture
-
-```
-User's Ledger State
-├── core_identity          ← readable by ALL authenticated agents
-├── global_preferences     ← readable by ALL authenticated agents
-├── domain: coding         ← encrypted with domain key K_coding
-│   ├── timeline events
-│   └── domain context
-├── domain: writing        ← encrypted with domain key K_writing
-├── domain: health         ← encrypted with domain key K_health (HIGH sensitivity)
-├── domain: finance        ← encrypted with domain key K_finance (HIGH sensitivity)
-└── domain: personal       ← encrypted with domain key K_personal
-```
-
-### 2.2 How It Works
-
-Each domain has its own symmetric encryption key (`K_domain`), derived from the user's master key:
-
-```
-K_domain = HKDF-SHA256(
-  ikm = user_master_key,
-  salt = domain_name,
-  info = "usrcp-domain-key-v1"
-)
-```
-
-When a user approves an agent for a domain, the ledger wraps `K_domain` with the agent's public key:
-
-```
-wrapped_key = X25519(agent_public_key, K_domain)
-```
-
-This wrapped key is embedded in the agent's context key JWT as an encrypted claim. The agent can decrypt domain data, but only for its authorized domains.
-
-### 2.3 Why a Coding Agent Can't Read Therapy Logs
-
-```
-Cursor (coding agent):
-  context_key contains: wrapped(K_coding)
-  CAN read:  core_identity, global_preferences, domain:coding
-  CANNOT read: domain:health, domain:personal, domain:finance
-
-Therapy Bot:
-  context_key contains: wrapped(K_health)
-  CAN read:  core_identity, global_preferences, domain:health
-  CANNOT read: domain:coding, domain:finance, domain:personal
-```
-
-This is enforced cryptographically, not just by access control lists. Even if the ledger is compromised, an attacker with Cursor's context key cannot decrypt health domain data — they don't have `K_health`.
-
-### 2.4 Sensitivity Tiers
-
-Domains are classified into sensitivity tiers that control defaults:
-
-| Tier | Domains | Default Behavior |
-|------|---------|-----------------|
-| **Standard** | coding, writing, research | Readable by agents approved for that domain |
-| **Elevated** | personal, work | Requires explicit per-agent approval |
-| **Restricted** | health, finance, legal | Requires MFA confirmation + per-agent approval. Events are client-side encrypted before reaching the ledger |
+The `domain` column in `timeline_events` and `domain_context` stores HMAC-SHA256 pseudonyms (e.g., `d_1ac6397ab4d2`), not real domain names. The `domain_map` table maps pseudonyms to encrypted real names. An attacker sees opaque identifiers — they cannot determine whether a user has "health" or "finance" domains.
 
 ---
 
-## 3. Encryption Architecture
+## 2. Key Architecture
 
-### 3.1 Layers
+### Two modes
 
+**Passphrase mode** (production):
 ```
-┌──────────────────────────────────────────────────┐
-│ Layer 3: Transport Encryption (TLS 1.3)          │  ← wire security
-├──────────────────────────────────────────────────┤
-│ Layer 2: Domain Encryption (AES-256-GCM)         │  ← domain isolation
-│   Key: K_domain (per-domain, per-user)           │
-├──────────────────────────────────────────────────┤
-│ Layer 1: Client-Side Encryption (XChaCha20)      │  ← restricted tier only
-│   Key: K_client (never leaves user's device)     │  ← zero-knowledge
-└──────────────────────────────────────────────────┘
+User passphrase
+  → scrypt(N=16384, r=8, p=1) + stored salt
+  → 32-byte master key (IN MEMORY ONLY)
+  → HKDF per domain → domain encryption key
+  → HKDF global → global encryption key
+  → HKDF per domain → blind index key
 ```
 
-### 3.2 At Rest
+On disk: `master.salt`, `master.verify` (HMAC hash for passphrase validation), `mode` file. **No key file.** The derived key exists only in process memory and is zeroed (`Buffer.fill(0)`) on shutdown.
 
-- **Standard/Elevated tiers**: Events are encrypted with `K_domain` at the ledger. The ledger operator can decrypt if they have the domain key (necessary for server-side filtering and search).
-- **Restricted tier**: Events are encrypted client-side with `K_client` before transmission. The ledger stores opaque ciphertext. **Zero-knowledge** — the ledger operator cannot read restricted-tier events.
-
-### 3.3 Key Hierarchy
-
+**Dev mode** (local development):
 ```
-user_master_secret (Argon2id-derived from passphrase, or hardware key)
-  │
-  ├── K_identity    = HKDF(master, "identity")     — signs user operations
-  ├── K_coding      = HKDF(master, "coding")        — domain key
-  ├── K_health      = HKDF(master, "health")        — domain key
-  ├── K_client      = HKDF(master, "client-e2ee")   — client-side encryption
-  └── K_recovery    = Shamir split (3-of-5)          — recovery shards
+Random 32-byte key → stored in master.key (0o600)
+  → same HKDF derivation as above
 ```
 
-### 3.4 Key Rotation
+### Key hierarchy
 
-Domain keys can be rotated without re-encrypting the entire ledger:
+```
+master_key (scrypt-derived or random)
+  ├── global_key     = HKDF(master, "usrcp-global", "usrcp-encryption-v1")
+  ├── domain_key[d]  = HKDF(master, "usrcp-domain-{d}", "usrcp-encryption-v1")
+  └── blind_key[d]   = HKDF(master, "usrcp-blind-{d}", "usrcp-blind-index-v1")
+```
 
-1. Generate new `K_domain_v2`
-2. New events use `K_domain_v2`
-3. Old events retain `K_domain_v1` (immutable ledger)
-4. Context keys issued after rotation include `K_domain_v2`
-5. Old context keys continue working for historical reads (they still have `K_domain_v1`)
+Domain keys provide cryptographic isolation: a coding agent with access to `domain_key["coding"]` cannot derive `domain_key["health"]` without the master key.
+
+### Key rotation
+
+`Ledger.rotateKey()` atomically re-encrypts all data:
+1. Generate new master key (from new passphrase or random)
+2. In a single SQLite transaction: decrypt every field with old key, re-encrypt with new key
+3. Rebuild blind index with new key material
+4. Update key version file
+5. Zero old key in memory
+
+Exposed via `usrcp_rotate_key` MCP tool.
 
 ---
 
-## 4. Agent Authentication & Authorization
+## 3. Searchable Encryption
 
-### 4.1 Registration Flow
+### Blind index with n-gram tokens
 
-1. Agent generates Ed25519 keypair
-2. Agent sends registration request with public key and requested scopes
-3. User approves/denies via ledger UI (web, CLI, or in-app prompt)
-4. Ledger issues context key JWT containing:
-   - Granted scopes
-   - Wrapped domain keys for authorized domains
-   - Expiry (default: 24 hours, configurable)
-   - Refresh token (default: 30 days)
+Search over encrypted data uses HMAC-SHA256 blind index tokens:
 
-### 4.2 Request Authentication
+1. On write: text is split into words. Each word generates:
+   - A full-word HMAC token
+   - Character n-gram tokens (3-6 chars) for prefix matching
+   - 3 random noise tokens (defeats frequency analysis)
+2. On search: query words are HMAC'd with the same key
+3. Token matching finds events without exposing plaintext
 
-Every request includes:
+Example: "authentication" generates tokens for `aut`, `auth`, `uthen`, `thent`, `henti`, `authentication`, etc. Searching "auth" matches because both the stored n-gram and the query produce the same HMAC.
 
-```
-Authorization: Bearer <context_key_jwt>
-```
+### Frequency analysis resistance
 
-Optional (for high-security):
-
-```
-USRCP-Signature: t=<unix_ts>,v1=<Ed25519(timestamp + request_body)>
-```
-
-The signature binds the request to the agent's private key. Even if the JWT is stolen, the attacker cannot forge requests without the private key.
-
-### 4.3 Revocation
-
-- **Immediate**: User revokes agent access via ledger UI. Revocation is pushed to edge caches within 5 seconds.
-- **Context key blocklist**: Revoked JTIs are stored in a compact Bloom filter at edge PoPs for O(1) rejection.
-- **Domain key re-wrap**: On revocation, the domain key is re-wrapped for remaining authorized agents. The revoked agent's wrapped key is deleted.
+Each event inserts 3 random 8-character hex tokens alongside real tokens. An attacker analyzing token frequency sees a mix of deterministic and random values with no way to distinguish them without the blind index key.
 
 ---
 
-## 5. Privacy Controls
+## 4. Audit Log
 
-### 5.1 User Rights
+Every operation is logged to `audit_log` with encrypted fields:
 
-| Right | Implementation |
-|-------|---------------|
-| **Right to Read** | `get_state` with `scope: ["*"]` and user's master context key |
-| **Right to Delete** | Tombstone events in ledger + purge from edge cache |
-| **Right to Revoke** | Instant agent revocation + key re-wrap |
-| **Right to Export** | Full ledger export in USRCP JSON format |
-| **Right to Migrate** | Signed migration record to move to a new ledger host |
+| Field | Content |
+|-------|---------|
+| `timestamp` | Plaintext (when) |
+| `agent_id` | Encrypted (who called) |
+| `operation` | Encrypted (what operation) |
+| `scopes_accessed` | Encrypted (which domains) |
+| `event_ids` | Encrypted (which events) |
+| `response_size_bytes` | Plaintext (how much data) |
 
-### 5.2 Data Minimization
-
-- Agents declare why they need each scope (`justification` field)
-- The SDK warns developers if they request more scopes than they use
-- `recent_timeline` events are auto-summarized after 30 days — raw detail is pruned, summary is retained
-
-### 5.3 Audit Log
-
-Every access is logged:
-
-```json
-{
-  "timestamp": "2026-04-19T01:30:00Z",
-  "agent_id": "agent://cursor/code-assistant/i_abc123",
-  "operation": "get_state",
-  "scopes_accessed": ["core_identity", "recent_timeline:coding"],
-  "cache_hit": true,
-  "response_size_bytes": 2048
-}
-```
-
-Users can review the audit log to see exactly which agents accessed what data and when.
+The audit log is readable via the `usrcp_audit_log` MCP tool and `Ledger.getAuditLog()`, which decrypt fields with the global key.
 
 ---
 
-## 6. Attack Surface & Mitigations
+## 5. Secure Deletion
 
-| Attack | Mitigation |
-|--------|-----------|
-| **Stolen context key** | Short expiry (24h) + optional request signing. Revocation propagates in <5s |
-| **Compromised ledger** | Domain encryption means attacker gets ciphertext. Restricted tier is zero-knowledge |
-| **Rogue agent over-requesting** | Scope justification shown to user. SDK flags unused scopes. Rate limiting |
-| **Cross-domain leakage** | Cryptographic domain isolation. No access control bypass possible without domain key |
-| **Replay attacks** | Nonce in USRCP-Signature + idempotency keys. Timestamp window: 5 minutes |
-| **Man-in-the-middle** | TLS 1.3 mandatory. Certificate pinning in SDK. HSTS on ledger endpoints |
-| **Ledger operator snooping** | Restricted tier uses client-side encryption. Operator sees opaque blobs |
+- `secure_delete` pragma: SQLite zero-fills pages when rows are deleted
+- `Ledger.secureWipe()`: WAL checkpoint + VACUUM after delete
+- `Ledger.close()`: zeros master key buffer in memory
+- Event pruning: writes encrypted empty values (not plaintext `'{}'`)
+
+---
+
+## 6. Input Validation
+
+Defense-in-depth at two layers:
+
+**Zod schemas** (MCP transport layer): max string lengths, max array sizes, bounded records.
+
+**Ledger validation** (application layer): domain (100 chars), summary (500), intent (300), platform (100), tags (50 items), artifacts (50 items, 2048 ref), detail (64KB), idempotency_key (100), session_id (100).
+
+---
+
+## 7. Known Limitations
+
+- **Node.js GC**: `zeroBuffer()` zeroes the Buffer, but V8's garbage collector does not guarantee immediate page zeroing for other allocations. Derived keys in HKDF intermediate buffers may persist in heap until GC reclaims.
+- **No FIPS 140-2**: Node.js `crypto` uses OpenSSL but is not FIPS certified.
+- **No HSM**: Keys are software-managed. Hardware Security Module integration would require platform-specific native bindings.
+- **stdio transport**: MCP communication is unencrypted plaintext over stdio. Any process that can read the pipe sees decrypted data in transit.
+- **Timestamps remain plaintext**: Activity timing patterns are visible.
+
+These limitations require infrastructure changes (different runtime, HSM hardware, authenticated transport) that are outside the scope of a local MCP server.

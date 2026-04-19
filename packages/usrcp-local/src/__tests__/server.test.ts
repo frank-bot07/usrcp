@@ -18,6 +18,7 @@ beforeEach(() => {
   initializeIdentity();
   const created = createServer();
   server = created.server;
+  // created.ledger is available but tests use server tools directly
 });
 
 afterEach(() => {
@@ -40,9 +41,9 @@ async function callTool(
 }
 
 describe("Server creation", () => {
-  it("creates a server with 8 tools", () => {
+  it("creates a server with 10 tools", () => {
     const tools = (server as any)._registeredTools;
-    expect(Object.keys(tools)).toHaveLength(8);
+    expect(Object.keys(tools)).toHaveLength(10);
   });
 
   it("registers all expected tools", () => {
@@ -54,6 +55,8 @@ describe("Server creation", () => {
     expect(tools).toContain("usrcp_update_domain_context");
     expect(tools).toContain("usrcp_search_timeline");
     expect(tools).toContain("usrcp_manage_project");
+    expect(tools).toContain("usrcp_audit_log");
+    expect(tools).toContain("usrcp_rotate_key");
     expect(tools).toContain("usrcp_status");
   });
 });

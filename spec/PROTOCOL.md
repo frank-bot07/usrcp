@@ -2,6 +2,13 @@
 
 **User Context Protocol — Wire Format, Authentication, and Latency Architecture**
 
+> **Implementation status**: The `usrcp-local` MCP server implements the core
+> operations (`get_state`, `append_event`) with full encryption at rest,
+> blind index search, encrypted audit logging, scrypt key derivation, and
+> atomic key rotation. See `docs/SECURITY.md` for the implemented encryption
+> architecture. Sections marked *[PLANNED]* describe hosted ledger features
+> not yet implemented.
+
 ---
 
 ## 1. Protocol Overview
@@ -169,7 +176,7 @@ Agents register once per user. Registration yields a **scoped context key** (Sec
 - Rate limit: 100 events/minute per agent per user (configurable by ledger operator)
 - `idempotency_key` prevents duplicate writes within a 24-hour window
 
-### 3.3 `sync` (Future — v0.2.0)
+### 3.3 `sync` *[PLANNED]* (v0.2.0)
 
 Bi-directional state reconciliation over WebSocket. Enables real-time cross-platform continuity. Specified in a future revision.
 
@@ -229,7 +236,7 @@ The ledger verifies against the agent's registered public key. This prevents con
 
 ---
 
-## 5. Latency Architecture — Sub-50ms Handshake
+## 5. Latency Architecture — Sub-50ms Handshake *[PLANNED — hosted ledger]*
 
 The critical constraint: USRCP must not bottleneck LLM generation. A `get_state` call that adds 200ms before the first token is a protocol that won't get adopted.
 

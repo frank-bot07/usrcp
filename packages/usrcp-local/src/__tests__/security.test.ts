@@ -197,9 +197,9 @@ describe("Zod schema validation — tool definitions", () => {
     expect(schemaStr).toContain('"maxLength"');
   });
 
-  it("registers exactly 8 tools", () => {
+  it("registers exactly 10 tools", () => {
     const tools = (server as any)._registeredTools;
-    expect(Object.keys(tools)).toHaveLength(8);
+    expect(Object.keys(tools)).toHaveLength(10);
   });
 });
 

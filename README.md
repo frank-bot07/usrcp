@@ -2,11 +2,11 @@
 
 **The missing standard for human-to-AI memory.**
 
-AI has an amnesia problem. The industry solved model routing (MCP) and agent routing (ACP), but the **human layer** — preferences, history, identity — is entirely fragmented. Every session starts from zero. Every platform rebuilds context from scratch.
+AI has an amnesia problem. Memory is siloed by session and platform. The industry solved model routing (MCP) and agent routing (ACP), but the **human layer** — preferences, history, identity — is entirely fragmented.
 
 USRCP is a standardized, platform-agnostic protocol for AI systems to **query**, **append**, and **synchronize** a specific human's state across disparate systems via a lightweight handshake to a **User State Ledger**.
 
-## Protocol Stack Position
+## Protocol Stack
 
 ```
 ┌─────────────────────────────────┐
@@ -20,64 +20,104 @@ USRCP is a standardized, platform-agnostic protocol for AI systems to **query**,
 └─────────────────────────────────┘
 ```
 
-## Core Operations
-
-| Operation | URI | Description |
-|-----------|-----|-------------|
-| **Get State** | `usrcp://get_state` | Query user identity, preferences, and recent timeline |
-| **Append Event** | `usrcp://append_event` | Write a new interaction event to the user's ledger |
-| **Sync** | `usrcp://sync` | Bi-directional state reconciliation between platforms |
-
-## Architecture
-
-- **User State Ledger** — Append-only log of user interactions, preferences, and context across all connected platforms
-- **Scoped Context Keys** — Cryptographic access control so a coding agent can't read therapy bot logs
-- **Sub-50ms Handshake** — Edge-cached state with HMAC-signed bearer tokens; no round-trip bottleneck on LLM generation
-
-## Project Structure
-
-```
-usrcp/
-├── spec/                  # Protocol specification
-│   └── PROTOCOL.md        # Full technical spec
-├── schemas/               # JSON schemas
-│   ├── get_state.json     # usrcp://get_state payload
-│   ├── append_event.json  # usrcp://append_event payload
-│   └── handshake.json     # Auth handshake schema
-├── packages/
-│   └── usrcp-local/           # Local MCP server (the wedge)
-│       ├── src/
-│       │   ├── index.ts       # CLI entry point (init/serve/status)
-│       │   ├── server.ts      # MCP server with 8 tools
-│       │   ├── ledger.ts      # SQLite ledger operations
-│       │   ├── crypto.ts      # Ed25519 keys & domain key derivation
-│       │   ├── types.ts       # TypeScript types
-│       │   └── __tests__/     # Vitest test suite (58 tests)
-│       └── package.json
-├── strategy/
-│   ├── GTM.md                 # Go-to-market strategy
-│   └── PITCH.md               # Investor executive summary
-└── docs/
-    └── SECURITY.md            # Security & privacy model
-```
-
 ## Quickstart
 
 ```bash
 cd packages/usrcp-local
 npm install && npm run build
+
+# Dev mode (key stored on disk — for development)
 node dist/index.js init
+
+# Passphrase mode (key never touches disk — for production)
+node dist/index.js init --passphrase "your secret phrase"
+
+# Start the server (passphrase mode requires env var)
+USRCP_PASSPHRASE="your secret phrase" node dist/index.js serve
 ```
 
-This creates `~/.usrcp/` with a SQLite ledger and Ed25519 keys, and registers as an MCP server in Claude Code. Every agent session now has persistent memory.
+This creates `~/.usrcp/` with an encrypted SQLite ledger and registers as an MCP server in Claude Code.
+
+## What's Encrypted
+
+**Everything.** An attacker reading the SQLite file sees:
+
+| Column | What they see |
+|--------|--------------|
+| `event_id` | Opaque ULID |
+| `timestamp` | When (not what) |
+| `domain` | HMAC pseudonym (`d_1ac6397ab4d2`) |
+| `summary` | `enc:base64ciphertext...` |
+| `intent` | `enc:base64ciphertext...` |
+| `outcome` | `enc:base64ciphertext...` |
+| `platform` | `enc:base64ciphertext...` |
+| `detail` | `enc:base64ciphertext...` |
+| `tags` | `enc:base64ciphertext...` |
+| `audit_log.*` | `enc:base64ciphertext...` |
+
+In passphrase mode, no key file exists on disk. The key is derived via scrypt on startup and zeroed on shutdown.
+
+## MCP Tools (10)
+
+| Tool | Description |
+|------|-------------|
+| `usrcp_get_state` | Query identity, preferences, projects, timeline |
+| `usrcp_append_event` | Record an interaction event |
+| `usrcp_update_identity` | Update user roles, expertise, communication style |
+| `usrcp_update_preferences` | Update language, timezone, verbosity |
+| `usrcp_update_domain_context` | Store domain-scoped key-value context |
+| `usrcp_search_timeline` | Search via blind index tokens (prefix matching) |
+| `usrcp_manage_project` | Create/update tracked projects |
+| `usrcp_audit_log` | View encrypted audit trail |
+| `usrcp_rotate_key` | Rotate master encryption key (re-encrypts all data) |
+| `usrcp_status` | Ledger stats and health |
+
+## Security Architecture
+
+- **AES-256-GCM** encryption at rest for all fields
+- **Domain-scoped keys** via HKDF-SHA256 — coding key cannot decrypt health data
+- **scrypt** passphrase derivation (N=16384, r=8, p=1) — key never on disk
+- **HMAC domain pseudonyms** — domain names are opaque identifiers
+- **Blind index search** with n-gram tokens and noise injection
+- **Encrypted audit log** — access patterns are ciphertext
+- **Atomic key rotation** — re-encrypts all data in a single transaction
+- **secure_delete pragma** — SQLite zero-fills deleted pages
+- **Master key zeroed** on process shutdown
+
+## Project Structure
+
+```
+usrcp/
+├── spec/PROTOCOL.md               # Protocol specification
+├── schemas/                        # JSON schemas (get_state, append_event, handshake)
+├── docs/SECURITY.md                # Security & privacy model
+├── strategy/
+│   ├── GTM.md                      # Go-to-market strategy
+│   └── PITCH.md                    # Investor executive summary
+└── packages/usrcp-local/           # Local MCP server
+    ├── src/
+    │   ├── index.ts                # CLI (init/serve/status + passphrase)
+    │   ├── server.ts               # 10 MCP tools
+    │   ├── ledger.ts               # Encrypted SQLite operations
+    │   ├── encryption.ts           # AES-256-GCM, scrypt, blind index
+    │   ├── crypto.ts               # Ed25519 identity keys
+    │   ├── types.ts                # TypeScript types
+    │   └── __tests__/              # 137 tests
+    └── package.json
+```
+
+## Tests
+
+```bash
+cd packages/usrcp-local
+npm test        # 137 tests across 7 suites
+```
+
+Suites: ledger CRUD, crypto, MCP server, security boundaries, encryption roundtrip/tamper/domain isolation, audit log, ULID/FTS/pruning.
 
 ## Business Model
 
-Open-source protocol. Enterprise SaaS ledger hosting. **Stripe for AI Memory.**
-
-## Status
-
-🟡 **Pre-release** — Local MCP server functional. 58 tests passing.
+Open-source protocol (Apache 2.0). Enterprise SaaS ledger hosting. **Stripe for AI Memory.**
 
 ## License
 

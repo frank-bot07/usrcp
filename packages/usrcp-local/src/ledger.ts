@@ -106,15 +106,14 @@ export class Ledger {
   private closed = false;
   private masterKey: Buffer;
 
-  constructor(dbPath?: string) {
+  constructor(dbPath?: string, passphrase?: string) {
     const resolvedPath = dbPath || getDefaultDbPath();
     fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
     this.db = new Database(resolvedPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
-    // Overwrite deleted content with zeros — prevents forensic recovery
     this.db.pragma("secure_delete = ON");
-    this.masterKey = initializeMasterKey();
+    this.masterKey = initializeMasterKey(passphrase);
     this.migrate();
   }
 
