@@ -1,9 +1,10 @@
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 
 function getKeysDir(): string {
-  return path.join(process.env.HOME || "~", ".usrcp", "keys");
+  return path.join(os.homedir(), ".usrcp", "keys");
 }
 
 export interface KeyPair {
@@ -18,7 +19,7 @@ export interface LedgerIdentity {
 }
 
 export function ensureKeysDir(): void {
-  fs.mkdirSync(getKeysDir(), { recursive: true });
+  fs.mkdirSync(getKeysDir(), { recursive: true, mode: 0o700 });
 }
 
 export function generateKeyPair(): KeyPair {
@@ -32,6 +33,24 @@ export function generateKeyPair(): KeyPair {
 export function deriveUserId(publicKey: string): string {
   const hash = crypto.createHash("sha256").update(publicKey).digest("hex");
   return `u_${hash.slice(0, 16)}`;
+}
+
+/**
+ * Write a file atomically with correct permissions.
+ * Opens with O_WRONLY | O_CREAT | O_EXCL to avoid TOCTOU race,
+ * then writes content. File is created with the specified mode from the start.
+ */
+function writeFileAtomic(
+  filePath: string,
+  content: string,
+  mode: number
+): void {
+  const fd = fs.openSync(filePath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC, mode);
+  try {
+    fs.writeSync(fd, content);
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 export function initializeIdentity(): LedgerIdentity {
@@ -48,8 +67,9 @@ export function initializeIdentity(): LedgerIdentity {
   const keyPair = generateKeyPair();
   const user_id = deriveUserId(keyPair.publicKey);
 
-  fs.writeFileSync(privateKeyPath, keyPair.privateKey, { mode: 0o600 });
-  fs.writeFileSync(publicKeyPath, keyPair.publicKey, { mode: 0o644 });
+  // Write private key with restrictive permissions atomically
+  writeFileAtomic(privateKeyPath, keyPair.privateKey, 0o600);
+  writeFileAtomic(publicKeyPath, keyPair.publicKey, 0o644);
 
   const identity: LedgerIdentity = {
     user_id,
@@ -57,9 +77,7 @@ export function initializeIdentity(): LedgerIdentity {
     created_at: new Date().toISOString(),
   };
 
-  fs.writeFileSync(identityPath, JSON.stringify(identity, null, 2), {
-    mode: 0o600,
-  });
+  writeFileAtomic(identityPath, JSON.stringify(identity, null, 2), 0o600);
 
   return identity;
 }
@@ -67,7 +85,11 @@ export function initializeIdentity(): LedgerIdentity {
 export function getIdentity(): LedgerIdentity | null {
   const identityPath = path.join(getKeysDir(), "identity.json");
   if (!fs.existsSync(identityPath)) return null;
-  return JSON.parse(fs.readFileSync(identityPath, "utf-8"));
+  try {
+    return JSON.parse(fs.readFileSync(identityPath, "utf-8"));
+  } catch {
+    return null;
+  }
 }
 
 export function deriveDomainKey(

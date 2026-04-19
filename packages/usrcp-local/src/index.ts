@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createServer } from "./server.js";
 import { Ledger } from "./ledger.js";
 import { initializeIdentity, getIdentity } from "./crypto.js";
 
-const USRCP_DIR = path.join(process.env.HOME || "~", ".usrcp");
+const USRCP_DIR = path.join(os.homedir(), ".usrcp");
 
 function printBanner(): void {
   console.error(`
@@ -49,7 +50,7 @@ function cmdInit(): void {
 
 function registerMcpServer(): void {
   // Claude Code MCP config
-  const claudeDir = path.join(process.env.HOME || "~", ".claude");
+  const claudeDir = path.join(os.homedir(), ".claude");
   const mcpConfigPath = path.join(claudeDir, "mcp_servers.json");
 
   fs.mkdirSync(claudeDir, { recursive: true });
@@ -117,7 +118,7 @@ switch (command) {
     break;
   case "serve":
     cmdServe().catch((err) => {
-      console.error("[usrcp-local] Fatal:", err);
+      console.error("[usrcp-local] Fatal:", err instanceof Error ? err.message : "Unknown error");
       process.exit(1);
     });
     break;
@@ -128,7 +129,7 @@ switch (command) {
     // If launched with no args by MCP runtime, default to serve
     if (!command) {
       cmdServe().catch((err) => {
-        console.error("[usrcp-local] Fatal:", err);
+        console.error("[usrcp-local] Fatal:", err instanceof Error ? err.message : "Unknown error");
         process.exit(1);
       });
     } else {

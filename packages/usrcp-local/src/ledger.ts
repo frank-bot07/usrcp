@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import * as path from "node:path";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as crypto from "node:crypto";
 import type {
   CoreIdentity,
@@ -13,7 +14,16 @@ import type {
 } from "./types.js";
 
 function getDefaultDbPath(): string {
-  return path.join(process.env.HOME || "~", ".usrcp", "ledger.db");
+  return path.join(os.homedir(), ".usrcp", "ledger.db");
+}
+
+function safeJsonParse<T>(value: string | null | undefined, fallback: T): T {
+  if (!value) return fallback;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
 }
 
 function generateULID(): string {
@@ -118,8 +128,8 @@ export class Ledger {
       .get() as any;
     return {
       display_name: row.display_name,
-      roles: JSON.parse(row.roles),
-      expertise_domains: JSON.parse(row.expertise_domains),
+      roles: safeJsonParse(row.roles, []),
+      expertise_domains: safeJsonParse(row.expertise_domains, []),
       communication_style: row.communication_style,
     };
   }
@@ -156,7 +166,7 @@ export class Ledger {
       timezone: row.timezone,
       output_format: row.output_format,
       verbosity: row.verbosity,
-      custom: JSON.parse(row.custom),
+      custom: safeJsonParse(row.custom, {}),
     };
   }
 
@@ -289,9 +299,9 @@ export class Ledger {
       summary: row.summary,
       intent: row.intent || undefined,
       outcome: row.outcome || undefined,
-      detail: JSON.parse(row.detail || "{}"),
-      artifacts: JSON.parse(row.artifacts || "[]"),
-      tags: JSON.parse(row.tags || "[]"),
+      detail: safeJsonParse(row.detail, {}),
+      artifacts: safeJsonParse(row.artifacts, []),
+      tags: safeJsonParse(row.tags, []),
       session_id: row.session_id || undefined,
       parent_event_id: row.parent_event_id || undefined,
     }));
@@ -324,9 +334,9 @@ export class Ledger {
       summary: row.summary,
       intent: row.intent || undefined,
       outcome: row.outcome || undefined,
-      detail: JSON.parse(row.detail || "{}"),
-      artifacts: JSON.parse(row.artifacts || "[]"),
-      tags: JSON.parse(row.tags || "[]"),
+      detail: safeJsonParse(row.detail, {}),
+      artifacts: safeJsonParse(row.artifacts, []),
+      tags: safeJsonParse(row.tags, []),
       session_id: row.session_id || undefined,
       parent_event_id: row.parent_event_id || undefined,
     }));
@@ -388,7 +398,7 @@ export class Ledger {
     }
     const result: Record<string, Record<string, unknown>> = {};
     for (const row of rows) {
-      result[row.domain] = JSON.parse(row.context);
+      result[row.domain] = safeJsonParse(row.context, {});
     }
     return result;
   }

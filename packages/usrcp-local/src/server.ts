@@ -5,8 +5,26 @@ import { Ledger } from "./ledger.js";
 import { getIdentity } from "./crypto.js";
 import type { CoreIdentity, GlobalPreferences } from "./types.js";
 
+// --- Security constants ---
+const MAX_STRING_SHORT = 100; // identifiers, domains, keys
+const MAX_STRING_MEDIUM = 300; // intents, names, summaries
+const MAX_STRING_LONG = 500; // summaries, descriptions
+const MAX_STRING_URI = 2048; // URIs and refs
+const MAX_ARRAY_ITEMS = 50; // tags, artifacts, expertise
+const MAX_RECORD_KEYS = 50; // detail blobs, custom prefs, domain context
+const MAX_SEARCH_QUERY = 200; // search input
+
 function formatUserId(rawId: string | undefined): string {
   return `usrcp://local/${rawId || "anonymous"}`;
+}
+
+// Constrained record type: limits both key count and value size
+function boundedRecord() {
+  return z
+    .record(z.string().max(MAX_STRING_SHORT), z.unknown())
+    .refine((obj) => Object.keys(obj).length <= MAX_RECORD_KEYS, {
+      message: `Record must have at most ${MAX_RECORD_KEYS} keys`,
+    });
 }
 
 export function createServer(): McpServer {
@@ -33,6 +51,7 @@ export function createServer(): McpServer {
             "active_projects",
           ])
         )
+        .max(5)
         .default([
           "core_identity",
           "global_preferences",
@@ -50,12 +69,14 @@ export function createServer(): McpServer {
         .describe("Number of recent timeline events to retrieve"),
       timeline_since: z
         .string()
+        .max(30)
         .optional()
         .describe(
           "ISO 8601 timestamp — retrieve timeline events after this time"
         ),
       timeline_domains: z
-        .array(z.string())
+        .array(z.string().max(MAX_STRING_SHORT))
+        .max(20)
         .optional()
         .describe(
           "Filter timeline to specific domains (e.g., ['coding', 'writing'])"
@@ -111,28 +132,29 @@ export function createServer(): McpServer {
     {
       domain: z
         .string()
+        .max(MAX_STRING_SHORT)
         .describe(
           "Semantic domain: coding, writing, research, design, personal, health, finance, etc."
         ),
       summary: z
         .string()
-        .max(500)
+        .max(MAX_STRING_LONG)
         .describe("Concise summary of what happened"),
       intent: z
         .string()
-        .max(300)
+        .max(MAX_STRING_MEDIUM)
         .describe("What the user was trying to accomplish"),
       outcome: z
         .enum(["success", "partial", "failed", "abandoned"])
         .describe("How the interaction resolved"),
       platform: z
         .string()
+        .max(MAX_STRING_SHORT)
         .default("unknown")
         .describe(
           "Platform this event originated from (e.g., 'claude_code', 'cursor')"
         ),
-      detail: z
-        .record(z.string(), z.unknown())
+      detail: boundedRecord()
         .optional()
         .describe("Structured detail blob — varies by domain"),
       artifacts: z
@@ -146,22 +168,26 @@ export function createServer(): McpServer {
               "image",
               "other",
             ]),
-            ref: z.string(),
-            label: z.string().optional(),
+            ref: z.string().max(MAX_STRING_URI),
+            label: z.string().max(MAX_STRING_MEDIUM).optional(),
           })
         )
+        .max(MAX_ARRAY_ITEMS)
         .optional()
         .describe("References to outputs (files, commits, URLs)"),
       tags: z
-        .array(z.string())
+        .array(z.string().max(MAX_STRING_SHORT))
+        .max(MAX_ARRAY_ITEMS)
         .optional()
         .describe("Freeform tags for filtering and search"),
       session_id: z
         .string()
+        .max(MAX_STRING_SHORT)
         .optional()
         .describe("Session identifier to group related events"),
       idempotency_key: z
         .string()
+        .max(MAX_STRING_SHORT)
         .optional()
         .describe(
           "Client-generated key to prevent duplicate writes on retry"
@@ -195,15 +221,20 @@ export function createServer(): McpServer {
     "usrcp_update_identity",
     "Update the user's core identity in the USRCP State Ledger. Use when you learn new information about the user — their role, expertise, or communication preferences.",
     {
-      display_name: z.string().optional().describe("User's display name"),
+      display_name: z
+        .string()
+        .max(MAX_STRING_MEDIUM)
+        .optional()
+        .describe("User's display name"),
       roles: z
-        .array(z.string())
+        .array(z.string().max(MAX_STRING_SHORT))
+        .max(20)
         .optional()
         .describe("User's roles (e.g., ['founder', 'software_engineer'])"),
       expertise_domains: z
         .array(
           z.object({
-            domain: z.string(),
+            domain: z.string().max(MAX_STRING_SHORT),
             level: z.enum([
               "beginner",
               "intermediate",
@@ -212,6 +243,7 @@ export function createServer(): McpServer {
             ]),
           })
         )
+        .max(MAX_ARRAY_ITEMS)
         .optional()
         .describe("User's expertise areas and levels"),
       communication_style: z
@@ -254,10 +286,12 @@ export function createServer(): McpServer {
     {
       language: z
         .string()
+        .max(10)
         .optional()
         .describe("Preferred language code (e.g., 'en')"),
       timezone: z
         .string()
+        .max(50)
         .optional()
         .describe("IANA timezone (e.g., 'America/Los_Angeles')"),
       output_format: z
@@ -268,8 +302,7 @@ export function createServer(): McpServer {
         .enum(["minimal", "standard", "verbose"])
         .optional()
         .describe("Preferred verbosity level"),
-      custom: z
-        .record(z.string(), z.unknown())
+      custom: boundedRecord()
         .optional()
         .describe("Custom key-value preferences"),
     },
@@ -308,14 +341,13 @@ export function createServer(): McpServer {
     {
       domain: z
         .string()
+        .max(MAX_STRING_SHORT)
         .describe(
           "Domain name (e.g., 'coding', 'writing', 'research', 'design')"
         ),
-      context: z
-        .record(z.string(), z.unknown())
-        .describe(
-          "Key-value context to merge into the domain (e.g., { preferred_framework: 'nextjs', css: 'tailwind' })"
-        ),
+      context: boundedRecord().describe(
+        "Key-value context to merge into the domain (e.g., { preferred_framework: 'nextjs', css: 'tailwind' })"
+      ),
     },
     async (params) => {
       ledger.upsertDomainContext(
@@ -350,8 +382,13 @@ export function createServer(): McpServer {
     {
       query: z
         .string()
+        .max(MAX_SEARCH_QUERY)
         .describe("Search query — matches against summary, intent, and tags"),
-      domain: z.string().optional().describe("Filter to a specific domain"),
+      domain: z
+        .string()
+        .max(MAX_STRING_SHORT)
+        .optional()
+        .describe("Filter to a specific domain"),
       limit: z
         .number()
         .min(1)
@@ -392,12 +429,17 @@ export function createServer(): McpServer {
     {
       project_id: z
         .string()
+        .max(MAX_STRING_SHORT)
         .describe(
           "Unique project identifier (e.g., 'usrcp', 'blog-redesign')"
         ),
-      name: z.string().describe("Human-readable project name"),
+      name: z
+        .string()
+        .max(MAX_STRING_MEDIUM)
+        .describe("Human-readable project name"),
       domain: z
         .string()
+        .max(MAX_STRING_SHORT)
         .describe("Project domain (coding, writing, research, etc.)"),
       status: z
         .enum(["active", "paused", "completed"])
@@ -405,6 +447,7 @@ export function createServer(): McpServer {
         .describe("Project status"),
       summary: z
         .string()
+        .max(MAX_STRING_LONG)
         .describe("Brief project description or current state"),
     },
     async (params) => {
