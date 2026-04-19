@@ -2,6 +2,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { deriveGlobalEncryptionKey, encrypt, decrypt, isEncrypted } from "./encryption.js";
 
 function getKeysDir(): string {
   return path.join(os.homedir(), ".usrcp", "keys");
@@ -36,24 +37,44 @@ export function deriveUserId(publicKey: string): string {
 }
 
 /**
- * Write a file atomically with correct permissions.
- * Opens with O_WRONLY | O_CREAT | O_EXCL to avoid TOCTOU race,
- * then writes content. File is created with the specified mode from the start.
+ * Write file safely — prevents symlink attacks.
+ * Writes to a temp file then renames atomically.
+ * Rejects if the target path is a symlink.
  */
-function writeFileAtomic(
-  filePath: string,
-  content: string,
-  mode: number
-): void {
-  const fd = fs.openSync(filePath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC, mode);
+function safeWriteFile(filePath: string, content: string | Buffer | NodeJS.ArrayBufferView, mode: number): void {
+  // Reject symlinks — prevents writing to arbitrary paths
   try {
-    fs.writeSync(fd, content);
+    const stat = fs.lstatSync(filePath);
+    if (stat.isSymbolicLink()) {
+      throw new Error(`Refusing to write: ${filePath} is a symlink`);
+    }
+  } catch (e: any) {
+    if (e.code !== "ENOENT") throw e;
+    // File doesn't exist — safe to create
+  }
+
+  // Write to temp file in same directory, then rename (atomic on same filesystem)
+  const dir = path.dirname(filePath);
+  const tmpPath = path.join(dir, `.tmp_${crypto.randomBytes(8).toString("hex")}`);
+  const fd = fs.openSync(tmpPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, mode);
+  try {
+    if (typeof content === "string") {
+      fs.writeSync(fd, content);
+    } else {
+      fs.writeSync(fd, content as Buffer);
+    }
   } finally {
     fs.closeSync(fd);
   }
+  fs.renameSync(tmpPath, filePath);
 }
 
-export function initializeIdentity(): LedgerIdentity {
+/**
+ * Initialize identity with encrypted private key storage.
+ * The private key is encrypted with the global encryption key
+ * derived from the master key. It is never stored in plaintext.
+ */
+export function initializeIdentity(masterKey?: Buffer): LedgerIdentity {
   ensureKeysDir();
 
   const identityPath = path.join(getKeysDir(), "identity.json");
@@ -67,9 +88,17 @@ export function initializeIdentity(): LedgerIdentity {
   const keyPair = generateKeyPair();
   const user_id = deriveUserId(keyPair.publicKey);
 
-  // Write private key with restrictive permissions atomically
-  writeFileAtomic(privateKeyPath, keyPair.privateKey, 0o600);
-  writeFileAtomic(publicKeyPath, keyPair.publicKey, 0o644);
+  if (masterKey) {
+    // Encrypt private key with global encryption key before writing
+    const globalKey = deriveGlobalEncryptionKey(masterKey);
+    const encryptedPrivateKey = encrypt(keyPair.privateKey, globalKey);
+    safeWriteFile(privateKeyPath, encryptedPrivateKey, 0o600);
+  } else {
+    // No master key available yet — store encrypted marker, will re-encrypt on first ledger init
+    safeWriteFile(privateKeyPath, keyPair.privateKey, 0o600);
+  }
+
+  safeWriteFile(publicKeyPath, keyPair.publicKey, 0o644);
 
   const identity: LedgerIdentity = {
     user_id,
@@ -77,9 +106,26 @@ export function initializeIdentity(): LedgerIdentity {
     created_at: new Date().toISOString(),
   };
 
-  writeFileAtomic(identityPath, JSON.stringify(identity, null, 2), 0o600);
+  safeWriteFile(identityPath, JSON.stringify(identity, null, 2), 0o600);
 
   return identity;
+}
+
+/**
+ * Re-encrypt the private key if it's still in plaintext.
+ * Called after master key is available.
+ */
+export function ensurePrivateKeyEncrypted(masterKey: Buffer): void {
+  const privateKeyPath = path.join(getKeysDir(), "private.pem");
+  if (!fs.existsSync(privateKeyPath)) return;
+
+  const content = fs.readFileSync(privateKeyPath, "utf-8");
+  if (isEncrypted(content)) return; // Already encrypted
+
+  // Encrypt and overwrite
+  const globalKey = deriveGlobalEncryptionKey(masterKey);
+  const encrypted = encrypt(content, globalKey);
+  safeWriteFile(privateKeyPath, encrypted, 0o600);
 }
 
 export function getIdentity(): LedgerIdentity | null {

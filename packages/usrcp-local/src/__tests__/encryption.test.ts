@@ -124,8 +124,8 @@ describe("Blind index tokens", () => {
   it("generates tokens from text", () => {
     const tokens = generateBlindTokens("fixed authentication bug", key);
     expect(tokens.length).toBeGreaterThan(0);
-    // Each token is 8 hex chars
-    tokens.forEach((t) => expect(t).toMatch(/^[0-9a-f]{8}$/));
+    // Each token is 16 hex chars (64 bits — birthday collision resistant)
+    tokens.forEach((t) => expect(t).toMatch(/^[0-9a-f]{16}$/));
   });
 
   it("generates deterministic real tokens (noise differs)", () => {
@@ -163,8 +163,7 @@ describe("Blind index tokens", () => {
 
   it("skips single-character words", () => {
     const tokens = generateBlindTokens("a b cd ef", key);
-    // "a" and "b" should be skipped, "cd" and "ef" tokenized + noise
-    // 2 word tokens + 3 noise tokens = 5
+    // "a" and "b" skipped, "cd" and "ef" tokenized (2 word tokens) + 3 noise = 5
     expect(tokens.length).toBe(5);
   });
 });

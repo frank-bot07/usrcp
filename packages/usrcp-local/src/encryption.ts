@@ -6,13 +6,16 @@
  * Two modes:
  * - Passphrase mode: key derived via scrypt on every startup. Only the salt
  *   and a verification hash are stored on disk. The derived key exists only
- *   in process memory and is zeroed on shutdown. An attacker with disk access
- *   cannot decrypt without the passphrase.
- * - Dev mode (no passphrase): random key stored on disk. Protects against
- *   disk-only theft but not local attacker. Suitable for development.
+ *   in process memory and is zeroed on shutdown.
+ * - Dev mode (no passphrase): random key stored on disk.
  *
  * Domain-scoped keys via HKDF-SHA256.
- * Blind index with n-gram tokens + noise injection for frequency analysis resistance.
+ * Blind index with n-gram tokens + noise injection.
+ *
+ * IMPORTANT: Buffer zeroing is applied to cryptographic material (keys, HMAC
+ * digests) where it is effective. It is NOT applied to encrypt/decrypt output
+ * after conversion to V8 strings, because V8 strings are immutable and cannot
+ * be zeroed. This is a known limitation of the Node.js runtime.
  */
 
 import * as crypto from "node:crypto";
@@ -24,18 +27,16 @@ const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12;
 const TAG_LENGTH = 16;
 const ENCRYPTED_PREFIX = "enc:";
-// scrypt cost parameters — hardened against M2 Max brute-force
-// N=131072 (2^17): ~8x more work than default 16384
-// r=8, p=2: increased parallelization factor
-// At these settings, each derivation takes ~200-500ms.
-// Brute-force of a 12-char passphrase: years on consumer hardware.
 const SCRYPT_N = 131072;
 const SCRYPT_R = 8;
 const SCRYPT_P = 2;
 const SCRYPT_KEYLEN = 32;
 const SALT_LENGTH = 32;
 
-// Noise: number of dummy tokens injected per real token set
+// Blind index: 16 hex chars = 64 bits (was 8/32-bit — birthday collision fix)
+const TOKEN_HEX_LENGTH = 16;
+
+// Noise: dummy tokens per real token set
 const BLIND_INDEX_NOISE_COUNT = 3;
 
 function getKeysDir(): string {
@@ -62,24 +63,31 @@ function getModePath(): string {
   return path.join(getKeysDir(), "mode");
 }
 
-function writeFileAtomic(filePath: string, content: Buffer, mode: number): void {
-  const fd = fs.openSync(
-    filePath,
-    fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC,
-    mode
-  );
+/**
+ * Write file safely — prevents symlink TOCTOU attacks.
+ * Writes to a temp file with O_EXCL then renames atomically.
+ */
+function safeWriteFile(filePath: string, content: Buffer, mode: number): void {
+  try {
+    const stat = fs.lstatSync(filePath);
+    if (stat.isSymbolicLink()) {
+      throw new Error(`Refusing to write: ${filePath} is a symlink`);
+    }
+  } catch (e: any) {
+    if (e.code !== "ENOENT") throw e;
+  }
+
+  const dir = path.dirname(filePath);
+  const tmpPath = path.join(dir, `.tmp_${crypto.randomBytes(8).toString("hex")}`);
+  const fd = fs.openSync(tmpPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, mode);
   try {
     fs.writeSync(fd, content);
   } finally {
     fs.closeSync(fd);
   }
+  fs.renameSync(tmpPath, filePath);
 }
 
-/**
- * Generate a verification hash from the master key.
- * Stored on disk so we can verify the passphrase is correct on subsequent startups
- * without storing the key itself.
- */
 function generateVerifyHash(masterKey: Buffer): Buffer {
   return crypto
     .createHmac("sha256", masterKey)
@@ -87,9 +95,6 @@ function generateVerifyHash(masterKey: Buffer): Buffer {
     .digest();
 }
 
-/**
- * Derive master key from passphrase + stored salt.
- */
 function deriveFromPassphrase(passphrase: string, salt: Buffer): Buffer {
   return crypto.scryptSync(passphrase, salt, SCRYPT_KEYLEN, {
     N: SCRYPT_N,
@@ -98,18 +103,6 @@ function deriveFromPassphrase(passphrase: string, salt: Buffer): Buffer {
   });
 }
 
-/**
- * Initialize or load the master encryption key.
- *
- * Passphrase mode (passphrase provided):
- *   - First call: generate salt, derive key, store salt + verify hash. Key NOT stored.
- *   - Subsequent calls: load salt, re-derive key from passphrase, verify against hash.
- *   - If passphrase is wrong, throws.
- *
- * Dev mode (no passphrase):
- *   - First call: generate random key, store on disk.
- *   - Subsequent calls: load key from disk.
- */
 export function initializeMasterKey(passphrase?: string): Buffer {
   fs.mkdirSync(getKeysDir(), { recursive: true, mode: 0o700 });
 
@@ -118,13 +111,11 @@ export function initializeMasterKey(passphrase?: string): Buffer {
   const verifyPath = getVerifyPath();
   const keyPath = getMasterKeyPath();
 
-  // Determine mode from existing files
   const existingMode = fs.existsSync(modePath)
     ? fs.readFileSync(modePath, "utf-8").trim()
     : null;
 
   if (existingMode === "passphrase") {
-    // Passphrase mode — re-derive key from passphrase
     if (!passphrase) {
       throw new Error(
         "This ledger is passphrase-protected. Provide passphrase to unlock."
@@ -133,7 +124,6 @@ export function initializeMasterKey(passphrase?: string): Buffer {
     const salt = fs.readFileSync(saltPath);
     const masterKey = deriveFromPassphrase(passphrase, salt);
 
-    // Verify passphrase is correct
     const storedVerify = fs.readFileSync(verifyPath);
     const computedVerify = generateVerifyHash(masterKey);
     if (!crypto.timingSafeEqual(storedVerify, computedVerify)) {
@@ -145,54 +135,42 @@ export function initializeMasterKey(passphrase?: string): Buffer {
   }
 
   if (existingMode === "dev" || fs.existsSync(keyPath)) {
-    // Dev mode — load key from disk
     return fs.readFileSync(keyPath);
   }
 
-  // First-time initialization
   if (passphrase) {
-    // Passphrase mode: store salt + verify hash, NOT the key
     const salt = crypto.randomBytes(SALT_LENGTH);
     const masterKey = deriveFromPassphrase(passphrase, salt);
     const verifyHash = generateVerifyHash(masterKey);
 
-    writeFileAtomic(saltPath, salt, 0o600);
-    writeFileAtomic(verifyPath, verifyHash, 0o600);
-    writeFileAtomic(modePath, Buffer.from("passphrase"), 0o600);
-
-    // Do NOT write master.key — key exists only in memory
+    safeWriteFile(saltPath, salt, 0o600);
+    safeWriteFile(verifyPath, verifyHash, 0o600);
+    safeWriteFile(modePath, Buffer.from("passphrase"), 0o600);
 
     if (!fs.existsSync(getKeyVersionPath())) {
-      writeFileAtomic(getKeyVersionPath(), Buffer.from("1"), 0o600);
+      safeWriteFile(getKeyVersionPath(), Buffer.from("1"), 0o600);
     }
 
     return masterKey;
   } else {
-    // Dev mode: store random key on disk
     const masterKey = crypto.randomBytes(32);
-    writeFileAtomic(keyPath, masterKey, 0o600);
-    writeFileAtomic(modePath, Buffer.from("dev"), 0o600);
+    safeWriteFile(keyPath, masterKey, 0o600);
+    safeWriteFile(modePath, Buffer.from("dev"), 0o600);
 
     if (!fs.existsSync(getKeyVersionPath())) {
-      writeFileAtomic(getKeyVersionPath(), Buffer.from("1"), 0o600);
+      safeWriteFile(getKeyVersionPath(), Buffer.from("1"), 0o600);
     }
 
     return masterKey;
   }
 }
 
-/**
- * Load the master key (dev mode only). Returns null if passphrase mode or not initialized.
- */
 export function getMasterKey(): Buffer | null {
   const keyPath = getMasterKeyPath();
   if (!fs.existsSync(keyPath)) return null;
   return fs.readFileSync(keyPath);
 }
 
-/**
- * Check if the ledger uses passphrase mode.
- */
 export function isPassphraseMode(): boolean {
   const modePath = getModePath();
   if (!fs.existsSync(modePath)) return false;
@@ -207,39 +185,66 @@ export function getKeyVersion(): number {
 
 /**
  * Rotate the master key.
- * In passphrase mode: new passphrase required, old passphrase must have been used to load current key.
- * In dev mode: generates new random key.
+ *
+ * CRITICAL: This function returns the new key and version but does NOT
+ * write the new salt/verify/mode to disk. The caller (Ledger.rotateKey)
+ * must call commitKeyRotation() AFTER the database re-encryption transaction
+ * succeeds. This prevents the bricked-DB race condition where a crash
+ * between key file write and DB re-encryption leaves the DB unreadable.
  */
-export function rotateMasterKey(
+export function prepareKeyRotation(
   currentKey: Buffer,
   newPassphrase?: string
 ): {
   oldKey: Buffer;
   newKey: Buffer;
   version: number;
+  pendingFiles: { path: string; content: Buffer; mode: number }[];
 } {
   const currentVersion = getKeyVersion();
   const newVersion = currentVersion + 1;
+  const pendingFiles: { path: string; content: Buffer; mode: number }[] = [];
 
   let newKey: Buffer;
   if (newPassphrase) {
     const salt = crypto.randomBytes(SALT_LENGTH);
     newKey = deriveFromPassphrase(newPassphrase, salt);
     const verifyHash = generateVerifyHash(newKey);
-    writeFileAtomic(getSaltPath(), salt, 0o600);
-    writeFileAtomic(getVerifyPath(), verifyHash, 0o600);
-    writeFileAtomic(getModePath(), Buffer.from("passphrase"), 0o600);
-    // Remove dev key file if it exists
-    try { fs.unlinkSync(getMasterKeyPath()); } catch {}
+    pendingFiles.push({ path: getSaltPath(), content: salt, mode: 0o600 });
+    pendingFiles.push({ path: getVerifyPath(), content: verifyHash, mode: 0o600 });
+    pendingFiles.push({ path: getModePath(), content: Buffer.from("passphrase"), mode: 0o600 });
+    // Queue removal of dev key
+    pendingFiles.push({ path: getMasterKeyPath(), content: Buffer.alloc(0), mode: 0o600 });
   } else {
     newKey = crypto.randomBytes(32);
-    writeFileAtomic(getMasterKeyPath(), newKey, 0o600);
-    writeFileAtomic(getModePath(), Buffer.from("dev"), 0o600);
+    pendingFiles.push({ path: getMasterKeyPath(), content: newKey, mode: 0o600 });
+    pendingFiles.push({ path: getModePath(), content: Buffer.from("dev"), mode: 0o600 });
   }
 
-  writeFileAtomic(getKeyVersionPath(), Buffer.from(String(newVersion)), 0o600);
+  pendingFiles.push({
+    path: getKeyVersionPath(),
+    content: Buffer.from(String(newVersion)),
+    mode: 0o600,
+  });
 
-  return { oldKey: currentKey, newKey, version: newVersion };
+  return { oldKey: currentKey, newKey, version: newVersion, pendingFiles };
+}
+
+/**
+ * Commit key rotation files to disk.
+ * Called ONLY after database re-encryption succeeds.
+ */
+export function commitKeyRotation(
+  pendingFiles: { path: string; content: Buffer; mode: number }[]
+): void {
+  for (const file of pendingFiles) {
+    if (file.content.length === 0) {
+      // Delete the file (e.g., removing dev key in passphrase mode)
+      try { fs.unlinkSync(file.path); } catch {}
+    } else {
+      safeWriteFile(file.path, file.content, file.mode);
+    }
+  }
 }
 
 // --- Encryption / Decryption ---
@@ -296,7 +301,8 @@ export function encrypt(plaintext: string, key: Buffer): string {
   const packed = Buffer.concat([iv, encrypted, tag]);
   const result = ENCRYPTED_PREFIX + packed.toString("base64");
 
-  // Zero intermediate buffers to minimize plaintext residue in heap
+  // Zero cryptographic intermediate Buffers (effective — these are Buffer objects)
+  // NOTE: The returned `result` is a V8 string and CANNOT be zeroed.
   zeroBuffer(updateBuf);
   zeroBuffer(finalBuf);
   zeroBuffer(encrypted);
@@ -326,7 +332,7 @@ export function decrypt(encryptedValue: string, key: Buffer): string {
   const decrypted = Buffer.concat([updateBuf, finalBuf]);
   const result = decrypted.toString("utf8");
 
-  // Zero decrypted buffer — plaintext should not linger in heap
+  // Zero the Buffer forms (effective). The V8 string `result` cannot be zeroed.
   zeroBuffer(decrypted);
   zeroBuffer(updateBuf);
   zeroBuffer(finalBuf);
@@ -344,13 +350,6 @@ export function isEncrypted(value: string): boolean {
 const MIN_NGRAM = 3;
 const MAX_NGRAM = 6;
 
-/**
- * Generate blind index tokens with n-gram support and noise injection.
- *
- * N-grams enable prefix matching. Noise tokens (random HMACs) defeat
- * frequency analysis — an attacker can't distinguish real tokens from noise
- * without the blind index key.
- */
 export function generateBlindTokens(
   text: string,
   blindKey: Buffer
@@ -373,9 +372,9 @@ export function generateBlindTokens(
     }
   }
 
-  // Inject noise tokens to defeat frequency analysis
+  // Noise tokens use same length as real tokens to be indistinguishable
   for (let i = 0; i < BLIND_INDEX_NOISE_COUNT; i++) {
-    tokenSet.add(crypto.randomBytes(4).toString("hex"));
+    tokenSet.add(crypto.randomBytes(TOKEN_HEX_LENGTH / 2).toString("hex"));
   }
 
   return [...tokenSet];
@@ -402,8 +401,8 @@ function hmacToken(value: string, key: Buffer): string {
   const hmac = crypto.createHmac("sha256", key);
   hmac.update(value);
   const digest = hmac.digest();
-  const token = digest.toString("hex").slice(0, 8);
-  zeroBuffer(digest);
+  const token = digest.toString("hex").slice(0, TOKEN_HEX_LENGTH);
+  zeroBuffer(digest); // Zero cryptographic material (effective on Buffer)
   return token;
 }
 

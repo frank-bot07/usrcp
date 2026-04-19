@@ -22,9 +22,11 @@ import {
   isEncrypted,
   generateBlindTokens,
   generateSearchTokens,
-  rotateMasterKey,
+  prepareKeyRotation,
+  commitKeyRotation,
   zeroBuffer,
 } from "./encryption.js";
+import { ensurePrivateKeyEncrypted } from "./crypto.js";
 
 function getDefaultDbPath(): string {
   return path.join(os.homedir(), ".usrcp", "ledger.db");
@@ -114,6 +116,8 @@ export class Ledger {
     this.db.pragma("foreign_keys = ON");
     this.db.pragma("secure_delete = ON");
     this.masterKey = initializeMasterKey(passphrase);
+    // Encrypt Ed25519 private key if still plaintext on disk
+    ensurePrivateKeyEncrypted(this.masterKey);
     this.migrate();
   }
 
@@ -265,7 +269,8 @@ export class Ledger {
         scopes_accessed TEXT,
         event_ids TEXT,
         detail TEXT,
-        response_size_bytes INTEGER DEFAULT 0
+        response_size_bytes INTEGER DEFAULT 0,
+        integrity_tag TEXT
       );
 
       CREATE TABLE IF NOT EXISTS blind_index (
@@ -294,6 +299,13 @@ export class Ledger {
     this.db.exec(
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_events_idempotency ON timeline_events(idempotency_key) WHERE idempotency_key IS NOT NULL"
     );
+
+    // v0.1.3 migration: add integrity_tag to audit_log
+    try {
+      this.db.exec("ALTER TABLE audit_log ADD COLUMN integrity_tag TEXT");
+    } catch {
+      // Column already exists
+    }
 
     // v0.1.3: Drop FTS5 table — replaced by blind index to prevent plaintext leakage
     this.db.exec("DROP TABLE IF EXISTS timeline_fts");
@@ -376,40 +388,67 @@ export class Ledger {
     const scopes = Array.isArray(scopesOrDomain)
       ? scopesOrDomain.join(",")
       : scopesOrDomain || null;
-    // Encrypt audit fields — audit log should not be readable without the key
+
+    // Build the audit entry
+    const encAgentId = this.encryptGlobal(this.currentAgentId);
+    const encOperation = this.encryptGlobal(operation);
+    const encScopes = scopes ? this.encryptGlobal(scopes) : null;
+    const encEventIds = eventIds ? this.encryptGlobal(JSON.stringify(eventIds)) : null;
+    const encDetail = detail ? this.encryptGlobal(detail) : null;
+
+    // HMAC integrity tag — proves the audit entry was written by this ledger
+    // and has not been tampered with. Covers all encrypted fields.
+    const integrityPayload = [encAgentId, encOperation, encScopes || "", encEventIds || "", encDetail || ""].join("|");
+    const globalKey = deriveGlobalEncryptionKey(this.masterKey);
+    const integrityTag = crypto.createHmac("sha256", globalKey).update(integrityPayload).digest("hex").slice(0, 32);
+    zeroBuffer(globalKey);
+
     this.db
       .prepare(
-        `INSERT INTO audit_log (agent_id, operation, scopes_accessed, event_ids, detail, response_size_bytes)
-        VALUES (?, ?, ?, ?, ?, ?)`
+        `INSERT INTO audit_log (agent_id, operation, scopes_accessed, event_ids, detail, response_size_bytes, integrity_tag)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(
-        this.encryptGlobal(this.currentAgentId),
-        this.encryptGlobal(operation),
-        scopes ? this.encryptGlobal(scopes) : null,
-        eventIds ? this.encryptGlobal(JSON.stringify(eventIds)) : null,
-        detail ? this.encryptGlobal(detail) : null,
-        responseSize || 0
-      );
+      .run(encAgentId, encOperation, encScopes, encEventIds, encDetail, responseSize || 0, integrityTag);
   }
 
   getAuditLog(limit: number = 100): any[] {
     const rows = this.db
       .prepare("SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT ?")
       .all(limit) as any[];
-    return rows.map((row) => ({
-      id: row.id,
-      timestamp: row.timestamp,
-      agent_id: this.decryptGlobal(row.agent_id),
-      operation: this.decryptGlobal(row.operation),
-      scopes_accessed: row.scopes_accessed
-        ? this.decryptGlobal(row.scopes_accessed)
-        : null,
-      event_ids: row.event_ids
-        ? this.decryptGlobal(row.event_ids)
-        : null,
-      detail: row.detail ? this.decryptGlobal(row.detail) : null,
-      response_size_bytes: row.response_size_bytes,
-    }));
+
+    const globalKey = deriveGlobalEncryptionKey(this.masterKey);
+
+    return rows.map((row) => {
+      // Verify integrity tag — detect forged or tampered entries
+      let verified = false;
+      if (row.integrity_tag) {
+        const payload = [
+          row.agent_id, row.operation,
+          row.scopes_accessed || "", row.event_ids || "", row.detail || "",
+        ].join("|");
+        const expected = crypto.createHmac("sha256", globalKey).update(payload).digest("hex").slice(0, 32);
+        verified = crypto.timingSafeEqual(
+          Buffer.from(row.integrity_tag),
+          Buffer.from(expected)
+        );
+      }
+
+      return {
+        id: row.id,
+        timestamp: row.timestamp,
+        agent_id: this.decryptGlobal(row.agent_id),
+        operation: this.decryptGlobal(row.operation),
+        scopes_accessed: row.scopes_accessed
+          ? this.decryptGlobal(row.scopes_accessed)
+          : null,
+        event_ids: row.event_ids
+          ? this.decryptGlobal(row.event_ids)
+          : null,
+        detail: row.detail ? this.decryptGlobal(row.detail) : null,
+        response_size_bytes: row.response_size_bytes,
+        integrity_verified: verified,
+      };
+    });
   }
 
   // --- Core Identity ---
@@ -678,26 +717,46 @@ export class Ledger {
 
     if (realDomains.length === 0) return [];
 
-    const matchingEventIds = new Set<string>();
+    // Collect matches per domain (OR across domains, AND across tokens within a domain)
+    // An event must match ALL search tokens within its own domain.
+    const allMatchingEventIds = new Set<string>();
 
     for (const domain of realDomains) {
       const pseudo = this.domainPseudonym(domain);
       const searchTokens = this.getSearchTokens(query, domain);
       if (searchTokens.length === 0) continue;
 
+      // For each token, find matching events in this domain
+      let domainMatches: Set<string> | null = null;
       for (const token of searchTokens) {
         const matches = this.db
           .prepare(
             "SELECT DISTINCT event_id FROM blind_index WHERE token = ? AND domain = ?"
           )
           .all(token, pseudo) as any[];
-        for (const m of matches) {
-          matchingEventIds.add(m.event_id);
+        const tokenMatches = new Set(matches.map((m: any) => m.event_id));
+
+        if (domainMatches === null) {
+          domainMatches = tokenMatches;
+        } else {
+          // AND within domain: event must match ALL query tokens
+          const current: Set<string> = domainMatches;
+          domainMatches = new Set(
+            [...current].filter((id) => tokenMatches.has(id))
+          );
+        }
+      }
+
+      // OR across domains: add this domain's matches to the global set
+      if (domainMatches) {
+        for (const id of domainMatches) {
+          allMatchingEventIds.add(id);
         }
       }
     }
 
-    if (matchingEventIds.size === 0) return [];
+    if (allMatchingEventIds.size === 0) return [];
+    const matchingEventIds = allMatchingEventIds;
 
     // Fetch the actual events
     const ids = [...matchingEventIds];
@@ -1002,7 +1061,8 @@ export class Ledger {
    * This is an atomic operation — either everything is re-encrypted or nothing is.
    */
   rotateKey(passphrase?: string): { version: number; reencrypted: number } {
-    const { oldKey, newKey, version } = rotateMasterKey(this.masterKey, passphrase);
+    // Phase 1: Prepare new key material WITHOUT writing to disk
+    const { oldKey, newKey, version, pendingFiles } = prepareKeyRotation(this.masterKey, passphrase);
     let reencrypted = 0;
 
     const transaction = this.db.transaction(() => {
@@ -1072,10 +1132,16 @@ export class Ledger {
       ).run(reencGlobal(prefs.timezone), reencGlobal(prefs.custom));
     });
 
+    // Phase 2: Execute DB re-encryption in a single atomic transaction
     transaction();
 
+    // Phase 3: ONLY NOW commit key files to disk — DB is safely re-encrypted
+    commitKeyRotation(pendingFiles);
+
     // Update in-memory key
+    const oldMasterKey = this.masterKey;
     this.masterKey = newKey;
+    zeroBuffer(oldMasterKey);
 
     // Rebuild blind index with new key
     this.rebuildBlindIndex();
