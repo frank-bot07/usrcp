@@ -1,0 +1,257 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://usrcp.dev/schemas/get_state.json",
+  "title": "USRCP Get State Request/Response",
+  "description": "Schema for usrcp://get_state — query a user's identity, preferences, and recent timeline",
+
+  "definitions": {
+    "request": {
+      "type": "object",
+      "required": ["usrcp_version", "method", "user_id", "scope", "requesting_agent"],
+      "properties": {
+        "usrcp_version": {
+          "type": "string",
+          "const": "0.1.0",
+          "description": "Protocol version"
+        },
+        "method": {
+          "type": "string",
+          "const": "get_state"
+        },
+        "user_id": {
+          "type": "string",
+          "format": "uri",
+          "description": "Canonical user identifier. Format: usrcp://<ledger_host>/<user_hash>",
+          "examples": ["usrcp://ledger.usrcp.dev/u_7f3a9b2c"]
+        },
+        "scope": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "core_identity",
+              "global_preferences",
+              "recent_timeline",
+              "domain_context",
+              "active_projects"
+            ]
+          },
+          "minItems": 1,
+          "description": "Which state facets to retrieve. Agents request only what they need."
+        },
+        "requesting_agent": {
+          "type": "object",
+          "required": ["agent_id", "platform", "context_key"],
+          "properties": {
+            "agent_id": {
+              "type": "string",
+              "description": "Unique identifier for the requesting agent/application"
+            },
+            "platform": {
+              "type": "string",
+              "description": "Platform origin (e.g., 'cursor', 'obsidian', 'custom_agent')"
+            },
+            "context_key": {
+              "type": "string",
+              "description": "Scoped context key — cryptographic proof of access scope"
+            }
+          }
+        },
+        "timeline_window": {
+          "type": "object",
+          "properties": {
+            "last_n": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 50,
+              "description": "Number of recent events to retrieve"
+            },
+            "since": {
+              "type": "string",
+              "format": "date-time",
+              "description": "ISO 8601 timestamp — retrieve events after this time"
+            },
+            "domains": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Filter timeline to specific domains (e.g., ['coding', 'writing'])"
+            }
+          }
+        }
+      }
+    },
+
+    "response": {
+      "type": "object",
+      "required": ["usrcp_version", "user_id", "resolved_at", "state"],
+      "properties": {
+        "usrcp_version": {
+          "type": "string",
+          "const": "0.1.0"
+        },
+        "user_id": {
+          "type": "string",
+          "format": "uri"
+        },
+        "resolved_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server-side timestamp of state resolution"
+        },
+        "cache_hint": {
+          "type": "object",
+          "properties": {
+            "ttl_seconds": {
+              "type": "integer",
+              "description": "Suggested client-side cache duration"
+            },
+            "etag": {
+              "type": "string",
+              "description": "State hash for conditional requests"
+            }
+          }
+        },
+        "state": {
+          "type": "object",
+          "properties": {
+            "core_identity": {
+              "type": "object",
+              "description": "Stable user attributes — changes infrequently",
+              "properties": {
+                "display_name": { "type": "string" },
+                "roles": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "e.g., ['software_engineer', 'founder', 'data_scientist']"
+                },
+                "expertise_domains": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "domain": { "type": "string" },
+                      "level": {
+                        "type": "string",
+                        "enum": ["beginner", "intermediate", "advanced", "expert"]
+                      }
+                    }
+                  }
+                },
+                "communication_style": {
+                  "type": "string",
+                  "enum": ["concise", "detailed", "socratic", "pair_programming"],
+                  "description": "How the user prefers AI to communicate"
+                }
+              }
+            },
+            "global_preferences": {
+              "type": "object",
+              "description": "Cross-platform preferences — applies everywhere",
+              "properties": {
+                "language": { "type": "string", "default": "en" },
+                "timezone": { "type": "string", "examples": ["America/New_York"] },
+                "output_format": {
+                  "type": "string",
+                  "enum": ["markdown", "plain", "structured"],
+                  "default": "markdown"
+                },
+                "verbosity": {
+                  "type": "string",
+                  "enum": ["minimal", "standard", "verbose"],
+                  "default": "standard"
+                },
+                "custom": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "description": "Freeform key-value preferences"
+                }
+              }
+            },
+            "recent_timeline": {
+              "type": "array",
+              "items": { "$ref": "#/definitions/timeline_event" },
+              "description": "Ordered list of recent interactions across platforms"
+            },
+            "domain_context": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "description": "Domain-scoped state blob (e.g., coding context, writing projects)"
+              },
+              "description": "Per-domain state, keyed by domain name"
+            },
+            "active_projects": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "project_id": { "type": "string" },
+                  "name": { "type": "string" },
+                  "domain": { "type": "string" },
+                  "status": {
+                    "type": "string",
+                    "enum": ["active", "paused", "completed"]
+                  },
+                  "last_touched": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "summary": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "timeline_event": {
+      "type": "object",
+      "required": ["event_id", "timestamp", "platform", "domain", "summary"],
+      "properties": {
+        "event_id": {
+          "type": "string",
+          "description": "ULID — lexicographically sortable, globally unique"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "platform": {
+          "type": "string",
+          "description": "Originating platform"
+        },
+        "domain": {
+          "type": "string",
+          "description": "Semantic domain (coding, writing, research, personal, health, finance, etc.)"
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Human-readable summary of the interaction"
+        },
+        "intent": {
+          "type": "string",
+          "description": "What the user was trying to accomplish"
+        },
+        "outcome": {
+          "type": "string",
+          "enum": ["success", "partial", "failed", "abandoned"],
+          "description": "How the interaction resolved"
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": { "type": "string" },
+              "ref": { "type": "string", "format": "uri" }
+            }
+          },
+          "description": "References to outputs (files, PRs, documents)"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://usrcp.dev/schemas/append_event.json",
+  "title": "USRCP Append Event",
+  "description": "Schema for usrcp://append_event — write an interaction event to the user's state ledger",
+
+  "definitions": {
+    "request": {
+      "type": "object",
+      "required": ["usrcp_version", "method", "user_id", "requesting_agent", "event"],
+      "properties": {
+        "usrcp_version": {
+          "type": "string",
+          "const": "0.1.0"
+        },
+        "method": {
+          "type": "string",
+          "const": "append_event"
+        },
+        "user_id": {
+          "type": "string",
+          "format": "uri",
+          "description": "Canonical user identifier"
+        },
+        "requesting_agent": {
+          "type": "object",
+          "required": ["agent_id", "platform", "context_key"],
+          "properties": {
+            "agent_id": {
+              "type": "string"
+            },
+            "platform": {
+              "type": "string"
+            },
+            "context_key": {
+              "type": "string",
+              "description": "Scoped context key — determines which domain this event writes to"
+            }
+          }
+        },
+        "event": {
+          "$ref": "#/definitions/event_payload"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "description": "Client-generated key to prevent duplicate writes on retry"
+        }
+      }
+    },
+
+    "event_payload": {
+      "type": "object",
+      "required": ["domain", "summary", "intent", "outcome"],
+      "properties": {
+        "domain": {
+          "type": "string",
+          "description": "Semantic domain this event belongs to (coding, writing, research, personal, health, finance, etc.)"
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Concise human-readable summary of what happened"
+        },
+        "intent": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "What the user was trying to accomplish"
+        },
+        "outcome": {
+          "type": "string",
+          "enum": ["success", "partial", "failed", "abandoned"],
+          "description": "How the interaction resolved"
+        },
+        "detail": {
+          "type": "object",
+          "description": "Structured detail blob — schema varies by domain",
+          "additionalProperties": true,
+          "examples": [
+            {
+              "language": "typescript",
+              "files_modified": ["src/auth.ts", "src/middleware.ts"],
+              "commit_sha": "a1b2c3d"
+            },
+            {
+              "document_type": "blog_post",
+              "word_count": 1200,
+              "topic": "distributed systems"
+            }
+          ]
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["type", "ref"],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["file", "url", "git_commit", "document", "image", "other"]
+              },
+              "ref": {
+                "type": "string",
+                "format": "uri",
+                "description": "URI reference to the artifact"
+              },
+              "label": {
+                "type": "string",
+                "description": "Human-readable label"
+              }
+            }
+          }
+        },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Freeform tags for filtering and search"
+        },
+        "session_id": {
+          "type": "string",
+          "description": "Optional session identifier to group related events"
+        },
+        "parent_event_id": {
+          "type": "string",
+          "description": "Optional reference to a parent event (for threaded/nested interactions)"
+        }
+      }
+    },
+
+    "response": {
+      "type": "object",
+      "required": ["usrcp_version", "status", "event_id", "timestamp"],
+      "properties": {
+        "usrcp_version": {
+          "type": "string",
+          "const": "0.1.0"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["accepted", "rejected", "rate_limited"]
+        },
+        "event_id": {
+          "type": "string",
+          "description": "Server-assigned ULID for the event"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server-assigned canonical timestamp"
+        },
+        "ledger_sequence": {
+          "type": "integer",
+          "description": "Monotonic sequence number in the user's ledger"
+        },
+        "rejection_reason": {
+          "type": "string",
+          "description": "Present only when status is 'rejected'"
+        }
+      }
+    }
+  }
+}

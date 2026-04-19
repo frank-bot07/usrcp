@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://usrcp.dev/schemas/handshake.json",
+  "title": "USRCP Authentication Handshake",
+  "description": "Schema for the USRCP auth handshake — agent registration and scoped context key issuance",
+
+  "definitions": {
+    "agent_registration_request": {
+      "type": "object",
+      "required": ["usrcp_version", "method", "agent_id", "platform", "requested_scopes"],
+      "properties": {
+        "usrcp_version": {
+          "type": "string",
+          "const": "0.1.0"
+        },
+        "method": {
+          "type": "string",
+          "const": "register_agent"
+        },
+        "agent_id": {
+          "type": "string",
+          "description": "Globally unique agent identifier"
+        },
+        "platform": {
+          "type": "string",
+          "description": "Platform name (e.g., 'cursor', 'obsidian', 'custom')"
+        },
+        "agent_public_key": {
+          "type": "string",
+          "description": "Ed25519 public key in base64url encoding for signed requests"
+        },
+        "requested_scopes": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/scope_request" },
+          "minItems": 1,
+          "description": "Domains and permissions this agent requests"
+        },
+        "callback_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Optional webhook for push-based state updates"
+        }
+      }
+    },
+
+    "scope_request": {
+      "type": "object",
+      "required": ["domain", "permissions"],
+      "properties": {
+        "domain": {
+          "type": "string",
+          "description": "Domain to access (e.g., 'coding', 'writing', 'health', '*' for global)"
+        },
+        "permissions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["read", "append", "sync"]
+          },
+          "minItems": 1
+        },
+        "justification": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Human-readable reason for this scope request — shown to user during approval"
+        }
+      }
+    },
+
+    "handshake_response": {
+      "type": "object",
+      "required": ["usrcp_version", "status"],
+      "properties": {
+        "usrcp_version": {
+          "type": "string",
+          "const": "0.1.0"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["approved", "pending_user_approval", "rejected"]
+        },
+        "context_key": {
+          "type": "string",
+          "description": "Scoped context key — present only when status is 'approved'. JWT signed by ledger, encodes granted scopes and expiry."
+        },
+        "granted_scopes": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/scope_request" },
+          "description": "Scopes actually granted (may be subset of requested)"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the context key expires"
+        },
+        "refresh_token": {
+          "type": "string",
+          "description": "Token to refresh the context key without re-approval"
+        },
+        "approval_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Present when status is 'pending_user_approval' — URL for user to approve scopes"
+        }
+      }
+    },
+
+    "token_refresh_request": {
+      "type": "object",
+      "required": ["usrcp_version", "method", "refresh_token", "agent_id"],
+      "properties": {
+        "usrcp_version": {
+          "type": "string",
+          "const": "0.1.0"
+        },
+        "method": {
+          "type": "string",
+          "const": "refresh_token"
+        },
+        "refresh_token": {
+          "type": "string"
+        },
+        "agent_id": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}
