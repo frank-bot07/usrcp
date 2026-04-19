@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -87,21 +88,22 @@ describe("initializeIdentity / getIdentity", () => {
   });
 
   it("creates identity on first call", () => {
-    const identity = initializeIdentity();
+    const identity = initializeIdentity(crypto.randomBytes(32));
     expect(identity.user_id).toMatch(/^u_[0-9a-f]{16}$/);
     expect(identity.public_key).toContain("BEGIN PUBLIC KEY");
     expect(identity.created_at).toBeTruthy();
   });
 
   it("returns same identity on subsequent calls", () => {
-    const id1 = initializeIdentity();
-    const id2 = initializeIdentity();
+    const testKey = crypto.randomBytes(32);
+    const id1 = initializeIdentity(testKey);
+    const id2 = initializeIdentity(testKey);
     expect(id1.user_id).toBe(id2.user_id);
     expect(id1.created_at).toBe(id2.created_at);
   });
 
   it("creates key files on disk", () => {
-    initializeIdentity();
+    initializeIdentity(crypto.randomBytes(32));
     const keysDir = path.join(tmpHome, ".usrcp", "keys");
     expect(fs.existsSync(path.join(keysDir, "identity.json"))).toBe(true);
     expect(fs.existsSync(path.join(keysDir, "private.pem"))).toBe(true);
@@ -114,7 +116,7 @@ describe("initializeIdentity / getIdentity", () => {
   });
 
   it("getIdentity returns identity after init", () => {
-    initializeIdentity();
+    initializeIdentity(crypto.randomBytes(32));
     const identity = getIdentity();
     expect(identity).not.toBeNull();
     expect(identity!.user_id).toMatch(/^u_/);

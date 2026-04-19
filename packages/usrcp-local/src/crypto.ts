@@ -71,10 +71,10 @@ function safeWriteFile(filePath: string, content: string | Buffer | NodeJS.Array
 
 /**
  * Initialize identity with encrypted private key storage.
- * The private key is encrypted with the global encryption key
- * derived from the master key. It is never stored in plaintext.
+ * masterKey is REQUIRED — the private key is encrypted before the first
+ * byte hits disk. There is no plaintext window and no temp key.
  */
-export function initializeIdentity(masterKey?: Buffer): LedgerIdentity {
+export function initializeIdentity(masterKey: Buffer): LedgerIdentity {
   ensureKeysDir();
 
   const identityPath = path.join(getKeysDir(), "identity.json");
@@ -88,19 +88,10 @@ export function initializeIdentity(masterKey?: Buffer): LedgerIdentity {
   const keyPair = generateKeyPair();
   const user_id = deriveUserId(keyPair.publicKey);
 
-  if (masterKey) {
-    // Encrypt private key BEFORE writing — no plaintext window
-    const globalKey = deriveGlobalEncryptionKey(masterKey);
-    const encryptedPrivateKey = encrypt(keyPair.privateKey, globalKey);
-    safeWriteFile(privateKeyPath, encryptedPrivateKey, 0o600);
-  } else {
-    // No master key yet — encrypt with a temporary key, re-encrypt on ledger init
-    const tempKey = crypto.randomBytes(32);
-    const encryptedPrivateKey = encrypt(keyPair.privateKey, tempKey);
-    safeWriteFile(privateKeyPath, encryptedPrivateKey, 0o600);
-    // Private key is NEVER plaintext on disk
-  }
-
+  // Encrypt private key with the real master key BEFORE writing to disk
+  const globalKey = deriveGlobalEncryptionKey(masterKey);
+  const encryptedPrivateKey = encrypt(keyPair.privateKey, globalKey);
+  safeWriteFile(privateKeyPath, encryptedPrivateKey, 0o600);
   safeWriteFile(publicKeyPath, keyPair.publicKey, 0o644);
 
   const identity: LedgerIdentity = {

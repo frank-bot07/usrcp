@@ -151,7 +151,6 @@ describe("Zod schema validation — tool definitions", () => {
     origHome = process.env.HOME;
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-zod-test-"));
     process.env.HOME = tmpHome;
-    initializeIdentity();
     const created = createServer();
     server = created.server;
   });

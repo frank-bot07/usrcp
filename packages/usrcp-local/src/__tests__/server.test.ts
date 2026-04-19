@@ -15,7 +15,7 @@ beforeEach(() => {
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-test-server-"));
   process.env.HOME = tmpHome;
 
-  initializeIdentity();
+  // Identity init happens inside Ledger constructor
   const created = createServer();
   server = created.server;
   // created.ledger is available but tests use server tools directly

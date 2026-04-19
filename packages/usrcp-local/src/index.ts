@@ -7,7 +7,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { createServer } from "./server.js";
 import { Ledger } from "./ledger.js";
 import { initializeIdentity, getIdentity } from "./crypto.js";
-import { isPassphraseMode } from "./encryption.js";
+import { isPassphraseMode, initializeMasterKey } from "./encryption.js";
 
 const USRCP_DIR = path.join(os.homedir(), ".usrcp");
 
@@ -57,8 +57,9 @@ function cmdInit(): void {
 
   const passphrase = getPassphrase();
 
-  // Initialize identity and keys
-  const identity = initializeIdentity();
+  // Initialize master key first, then identity (which needs it for encryption)
+  const masterKey = initializeMasterKey(passphrase);
+  const identity = initializeIdentity(masterKey);
   console.error(`  User ID:  ${identity.user_id}`);
   console.error(`  Keys:     ${USRCP_DIR}/keys/`);
   console.error(`  Ledger:   ${USRCP_DIR}/ledger.db`);
@@ -145,10 +146,7 @@ function cmdStatus(): void {
 }
 
 async function cmdServe(): Promise<void> {
-  const identity = getIdentity();
-  if (!identity) {
-    initializeIdentity();
-  }
+  // Identity init happens inside Ledger constructor if needed
 
   const passphraseRequired = isPassphraseMode();
   const passphrase = passphraseRequired ? getPassphrase() : undefined;

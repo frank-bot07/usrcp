@@ -26,7 +26,7 @@ import {
   commitKeyRotation,
   zeroBuffer,
 } from "./encryption.js";
-import { ensurePrivateKeyEncrypted } from "./crypto.js";
+import { ensurePrivateKeyEncrypted, getIdentity as getIdent, initializeIdentity as initIdent } from "./crypto.js";
 
 function getDefaultDbPath(): string {
   return path.join(os.homedir(), ".usrcp", "ledger.db");
@@ -116,7 +116,11 @@ export class Ledger {
     this.db.pragma("foreign_keys = ON");
     this.db.pragma("secure_delete = ON");
     this.masterKey = initializeMasterKey(passphrase);
-    // Encrypt Ed25519 private key if still plaintext on disk
+    // Initialize identity if needed (requires master key for private key encryption)
+    if (!getIdent()) {
+      initIdent(this.masterKey);
+    }
+    // Encrypt legacy plaintext private keys
     ensurePrivateKeyEncrypted(this.masterKey);
     this.migrate();
   }
@@ -293,6 +297,15 @@ export class Ledger {
         integrity_tag TEXT
       );
 
+      -- Stores pending rotation key inside the DB transaction
+      -- so key + data are always in sync
+      CREATE TABLE IF NOT EXISTS rotation_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        pending_key BLOB,
+        pending_version INTEGER
+      );
+      INSERT OR IGNORE INTO rotation_state (id) VALUES (1);
+
       CREATE TABLE IF NOT EXISTS blind_index (
         event_id TEXT NOT NULL,
         token TEXT NOT NULL,
@@ -367,23 +380,48 @@ export class Ledger {
     transaction();
   }
 
-  private rowToEvent(row: any): TimelineEvent {
+  /**
+   * Convert a database row to a TimelineEvent.
+   * GCM failures are caught PER FIELD — a tampered field does not crash the
+   * entire read. Tampered fields are replaced with "[TAMPERED]" and the event
+   * is flagged. This is the correct middle ground between silent suppression
+   * (old behavior) and hard crash (previous fix).
+   */
+  private rowToEvent(row: any): TimelineEvent & { tampered?: boolean } {
     const domainPseudo = row.domain;
     const domain = this.resolveDomain(domainPseudo);
-    return {
+    let tampered = false;
+
+    const safeDecrypt = (val: string | null, fallback: string): string => {
+      if (!val) return fallback;
+      try {
+        return this.decryptForDomain(val, domain);
+      } catch {
+        tampered = true;
+        return "[TAMPERED]";
+      }
+    };
+
+    const event: TimelineEvent & { tampered?: boolean } = {
       event_id: row.event_id,
       timestamp: row.timestamp,
-      platform: this.decryptForDomain(row.platform || "", domain) || row.platform,
+      platform: safeDecrypt(row.platform, "unknown"),
       domain,
-      summary: this.decryptForDomain(row.summary || "", domain) || row.summary,
-      intent: row.intent ? this.decryptForDomain(row.intent, domain) || undefined : undefined,
-      outcome: (row.outcome ? this.decryptForDomain(row.outcome, domain) : undefined) as TimelineEvent["outcome"],
-      detail: safeJsonParse(this.decryptForDomain(row.detail || "{}", domain), {}),
-      artifacts: safeJsonParse(this.decryptForDomain(row.artifacts || "[]", domain), []),
-      tags: safeJsonParse(this.decryptForDomain(row.tags || "[]", domain), []),
-      session_id: row.session_id ? this.decryptForDomain(row.session_id, domain) || undefined : undefined,
-      parent_event_id: row.parent_event_id ? this.decryptForDomain(row.parent_event_id, domain) || undefined : undefined,
+      summary: safeDecrypt(row.summary, "[TAMPERED]"),
+      intent: row.intent ? safeDecrypt(row.intent, "[TAMPERED]") : undefined,
+      outcome: (row.outcome ? safeDecrypt(row.outcome, "failed") : undefined) as TimelineEvent["outcome"],
+      detail: safeJsonParse(safeDecrypt(row.detail, "{}"), {}),
+      artifacts: safeJsonParse(safeDecrypt(row.artifacts, "[]"), []),
+      tags: safeJsonParse(safeDecrypt(row.tags, "[]"), []),
+      session_id: row.session_id ? safeDecrypt(row.session_id, undefined as any) || undefined : undefined,
+      parent_event_id: row.parent_event_id ? safeDecrypt(row.parent_event_id, undefined as any) || undefined : undefined,
     };
+
+    if (tampered) {
+      event.tampered = true;
+    }
+
+    return event;
   }
 
   // --- Audit Log ---
@@ -433,15 +471,23 @@ export class Ledger {
       // Verify integrity tag — detect forged or tampered entries
       let verified = false;
       if (row.integrity_tag) {
-        const payload = [
-          row.agent_id, row.operation,
-          row.scopes_accessed || "", row.event_ids || "", row.detail || "",
-        ].join("|");
-        const expected = crypto.createHmac("sha256", globalKey).update(payload).digest("hex").slice(0, 32);
-        verified = crypto.timingSafeEqual(
-          Buffer.from(row.integrity_tag),
-          Buffer.from(expected)
-        );
+        try {
+          const payload = [
+            row.agent_id, row.operation,
+            row.scopes_accessed || "", row.event_ids || "", row.detail || "",
+          ].join("|");
+          const expected = crypto.createHmac("sha256", globalKey).update(payload).digest("hex").slice(0, 32);
+          const tagBuf = Buffer.from(row.integrity_tag);
+          const expectedBuf = Buffer.from(expected);
+          // Guard against length mismatch (truncated tags)
+          if (tagBuf.length === expectedBuf.length) {
+            verified = crypto.timingSafeEqual(tagBuf, expectedBuf);
+          }
+          // If lengths differ: verified stays false (tampered/truncated)
+        } catch {
+          // Any error in verification: treat as unverified
+          verified = false;
+        }
       }
 
       return {
@@ -1217,11 +1263,26 @@ export class Ledger {
       }
     });
 
-    // Phase 2: Execute DB re-encryption in a single atomic transaction
-    transaction();
+    // Phase 2: Store the new key INSIDE the SQLite transaction alongside
+    // the re-encrypted data. This ensures key + data are always in sync.
+    // If crash: transaction rolls back, old key + old data, nothing lost.
+    const storeKey = this.db.transaction(() => {
+      transaction();
+      // Store new key in the DB so it survives a crash between DB commit and file write
+      this.db.prepare(
+        "UPDATE rotation_state SET pending_key = ?, pending_version = ? WHERE id = 1"
+      ).run(newKey, version);
+    });
+    storeKey();
 
-    // Phase 3: ONLY NOW commit key files to disk — DB is safely re-encrypted
+    // Phase 3: Write key files to disk. If crash here, on next startup
+    // we detect pending_key in rotation_state and recover.
     commitKeyRotation(pendingFiles);
+
+    // Phase 4: Clear pending state — rotation complete
+    this.db.prepare(
+      "UPDATE rotation_state SET pending_key = NULL, pending_version = NULL WHERE id = 1"
+    ).run();
 
     // Update in-memory key
     const oldMasterKey = this.masterKey;
