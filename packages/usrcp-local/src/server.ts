@@ -91,7 +91,6 @@ export function createServer(passphrase?: string): { server: McpServer; shutdown
         .describe("Identifying name of the calling agent/platform"),
     },
     async (params) => {
-      ledger.setAgentId(params.caller);
       const state = ledger.getState(params.scopes);
 
       if (
@@ -197,8 +196,7 @@ export function createServer(passphrase?: string): { server: McpServer; shutdown
     },
     async (params) => {
       const { platform, idempotency_key, ...eventInput } = params;
-      ledger.setAgentId(platform);
-      const result = ledger.appendEvent(eventInput, platform, idempotency_key);
+      const result = ledger.appendEvent(eventInput, platform, idempotency_key, platform);
 
       return {
         content: [
@@ -406,7 +404,6 @@ export function createServer(passphrase?: string): { server: McpServer; shutdown
         .describe("Identifying name of the calling agent/platform"),
     },
     async (params) => {
-      ledger.setAgentId(params.caller);
       const results = ledger.searchTimeline(params.query, {
         limit: params.limit,
         domain: params.domain,

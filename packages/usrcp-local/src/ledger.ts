@@ -129,10 +129,23 @@ export class Ledger {
   private decryptForDomain(ciphertext: string, domain: string): string {
     if (!isEncrypted(ciphertext)) return ciphertext;
     const key = deriveDomainEncryptionKey(this.masterKey, domain);
+    return decrypt(ciphertext, key);
+    // GCM auth failure THROWS — this is intentional.
+    // Tampered data must not be silently accepted.
+  }
+
+  /**
+   * Safe decrypt that returns a fallback on failure.
+   * Use ONLY for backward-compatible reads of legacy unencrypted data.
+   * NEVER use for data that should be encrypted — use decryptForDomain instead.
+   */
+  private decryptForDomainSafe(ciphertext: string, domain: string, fallback: string): string {
+    if (!isEncrypted(ciphertext)) return ciphertext; // Legacy plaintext
     try {
+      const key = deriveDomainEncryptionKey(this.masterKey, domain);
       return decrypt(ciphertext, key);
     } catch {
-      return "{}";
+      return fallback;
     }
   }
 
@@ -144,10 +157,17 @@ export class Ledger {
   private decryptGlobal(ciphertext: string): string {
     if (!isEncrypted(ciphertext)) return ciphertext;
     const key = deriveGlobalEncryptionKey(this.masterKey);
+    return decrypt(ciphertext, key);
+    // GCM auth failure THROWS — tampered data must not be silently accepted.
+  }
+
+  private decryptGlobalSafe(ciphertext: string, fallback: string): string {
+    if (!isEncrypted(ciphertext)) return ciphertext;
     try {
+      const key = deriveGlobalEncryptionKey(this.masterKey);
       return decrypt(ciphertext, key);
     } catch {
-      return "";
+      return fallback;
     }
   }
 
@@ -368,29 +388,20 @@ export class Ledger {
 
   // --- Audit Log ---
 
-  private currentAgentId = "local";
-
-  /**
-   * Set the agent identity for audit logging.
-   * Called by the MCP server when it knows who's calling.
-   */
-  setAgentId(agentId: string): void {
-    this.currentAgentId = agentId || "local";
-  }
-
   private logAudit(
     operation: string,
     scopesOrDomain?: string | string[],
     eventIds?: string[],
     detail?: string,
-    responseSize?: number
+    responseSize?: number,
+    agentId: string = "system"
   ): void {
     const scopes = Array.isArray(scopesOrDomain)
       ? scopesOrDomain.join(",")
       : scopesOrDomain || null;
 
     // Build the audit entry
-    const encAgentId = this.encryptGlobal(this.currentAgentId);
+    const encAgentId = this.encryptGlobal(agentId);
     const encOperation = this.encryptGlobal(operation);
     const encScopes = scopes ? this.encryptGlobal(scopes) : null;
     const encEventIds = eventIds ? this.encryptGlobal(JSON.stringify(eventIds)) : null;
@@ -484,6 +495,7 @@ export class Ledger {
         this.encryptGlobal(JSON.stringify(merged.expertise_domains)),
         this.encryptGlobal(merged.communication_style)
       );
+    this.logAudit("update_identity");
   }
 
   // --- Global Preferences ---
@@ -493,10 +505,10 @@ export class Ledger {
       .prepare("SELECT * FROM global_preferences WHERE id = 1")
       .get() as any;
     return {
-      language: row.language,
+      language: this.decryptGlobal(row.language),
       timezone: this.decryptGlobal(row.timezone),
-      output_format: row.output_format as GlobalPreferences["output_format"],
-      verbosity: row.verbosity as GlobalPreferences["verbosity"],
+      output_format: this.decryptGlobal(row.output_format) as GlobalPreferences["output_format"],
+      verbosity: this.decryptGlobal(row.verbosity) as GlobalPreferences["verbosity"],
       custom: safeJsonParse(this.decryptGlobal(row.custom), {}),
     };
   }
@@ -519,12 +531,13 @@ export class Ledger {
         WHERE id = 1`
       )
       .run(
-        merged.language,
+        this.encryptGlobal(merged.language),
         this.encryptGlobal(merged.timezone),
-        merged.output_format,
-        merged.verbosity,
+        this.encryptGlobal(merged.output_format),
+        this.encryptGlobal(merged.verbosity),
         this.encryptGlobal(JSON.stringify(merged.custom))
       );
+    this.logAudit("update_preferences");
   }
 
   // --- Timeline Events ---
@@ -561,7 +574,8 @@ export class Ledger {
   appendEvent(
     event: AppendEventInput,
     platform: string,
-    idempotencyKey?: string
+    idempotencyKey?: string,
+    agentId: string = "system"
   ): {
     event_id: string;
     timestamp: string;
@@ -657,8 +671,7 @@ export class Ledger {
       insertToken.run(event_id, token, domainPseudo);
     }
 
-    // Audit log
-    this.logAudit("append_event", domainPseudo, [event_id]);
+    this.logAudit("append_event", domainPseudo, [event_id], undefined, undefined, agentId);
 
     return { event_id, timestamp, ledger_sequence };
   }
@@ -770,7 +783,9 @@ export class Ledger {
       )
       .all(...ids, limit) as any[];
 
-    return rows.map((r) => this.rowToEvent(r));
+    const results = rows.map((r) => this.rowToEvent(r));
+    this.logAudit("search_timeline", undefined, results.map((e) => e.event_id), `query_length=${query.length}`);
+    return results;
   }
 
   private getAllRealDomains(): string[] {
@@ -885,17 +900,24 @@ export class Ledger {
   // --- Active Projects ---
 
   getProjects(status?: string): ActiveProject[] {
-    let query = "SELECT * FROM active_projects";
-    const params: any[] = [];
+    // All project fields are encrypted — fetch all and filter in memory
+    const rows = this.db
+      .prepare("SELECT * FROM active_projects ORDER BY last_touched DESC")
+      .all() as any[];
+
+    const projects = rows.map((row: any) => ({
+      project_id: row.project_id,
+      name: this.decryptGlobal(row.name),
+      domain: this.decryptGlobal(row.domain),
+      status: this.decryptGlobal(row.status) as ActiveProject["status"],
+      last_touched: row.last_touched,
+      summary: this.decryptGlobal(row.summary),
+    }));
 
     if (status) {
-      query += " WHERE status = ?";
-      params.push(status);
+      return projects.filter((p) => p.status === status);
     }
-
-    query += " ORDER BY last_touched DESC";
-
-    return this.db.prepare(query).all(...params) as ActiveProject[];
+    return projects;
   }
 
   upsertProject(project: ActiveProject): void {
@@ -912,12 +934,13 @@ export class Ledger {
       )
       .run(
         project.project_id,
-        project.name,
-        project.domain,
-        project.status,
+        this.encryptGlobal(project.name),
+        this.encryptGlobal(project.domain),
+        this.encryptGlobal(project.status),
         project.last_touched || new Date().toISOString(),
-        project.summary
+        this.encryptGlobal(project.summary)
       );
+    this.logAudit("upsert_project", undefined, [project.project_id]);
   }
 
   // --- Domain Context ---
@@ -1094,28 +1117,55 @@ export class Ledger {
         reencrypted++;
       }
 
-      // Re-encrypt domain context
-      const contexts = this.db
-        .prepare("SELECT domain, context FROM domain_context")
-        .all() as any[];
-      const updateCtx = this.db.prepare(
-        "UPDATE domain_context SET context = ? WHERE domain = ?"
-      );
-      for (const c of contexts) {
-        const oldDomainKey = deriveDomainEncryptionKey(oldKey, c.domain);
-        const newDomainKey = deriveDomainEncryptionKey(newKey, c.domain);
-        const plain = isEncrypted(c.context) ? decrypt(c.context, oldDomainKey) : c.context;
-        updateCtx.run(encrypt(plain, newDomainKey), c.domain);
-      }
-
-      // Re-encrypt identity
+      // Re-encrypt domain_map: re-derive pseudonyms and re-encrypt names
+      const domainMaps = this.db.prepare("SELECT pseudonym, encrypted_name FROM domain_map").all() as any[];
       const oldGlobalKey = deriveGlobalEncryptionKey(oldKey);
       const newGlobalKey = deriveGlobalEncryptionKey(newKey);
-      const identity = this.db.prepare("SELECT * FROM core_identity WHERE id = 1").get() as any;
+
       const reencGlobal = (val: string) => {
         const plain = isEncrypted(val) ? decrypt(val, oldGlobalKey) : val;
         return encrypt(plain, newGlobalKey);
       };
+
+      // Collect real domain names, delete old mappings, insert new
+      const domainNames: string[] = [];
+      for (const dm of domainMaps) {
+        const realName = isEncrypted(dm.encrypted_name) ? decrypt(dm.encrypted_name, oldGlobalKey) : dm.encrypted_name;
+        domainNames.push(realName);
+      }
+      this.db.exec("DELETE FROM domain_map");
+      const insertMap = this.db.prepare("INSERT INTO domain_map (pseudonym, encrypted_name) VALUES (?, ?)");
+      for (const name of domainNames) {
+        // New pseudonym derived from new master key
+        const newPseudo = "d_" + crypto.createHmac("sha256", newKey).update(`usrcp-domain-pseudo:${name}`).digest("hex").slice(0, 12);
+        insertMap.run(newPseudo, encrypt(name, newGlobalKey));
+      }
+
+      // Re-encrypt domain context with new pseudonyms
+      const contexts = this.db.prepare("SELECT domain, context FROM domain_context").all() as any[];
+      this.db.exec("DELETE FROM domain_context");
+      const insertCtx = this.db.prepare("INSERT INTO domain_context (domain, context, updated_at) VALUES (?, ?, datetime('now'))");
+      for (const c of contexts) {
+        // Resolve old pseudonym to real domain name
+        const realDomain = domainMaps.find((dm: any) => dm.pseudonym === c.domain);
+        if (!realDomain) continue;
+        const realName = isEncrypted(realDomain.encrypted_name) ? decrypt(realDomain.encrypted_name, oldGlobalKey) : realDomain.encrypted_name;
+        const oldDomainKey = deriveDomainEncryptionKey(oldKey, realName);
+        const newDomainKey = deriveDomainEncryptionKey(newKey, realName);
+        const plain = isEncrypted(c.context) ? decrypt(c.context, oldDomainKey) : c.context;
+        const newPseudo = "d_" + crypto.createHmac("sha256", newKey).update(`usrcp-domain-pseudo:${realName}`).digest("hex").slice(0, 12);
+        insertCtx.run(newPseudo, encrypt(plain, newDomainKey));
+      }
+
+      // Update timeline_events domain column to new pseudonyms
+      for (const name of domainNames) {
+        const oldPseudo = "d_" + crypto.createHmac("sha256", oldKey).update(`usrcp-domain-pseudo:${name}`).digest("hex").slice(0, 12);
+        const newPseudo = "d_" + crypto.createHmac("sha256", newKey).update(`usrcp-domain-pseudo:${name}`).digest("hex").slice(0, 12);
+        this.db.prepare("UPDATE timeline_events SET domain = ? WHERE domain = ?").run(newPseudo, oldPseudo);
+      }
+
+      // Re-encrypt identity
+      const identity = this.db.prepare("SELECT * FROM core_identity WHERE id = 1").get() as any;
       this.db.prepare(
         "UPDATE core_identity SET display_name=?, roles=?, expertise_domains=?, communication_style=? WHERE id=1"
       ).run(
@@ -1125,11 +1175,46 @@ export class Ledger {
         reencGlobal(identity.communication_style)
       );
 
-      // Re-encrypt preferences
+      // Re-encrypt ALL preference fields
       const prefs = this.db.prepare("SELECT * FROM global_preferences WHERE id = 1").get() as any;
       this.db.prepare(
-        "UPDATE global_preferences SET timezone=?, custom=? WHERE id=1"
-      ).run(reencGlobal(prefs.timezone), reencGlobal(prefs.custom));
+        "UPDATE global_preferences SET language=?, timezone=?, output_format=?, verbosity=?, custom=? WHERE id=1"
+      ).run(
+        reencGlobal(prefs.language),
+        reencGlobal(prefs.timezone),
+        reencGlobal(prefs.output_format),
+        reencGlobal(prefs.verbosity),
+        reencGlobal(prefs.custom)
+      );
+
+      // Re-encrypt active_projects
+      const projects = this.db.prepare("SELECT * FROM active_projects").all() as any[];
+      const updateProject = this.db.prepare(
+        "UPDATE active_projects SET name=?, domain=?, status=?, summary=? WHERE project_id=?"
+      );
+      for (const p of projects) {
+        updateProject.run(
+          reencGlobal(p.name), reencGlobal(p.domain),
+          reencGlobal(p.status), reencGlobal(p.summary), p.project_id
+        );
+      }
+
+      // Re-encrypt audit_log
+      const audits = this.db.prepare("SELECT * FROM audit_log").all() as any[];
+      const updateAudit = this.db.prepare(
+        "UPDATE audit_log SET agent_id=?, operation=?, scopes_accessed=?, event_ids=?, detail=?, integrity_tag=? WHERE id=?"
+      );
+      for (const a of audits) {
+        const encAgentId = reencGlobal(a.agent_id);
+        const encOp = reencGlobal(a.operation);
+        const encScopes = a.scopes_accessed ? reencGlobal(a.scopes_accessed) : null;
+        const encEvents = a.event_ids ? reencGlobal(a.event_ids) : null;
+        const encDetail = a.detail ? reencGlobal(a.detail) : null;
+        // Recompute integrity tag with new key
+        const payload = [encAgentId, encOp, encScopes || "", encEvents || "", encDetail || ""].join("|");
+        const tag = crypto.createHmac("sha256", newGlobalKey).update(payload).digest("hex").slice(0, 32);
+        updateAudit.run(encAgentId, encOp, encScopes, encEvents, encDetail, tag, a.id);
+      }
     });
 
     // Phase 2: Execute DB re-encryption in a single atomic transaction

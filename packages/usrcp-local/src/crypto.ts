@@ -89,13 +89,16 @@ export function initializeIdentity(masterKey?: Buffer): LedgerIdentity {
   const user_id = deriveUserId(keyPair.publicKey);
 
   if (masterKey) {
-    // Encrypt private key with global encryption key before writing
+    // Encrypt private key BEFORE writing — no plaintext window
     const globalKey = deriveGlobalEncryptionKey(masterKey);
     const encryptedPrivateKey = encrypt(keyPair.privateKey, globalKey);
     safeWriteFile(privateKeyPath, encryptedPrivateKey, 0o600);
   } else {
-    // No master key available yet — store encrypted marker, will re-encrypt on first ledger init
-    safeWriteFile(privateKeyPath, keyPair.privateKey, 0o600);
+    // No master key yet — encrypt with a temporary key, re-encrypt on ledger init
+    const tempKey = crypto.randomBytes(32);
+    const encryptedPrivateKey = encrypt(keyPair.privateKey, tempKey);
+    safeWriteFile(privateKeyPath, encryptedPrivateKey, 0o600);
+    // Private key is NEVER plaintext on disk
   }
 
   safeWriteFile(publicKeyPath, keyPair.publicKey, 0o644);
