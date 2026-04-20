@@ -1,0 +1,31 @@
+{
+  "name": "usrcp-sdk",
+  "version": "0.1.8",
+  "description": "USRCP SDK Prototype",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "npx tsc",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "discord.js": "^14.26.3",
+    "sql.js": "^1.10.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.4",
+    "@types/sql.js": "^1.4.11",
+    "typescript": "^5.6.3"
+  },
+  "keywords": [
+    "ledger",
+    "events",
+    "sdk"
+  ],
+  "author": "",
+  "license": "ISC",
+  "peerDependencies": {
+    "@openai/openai": "^4.0.0",
+    "@xai/grok-sdk": "^0.1.0"
+  }
+}
