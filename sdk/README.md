@@ -9,7 +9,7 @@
 **Why devs love it (already):** 
 - **Seamless sync:** Discord bot saves 'trading prefs'; Telegram picks up mid-convo. Zero friction across 10+ channels.
 - **Bulletproof privacy:** AES-GCM encryption, tamper detection (fails safe), auto key rotation. Local-first—no cloud leaks.
-- **Indie-friendly:** 25kB bundle, 5-min install. Free tier (1k events); Pro ($9/mo) unlocks unlimited + cloud for multi-device magic.
+- **Indie-friendly:** 25kB bundle, 5-min install. Free tier (1k events); Pro ($20/mo recurring via GitHub Sponsors) for unlimited/cloud sync.
 - **Future-proof:** `usrcp://` URIs standardize handshakes. MCP/ACP compatible—plug into your stack.
 
 > "USRCP is the missing link for human-AI continuity. No more 'who am I?' every session. Agents remember *you* across platforms." — Chad Garner, Creator
@@ -47,7 +47,7 @@ console.log(me);  // { pseudonym: 'user_xyz', events: 1, sources: ['discord'] }
 
 ## Integrations That Just Work
 - **OpenAI/Grok:** Built-in tool stubs—agents append/query via completions ("Save this as history? Done.").
-- **Limits & Upgrade:** Hit 1k free events? Auto-prompts Stripe Pro for unlimited/cloud sync (multi-device bliss).
+- **Limits & Upgrade:** Hit 1k free events? Upgrade to Pro ($20/mo) via GitHub Sponsors for unlimited/cloud sync.
 - **Extend Easily:** Core methods: `usrcp://append_event`, `usrcp://get_state`, `usrcp://resolve_identity`. Hook into MCP/ACP flows.
 
 ## For Devs: Quick Tech Specs
@@ -60,7 +60,7 @@ console.log(me);  // { pseudonym: 'user_xyz', events: 1, sources: ['discord'] }
 - **Repo:** [github.com/frank-bot07/usrcp](https://github.com/frank-bot07/usrcp) — Fork, contribute, star!
 - **NPM:** [usrcp-sdk](https://www.npmjs.com/package/usrcp-sdk) (v0.1.5, 27kB).
 - **Discord:** Chat in #usrcp—share your wins.
-- **Upgrade:** Pro tier live—[garner-digital.com/usrcp-pro](https://garner-digital.com) (coming soon).
+- **Upgrade:** Pro tier ($20/mo)—[github.com/sponsors/frank-bot07](https://github.com/sponsors/frank-bot07).
 
 **Built by indie devs, for indie devs.** Drop USRCP in your agent—watch context sync like magic. What's your biggest AI memory pain? Reply below.
 
