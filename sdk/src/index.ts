@@ -108,12 +108,12 @@ export async function initLedger(config: LedgerConfig): Promise<Ledger> {
                 action: "read",
                 target: channelId,
                 limit: 50,
-                after: lastPollTime - 1000, // approximate ms
+                after: lastPollTime.toString(), // approximate ms
                 includeArchived: false
-              };
+              } as any; // since after expects string
               try {
                 const result = await config.messageTool(params);
-                const messages = result.messages || [];
+                const messages = (result as any).messages || [];
                 for (const msg of messages) {
                   const msgTime = new Date(msg.timestamp || msg.createdAt || Date.now());
                   if (msg.author && !msg.author.bot && msgTime > new Date(lastPollTime)) {
