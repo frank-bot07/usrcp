@@ -1,12 +1,12 @@
 {
   "name": "usrcp-sdk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "USRCP SDK Prototype",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "npx tsc",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "npx tsc --noEmit && npx ts-node test/v030.test.ts"
   },
   "dependencies": {
     "discord.js": "^14.26.3",

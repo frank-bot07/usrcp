@@ -1,14 +1,22 @@
+import { EventEmitter } from 'events';
 import initSqlJs, { Database as SqliteDatabase } from 'sql.js';
+import type { USRCPAdapter, USRCPEvent } from './adapters/types';
+
+// Re-export adapter types and classes
+export type { USRCPEvent, USRCPAdapter } from './adapters/types';
+export { OpenClawAdapter } from './adapters/openclaw';
+export type { OpenClawAdapterConfig } from './adapters/openclaw';
+export { HermesAdapter } from './adapters/hermes';
+export type { HermesAdapterConfig } from './adapters/hermes';
+export { ClaudeAdapter } from './adapters/claude';
+export type { ClaudeAdapterConfig } from './adapters/claude';
+export { CodexAdapter } from './adapters/codex';
+export type { CodexAdapterConfig } from './adapters/codex';
 
 export interface LedgerConfig {
-  mode: 'random' | string;
-  autoMonitor?: boolean;
-  channels?: string[];
-  pollIntervalMs?: number;
-  discordBotToken?: string;
-  guildId?: string;
-  channelIds?: string[];
-  messageTool?: (params: any) => Promise<any>;
+  mode?: 'random' | string;
+  /** Adapters to auto-subscribe on init — events merge to 'global' stream */
+  adapters?: USRCPAdapter[];
 }
 
 export interface Event {
@@ -16,45 +24,50 @@ export interface Event {
   data: any;
 }
 
-export interface Ledger {
+export interface Ledger extends EventEmitter {
   appendEvent(stream: string, event: Event): void;
   getState(stream: string): any;
   entryCount: number;
+  /** Stop all adapters and clean up */
+  stop(): void;
 }
 
-class USRCPLedger implements Ledger {
+class USRCPLedger extends EventEmitter implements Ledger {
   private db: SqliteDatabase;
   public entryCount: number = 0;
+  private adapters: USRCPAdapter[] = [];
 
   constructor(db: SqliteDatabase) {
+    super();
     this.db = db;
-    
+
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         stream TEXT NOT NULL,
         type TEXT NOT NULL,
         data TEXT NOT NULL,
+        source TEXT DEFAULT 'local',
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
 
-    // Initialize entry count
-    const countStmt = this.db.prepare('SELECT COUNT(*) FROM events');
-    const countRow = countStmt.get() as [number];
-    this.entryCount = countRow ? countRow[0] : 0;
-  }
-
-  appendEvent(stream: string, event: Event): void {
-    const stmt = this.db.prepare(
-      'INSERT INTO events (stream, type, data) VALUES (?, ?, ?)'
-    );
-    stmt.run([stream, event.type, JSON.stringify(event.data)]);
-    stmt.free();
     const countStmt = this.db.prepare('SELECT COUNT(*) FROM events');
     const countRow = countStmt.get() as [number];
     this.entryCount = countRow ? countRow[0] : 0;
     countStmt.free();
+  }
+
+  appendEvent(stream: string, event: Event): void {
+    const source = (event as any).source || 'local';
+    const stmt = this.db.prepare(
+      'INSERT INTO events (stream, type, data, source) VALUES (?, ?, ?, ?)'
+    );
+    stmt.run([stream, event.type, JSON.stringify(event.data), source]);
+    stmt.free();
+    this.entryCount++;
+    // Emit on the ledger itself for downstream listeners
+    this.emit('event', { stream, ...event, source });
   }
 
   getState(stream: string): any {
@@ -62,12 +75,12 @@ class USRCPLedger implements Ledger {
       throw new Error('Free tier limit exceeded: maximum 1000 entries allowed');
     }
     const stmt = this.db.prepare(
-      'SELECT type, data FROM events WHERE stream = ? ORDER BY id ASC'
+      'SELECT type, data, source FROM events WHERE stream = ? ORDER BY id ASC'
     );
     stmt.bind([stream]);
-    const events: {type: string, data: string}[] = [];
+    const events: { type: string; data: string; source: string }[] = [];
     while (stmt.step()) {
-      const row = stmt.getAsObject() as {type: string, data: string};
+      const row = stmt.getAsObject() as { type: string; data: string; source: string };
       events.push(row);
     }
     stmt.free();
@@ -83,110 +96,50 @@ class USRCPLedger implements Ledger {
           if (!state[ev.type]) {
             state[ev.type] = [];
           }
-          state[ev.type].push(data);
+          state[ev.type].push({ ...data, _source: ev.source });
       }
     }
     return state;
   }
+
+  /** Subscribe an adapter — its events flow into the 'global' stream */
+  addAdapter(adapter: USRCPAdapter): void {
+    this.adapters.push(adapter);
+    adapter.on('event', (evt: USRCPEvent) => {
+      this.appendEvent('global', {
+        type: evt.type,
+        data: evt.data,
+        source: evt.source,
+      } as any);
+    });
+    adapter.start();
+  }
+
+  stop(): void {
+    for (const adapter of this.adapters) {
+      adapter.stop();
+    }
+    this.adapters = [];
+    this.removeAllListeners();
+  }
 }
 
-export async function initLedger(config: LedgerConfig): Promise<Ledger> {
+export async function initLedger(config: LedgerConfig = {}): Promise<Ledger> {
   const Sqlite = await initSqlJs();
   const db = new Sqlite.Database();
   const ledger = new USRCPLedger(db);
-  // entryCount already 0 for new in-memory DB
-  if (config.autoMonitor) {
-    let lastPollTime = Date.now();
-    const intervalMs = config.pollIntervalMs || 60000;
-    const setupMonitoring = async () => {
-      const poll = async () => {
-        if (config.channels?.includes('discord')) {
-          if (config.messageTool) {
-            // Use OpenClaw message tool
-            for (const channelId of (config.channelIds || [])) {
-              const params = {
-                action: "read",
-                target: channelId,
-                limit: 50,
-                after: lastPollTime.toString(), // approximate ms
-                includeArchived: false
-              } as any; // since after expects string
-              try {
-                const result = await config.messageTool(params);
-                const messages = (result as any).messages || [];
-                for (const msg of messages) {
-                  const msgTime = new Date(msg.timestamp || msg.createdAt || Date.now());
-                  if (msg.author && !msg.author.bot && msgTime > new Date(lastPollTime)) {
-                    ledger.appendEvent('cross_channel_messages', {
-                      type: 'discord_message',
-                      data: {
-                        channelId,
-                        authorId: msg.author.id,
-                        content: msg.content,
-                        timestamp: msgTime.toISOString()
-                      }
-                    });
-                  }
-                }
-              } catch (e) {
-                console.error('Poll error:', e);
-              }
-            }
-          } else if (config.discordBotToken && config.guildId && config.channelIds) {
-            // Use Discord.js
-            const { Client, GatewayIntentBits } = await import('discord.js');
-            const client = new Client({
-              intents: [
-                GatewayIntentBits.Guilds,
-                GatewayIntentBits.GuildMessages,
-                GatewayIntentBits.MessageContent
-              ]
-            });
-            await client.login(config.discordBotToken);
-            const pollDiscord = async () => {
-              try {
-                const guild = client.guilds.cache.get(config.guildId);
-                if (!guild) return;
-                for (const channelId of config.channelIds) {
-                  const channel = guild.channels.cache.get(channelId);
-                  if (channel?.isTextBased()) {
-                    const fetched = await channel.messages.fetch({ limit: 100 });
-                    const newMsgs = fetched.filter(msg => new Date(msg.createdAt) > new Date(lastPollTime) && !msg.author.bot);
-                    for (const [id, msg] of newMsgs) {
-                      ledger.appendEvent('cross_channel_messages', {
-                        type: 'discord_message',
-                        data: {
-                          channelId: msg.channel.id,
-                          authorId: msg.author.id,
-                          username: msg.author.username,
-                          content: msg.content,
-                          timestamp: msg.createdAt.toISOString()
-                        }
-                      });
-                    }
-                  }
-                }
-              } catch (e) {
-                console.error('Discord poll error:', e);
-              } finally {
-                lastPollTime = Date.now();
-              }
-            };
-            setInterval(pollDiscord, intervalMs);
-            await pollDiscord(); // initial poll
-            // Store client to prevent GC
-            (ledger as any)._discordClient = client;
-          }
-        }
-      };
-      setInterval(poll, intervalMs);
-      await poll(); // initial
-    };
-    await setupMonitoring();
+
+  // Auto-subscribe adapters on init — zero config
+  if (config.adapters) {
+    for (const adapter of config.adapters) {
+      ledger.addAdapter(adapter);
+    }
   }
+
   return ledger;
 }
 
+// Tool schema exports (unchanged API)
 export interface OpenAITool {
   type: 'function';
   function: {
@@ -236,6 +189,5 @@ export function openaiToolSchema(): OpenAITool[] {
 }
 
 export function xaiToolSchema(): OpenAITool[] {
-  // Alias to openaiToolSchema as Grok/xAI mirrors OpenAI tool format with usrcp:// URI support
   return openaiToolSchema();
 }
