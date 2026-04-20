@@ -126,7 +126,7 @@ export function initializeMasterKey(passphrase?: string): Buffer {
 
     const storedVerify = fs.readFileSync(verifyPath);
     const computedVerify = generateVerifyHash(masterKey);
-    if (!crypto.timingSafeEqual(storedVerify, computedVerify)) {
+    if (storedVerify.length !== computedVerify.length || !crypto.timingSafeEqual(storedVerify, computedVerify)) {
       zeroBuffer(masterKey);
       throw new Error("Invalid passphrase");
     }

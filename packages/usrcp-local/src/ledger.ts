@@ -438,10 +438,11 @@ export class Ledger {
           row.scopes_accessed || "", row.event_ids || "", row.detail || "",
         ].join("|");
         const expected = crypto.createHmac("sha256", globalKey).update(payload).digest("hex").slice(0, 32);
-        verified = crypto.timingSafeEqual(
-          Buffer.from(row.integrity_tag),
-          Buffer.from(expected)
-        );
+        const tagBuf = Buffer.from(row.integrity_tag);
+        const expectedBuf = Buffer.from(expected);
+        if (tagBuf.length === expectedBuf.length) {
+          verified = crypto.timingSafeEqual(tagBuf, expectedBuf);
+        }
       }
 
       return {
@@ -773,17 +774,26 @@ export class Ledger {
 
     // Fetch the actual events
     const ids = [...matchingEventIds];
-    const placeholders = ids.map(() => "?").join(",");
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM timeline_events
-        WHERE event_id IN (${placeholders})
-        ORDER BY ledger_sequence DESC
-        LIMIT ?`
-      )
-      .all(...ids, limit) as any[];
+    const CHUNK_SIZE = 999;
+    const rows: any[] = [];
 
-    const results = rows.map((r) => this.rowToEvent(r));
+    for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+      const chunk = ids.slice(i, i + CHUNK_SIZE);
+      const placeholders = chunk.map(() => "?").join(",");
+      const chunkRows = this.db
+        .prepare(
+          `SELECT * FROM timeline_events
+          WHERE event_id IN (${placeholders})`
+        )
+        .all(...chunk) as any[];
+      rows.push(...chunkRows);
+    }
+
+    // Sort and limit in memory since we chunked
+    rows.sort((a, b) => b.ledger_sequence - a.ledger_sequence);
+    const limitedRows = rows.slice(0, limit);
+
+    const results = limitedRows.map((r) => this.rowToEvent(r));
     this.logAudit("search_timeline", undefined, results.map((e) => e.event_id), `query_length=${query.length}`);
     return results;
   }
@@ -871,12 +881,16 @@ export class Ledger {
 
     if (eventIds.length === 0) return 0;
 
-    const placeholders = eventIds.map(() => "?").join(",");
+    const CHUNK_SIZE = 999;
+    for (let i = 0; i < eventIds.length; i += CHUNK_SIZE) {
+      const chunk = eventIds.slice(i, i + CHUNK_SIZE);
+      const placeholders = chunk.map(() => "?").join(",");
 
-    // Delete from blind index
-    this.db
-      .prepare(`DELETE FROM blind_index WHERE event_id IN (${placeholders})`)
-      .run(...eventIds);
+      // Delete from blind index
+      this.db
+        .prepare(`DELETE FROM blind_index WHERE event_id IN (${placeholders})`)
+        .run(...chunk);
+    }
 
     // Delete events (secure_delete pragma ensures zero-fill)
     const result = this.db
