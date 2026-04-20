@@ -26,6 +26,7 @@ import {
   prepareKeyRotation,
   commitKeyRotation,
   zeroBuffer,
+  safeWriteFile,
 } from "./encryption.js";
 import { ensurePrivateKeyEncrypted, getIdentity as getIdent, initializeIdentity as initIdent } from "./crypto.js";
 
@@ -125,13 +126,16 @@ export class Ledger {
     ensurePrivateKeyEncrypted(this.masterKey);
     this.migrate();
 
-    // Key rotation recovery
+    // Key rotation recovery — if a rotation was interrupted, recover the new key
     const rotationRow = this.db.prepare("SELECT pending_key, pending_version FROM rotation_state WHERE id = 1").get() as any;
-    if (rotationRow.pending_key) {
+    if (rotationRow && rotationRow.pending_key) {
+      const oldKey = this.masterKey;
       this.masterKey = Buffer.from(rotationRow.pending_key);
+      // Zero the old key buffer — prevent heap residue
+      zeroBuffer(oldKey);
       const keysDir = path.join(os.homedir(), ".usrcp", "keys");
       fs.mkdirSync(keysDir, { recursive: true });
-      fs.writeFileSync(path.join(keysDir, "master.key"), this.masterKey);
+      safeWriteFile(path.join(keysDir, "master.key"), this.masterKey, 0o600);
       this.db.prepare("UPDATE rotation_state SET pending_key = NULL, pending_version = NULL WHERE id = 1").run();
       this.logAudit("key_rotation_recovery", ["system"]);
       this.rebuildBlindIndex();
@@ -195,7 +199,7 @@ export class Ledger {
       tracker = {
         count: 0,
         lastTamper: null,
-        sessionId: this.generateULID(),
+        sessionId: generateULID(),
       };
       this.updatePreferences({ custom: { tamperTracker: tracker } });
     }
@@ -209,14 +213,26 @@ export class Ledger {
     this.updatePreferences({ custom: { tamperTracker: newTracker } });
   }
 
+  // Max tamper audit entries per session — prevents DoS via audit log flooding
+  private static readonly MAX_TAMPER_AUDIT_LOGS = 10;
+
   private handleTamper(scope: string, field: string): void {
     const tracker = this.getTamperTracker();
     const newCount = tracker.count + 1;
     const newLast = new Date().toISOString();
     this.updateTamperTracker({ count: newCount, lastTamper: newLast });
-    if (newCount < 5) {
+
+    // Only log the first N tamper events to prevent audit log DoS
+    if (newCount <= Ledger.MAX_TAMPER_AUDIT_LOGS) {
       this.logAudit('tamper_detected', [scope], undefined, `field=${field} count=${newCount} session=${tracker.sessionId}`);
-    } else {
+    }
+    // At threshold, log one final summary entry
+    if (newCount === Ledger.MAX_TAMPER_AUDIT_LOGS) {
+      this.logAudit('tamper_flood_capped', [scope], undefined,
+        `Tamper audit capped at ${Ledger.MAX_TAMPER_AUDIT_LOGS}. Further events suppressed. session=${tracker.sessionId}`);
+    }
+    // Hard stop at excessive count
+    if (newCount >= 50) {
       throw new Error(`Excessive tampering detected in session ${tracker.sessionId}: ${newCount} failures`);
     }
   }
@@ -1294,7 +1310,25 @@ export class Ledger {
     let reencrypted = 0;
 
     const transaction = this.db.transaction(() => {
-      // Re-encrypt all timeline events
+      const oldGlobalKey = deriveGlobalEncryptionKey(oldKey);
+      const newGlobalKey = deriveGlobalEncryptionKey(newKey);
+
+      const reencGlobal = (val: string) => {
+        const plain = isEncrypted(val) ? decrypt(val, oldGlobalKey) : val;
+        return encrypt(plain, newGlobalKey);
+      };
+
+      // Build old pseudonym → real domain name mapping FIRST
+      const domainMaps = this.db.prepare("SELECT pseudonym, encrypted_name FROM domain_map").all() as any[];
+      const pseudoToReal = new Map<string, string>();
+      const domainNames: string[] = [];
+      for (const dm of domainMaps) {
+        const realName = isEncrypted(dm.encrypted_name) ? decrypt(dm.encrypted_name, oldGlobalKey) : dm.encrypted_name;
+        pseudoToReal.set(dm.pseudonym, realName);
+        domainNames.push(realName);
+      }
+
+      // Re-encrypt all timeline events (BEFORE domain_map changes)
       const events = this.db
         .prepare("SELECT event_id, domain, summary, intent, outcome, platform, detail, artifacts, tags, session_id, parent_event_id FROM timeline_events")
         .all() as any[];
@@ -1304,9 +1338,9 @@ export class Ledger {
       );
 
       for (const e of events) {
-        const d = e.domain;
-        const oldDomainKey = deriveDomainEncryptionKey(oldKey, d);
-        const newDomainKey = deriveDomainEncryptionKey(newKey, d);
+        const realDomain = pseudoToReal.get(e.domain) || e.domain;
+        const oldDomainKey = deriveDomainEncryptionKey(oldKey, realDomain);
+        const newDomainKey = deriveDomainEncryptionKey(newKey, realDomain);
 
         const reenc = (val: string | null) => {
           if (!val) return null;
@@ -1322,22 +1356,7 @@ export class Ledger {
         reencrypted++;
       }
 
-      // Re-encrypt domain_map: re-derive pseudonyms and re-encrypt names
-      const domainMaps = this.db.prepare("SELECT pseudonym, encrypted_name FROM domain_map").all() as any[];
-      const oldGlobalKey = deriveGlobalEncryptionKey(oldKey);
-      const newGlobalKey = deriveGlobalEncryptionKey(newKey);
-
-      const reencGlobal = (val: string) => {
-        const plain = isEncrypted(val) ? decrypt(val, oldGlobalKey) : val;
-        return encrypt(plain, newGlobalKey);
-      };
-
-      // Collect real domain names, delete old mappings, insert new
-      const domainNames: string[] = [];
-      for (const dm of domainMaps) {
-        const realName = isEncrypted(dm.encrypted_name) ? decrypt(dm.encrypted_name, oldGlobalKey) : dm.encrypted_name;
-        domainNames.push(realName);
-      }
+      // Now update domain_map with new pseudonyms
       this.db.exec("DELETE FROM domain_map");
       const insertMap = this.db.prepare("INSERT INTO domain_map (pseudonym, encrypted_name) VALUES (?, ?)");
       for (const name of domainNames) {
@@ -1420,19 +1439,17 @@ export class Ledger {
         const tag = crypto.createHmac("sha256", newGlobalKey).update(payload).digest("hex").slice(0, 32);
         updateAudit.run(encAgentId, encOp, encScopes, encEvents, encDetail, tag, a.id);
       }
-    });
 
-    // Phase 2: Store the new key INSIDE the SQLite transaction alongside
-    // the re-encrypted data. This ensures key + data are always in sync.
-    // If crash: transaction rolls back, old key + old data, nothing lost.
-    const storeKey = this.db.transaction(() => {
-      transaction();
-      // Store new key in the DB so it survives a crash between DB commit and file write
+      // Store new key in rotation_state — same transaction as re-encryption
+      // If crash: entire transaction rolls back, old key + old data intact
       this.db.prepare(
         "UPDATE rotation_state SET pending_key = ?, pending_version = ? WHERE id = 1"
       ).run(newKey, version);
     });
-    storeKey();
+
+    // Phase 2: Execute re-encryption + store new key in single atomic transaction.
+    // If crash: transaction rolls back, old key + old data, nothing lost.
+    transaction();
 
     // Phase 3: Write key files to disk. If crash here, on next startup
     // we detect pending_key in rotation_state and recover.

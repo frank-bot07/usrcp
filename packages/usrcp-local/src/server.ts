@@ -525,24 +525,41 @@ export function createServer(passphrase?: string): { server: McpServer; shutdown
         ),
     },
     async (params) => {
-      const result = ledger.rotateKey(params.new_passphrase);
-
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(
-              {
-                status: "rotated",
-                key_version: result.version,
-                events_reencrypted: result.reencrypted,
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
+      try {
+        const result = ledger.rotateKey(params.new_passphrase);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  status: "rotated",
+                  version: result.version,
+                  reencrypted: result.reencrypted,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  status: "failed",
+                  error: err.message || "Key rotation failed",
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
     }
   );
 

@@ -67,7 +67,7 @@ function getModePath(): string {
  * Write file safely — prevents symlink TOCTOU attacks.
  * Writes to a temp file with O_EXCL then renames atomically.
  */
-function safeWriteFile(filePath: string, content: Buffer, mode: number): void {
+export function safeWriteFile(filePath: string, content: Buffer, mode: number): void {
   try {
     const stat = fs.lstatSync(filePath);
     if (stat.isSymbolicLink()) {
