@@ -12,7 +12,9 @@ import type {
   UserState,
   Scope,
   TamperTracker,
+  SchemaFact,
 } from "./types.js";
+import { VersionConflictError } from "./types.js";
 import {
   initializeMasterKey,
   deriveDomainEncryptionKey,
@@ -27,11 +29,12 @@ import {
   commitKeyRotation,
   zeroBuffer,
   safeWriteFile,
+  getUserDir,
 } from "./encryption.js";
 import { ensurePrivateKeyEncrypted, getIdentity as getIdent, initializeIdentity as initIdent } from "./crypto.js";
 
 function getDefaultDbPath(): string {
-  return path.join(os.homedir(), ".usrcp", "ledger.db");
+  return path.join(getUserDir(), "ledger.db");
 }
 
 function safeJsonParse<T>(value: string | null | undefined, fallback: T): T {
@@ -133,7 +136,7 @@ export class Ledger {
       this.masterKey = Buffer.from(rotationRow.pending_key);
       // Zero the old key buffer — prevent heap residue
       zeroBuffer(oldKey);
-      const keysDir = path.join(os.homedir(), ".usrcp", "keys");
+      const keysDir = path.join(getUserDir(), "keys");
       fs.mkdirSync(keysDir, { recursive: true });
       safeWriteFile(path.join(keysDir, "master.key"), this.masterKey, 0o600);
       this.db.prepare("UPDATE rotation_state SET pending_key = NULL, pending_version = NULL WHERE id = 1").run();
@@ -404,6 +407,23 @@ export class Ledger {
       CREATE INDEX IF NOT EXISTS idx_blind_token ON blind_index(token, domain);
       CREATE INDEX IF NOT EXISTS idx_blind_event ON blind_index(event_id);
 
+      -- Schemaless facts: encrypted free-form (namespace, key, value) triples
+      -- per domain. namespace and key are encrypted with random IVs so they
+      -- cannot be used for lookup directly — ns_key_hash is a deterministic
+      -- HMAC over (namespace || key) using the domain blind-index key.
+      CREATE TABLE IF NOT EXISTS schemaless_facts (
+        fact_id TEXT PRIMARY KEY,
+        domain TEXT NOT NULL,
+        ns_key_hash TEXT NOT NULL,
+        namespace TEXT NOT NULL,
+        "key" TEXT NOT NULL,
+        value TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_facts_domain ON schemaless_facts(domain);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_nskey ON schemaless_facts(domain, ns_key_hash);
+
       -- Seed singleton rows if they don't exist
       INSERT OR IGNORE INTO core_identity (id) VALUES (1);
       INSERT OR IGNORE INTO global_preferences (id) VALUES (1);
@@ -430,6 +450,15 @@ export class Ledger {
 
     // v0.1.3: Drop FTS5 table — replaced by blind index to prevent plaintext leakage
     this.db.exec("DROP TABLE IF EXISTS timeline_fts");
+
+    // v0.2.0 migration: add version columns for optimistic concurrency
+    for (const tbl of ["core_identity", "global_preferences", "domain_context", "schemaless_facts"]) {
+      try {
+        this.db.exec(`ALTER TABLE ${tbl} ADD COLUMN version INTEGER NOT NULL DEFAULT 1`);
+      } catch {
+        // Column already exists
+      }
+    }
 
     // Rebuild blind index if empty but events exist
     const blindCount = this.db
@@ -632,7 +661,7 @@ export class Ledger {
 
   // --- Core Identity ---
 
-  getIdentity(): CoreIdentity & {tampered?: boolean} {
+  getIdentity(): CoreIdentity & {tampered?: boolean; version: number} {
     const row = this.db
       .prepare("SELECT * FROM core_identity WHERE id = 1")
       .get() as any;
@@ -649,11 +678,12 @@ export class Ledger {
     const styleRes = this.safeDecryptGlobal(row.communication_style || "concise", 'concise', 'communication_style');
     tampered ||= styleRes.tampered;
 
-    const result: CoreIdentity & {tampered?: boolean} = {
+    const result: CoreIdentity & {tampered?: boolean; version: number} = {
       display_name: nameRes.value,
       roles,
       expertise_domains: expertise,
       communication_style: styleRes.value as CoreIdentity["communication_style"],
+      version: row.version ?? 1,
     };
 
     if (tampered) result.tampered = true;
@@ -661,9 +691,22 @@ export class Ledger {
     return result;
   }
 
-  updateIdentity(identity: Partial<CoreIdentity>): void {
+  private checkExpectedVersion(
+    scope: string,
+    currentVersion: number,
+    expectedVersion: number | undefined,
+    target?: string
+  ): void {
+    if (expectedVersion !== undefined && currentVersion !== expectedVersion) {
+      throw new VersionConflictError(scope, currentVersion, expectedVersion, target);
+    }
+  }
+
+  updateIdentity(identity: Partial<CoreIdentity>, expectedVersion?: number): number {
     const current = this.getIdentity();
+    this.checkExpectedVersion("core_identity", current.version, expectedVersion);
     const merged = { ...current, ...identity };
+    const newVersion = current.version + 1;
     this.db
       .prepare(
         `UPDATE core_identity SET
@@ -671,6 +714,7 @@ export class Ledger {
           roles = ?,
           expertise_domains = ?,
           communication_style = ?,
+          version = ?,
           updated_at = datetime('now')
         WHERE id = 1`
       )
@@ -678,14 +722,16 @@ export class Ledger {
         this.encryptGlobal(merged.display_name),
         this.encryptGlobal(JSON.stringify(merged.roles)),
         this.encryptGlobal(JSON.stringify(merged.expertise_domains)),
-        this.encryptGlobal(merged.communication_style)
+        this.encryptGlobal(merged.communication_style),
+        newVersion
       );
     this.logAudit("update_identity");
+    return newVersion;
   }
 
   // --- Global Preferences ---
 
-  getPreferences(): GlobalPreferences & {tampered?: boolean} {
+  getPreferences(): GlobalPreferences & {tampered?: boolean; version: number} {
     const row = this.db
       .prepare("SELECT * FROM global_preferences WHERE id = 1")
       .get() as any;
@@ -703,12 +749,13 @@ export class Ledger {
     const custom = safeJsonParse(customRes.value, {});
     tampered ||= customRes.tampered;
 
-    const result: GlobalPreferences & {tampered?: boolean} = {
+    const result: GlobalPreferences & {tampered?: boolean; version: number} = {
       language: langRes.value,
       timezone: tzRes.value,
       output_format: formatRes.value as GlobalPreferences["output_format"],
       verbosity: verbRes.value as GlobalPreferences["verbosity"],
       custom,
+      version: row.version ?? 1,
     };
 
     if (tampered) result.tampered = true;
@@ -716,12 +763,14 @@ export class Ledger {
     return result;
   }
 
-  updatePreferences(prefs: Partial<GlobalPreferences>): void {
+  updatePreferences(prefs: Partial<GlobalPreferences>, expectedVersion?: number): number {
     const current = this.getPreferences();
+    this.checkExpectedVersion("global_preferences", current.version, expectedVersion);
     const merged = { ...current, ...prefs };
     if (prefs.custom) {
       merged.custom = { ...current.custom, ...prefs.custom };
     }
+    const newVersion = current.version + 1;
     this.db
       .prepare(
         `UPDATE global_preferences SET
@@ -730,6 +779,7 @@ export class Ledger {
           output_format = ?,
           verbosity = ?,
           custom = ?,
+          version = ?,
           updated_at = datetime('now')
         WHERE id = 1`
       )
@@ -738,9 +788,11 @@ export class Ledger {
         this.encryptGlobal(merged.timezone),
         this.encryptGlobal(merged.output_format),
         this.encryptGlobal(merged.verbosity),
-        this.encryptGlobal(JSON.stringify(merged.custom))
+        this.encryptGlobal(JSON.stringify(merged.custom)),
+        newVersion
       );
     this.logAudit("update_preferences");
+    return newVersion;
   }
 
   // --- Timeline Events ---
@@ -1190,24 +1242,198 @@ export class Ledger {
     return result;
   }
 
+  getDomainContextVersion(domain: string): number {
+    const pseudo = this.domainPseudonym(domain);
+    const row = this.db
+      .prepare("SELECT version FROM domain_context WHERE domain = ?")
+      .get(pseudo) as { version: number } | undefined;
+    return row?.version ?? 0; // 0 = domain context doesn't exist yet
+  }
+
   upsertDomainContext(
     domain: string,
-    context: Record<string, unknown>
-  ): void {
+    context: Record<string, unknown>,
+    expectedVersion?: number
+  ): number {
     const pseudo = this.ensureDomainMapping(domain);
+    const currentVersion = this.getDomainContextVersion(domain);
+    this.checkExpectedVersion("domain_context", currentVersion, expectedVersion, domain);
     const existing = this.getDomainContext([domain]);
     const merged = { ...(existing[domain] || {}), ...context };
     const encrypted = this.encryptForDomain(JSON.stringify(merged), domain);
+    const newVersion = currentVersion + 1;
     this.db
       .prepare(
-        `INSERT INTO domain_context (domain, context, updated_at)
-        VALUES (?, ?, datetime('now'))
+        `INSERT INTO domain_context (domain, context, version, updated_at)
+        VALUES (?, ?, ?, datetime('now'))
         ON CONFLICT(domain) DO UPDATE SET
           context = excluded.context,
+          version = excluded.version,
           updated_at = excluded.updated_at`
       )
-      .run(pseudo, encrypted);
+      .run(pseudo, encrypted, newVersion);
     this.logAudit("update_domain_context", pseudo);
+    return newVersion;
+  }
+
+  // --- Schemaless Facts ---
+
+  // Max lengths for schemaless fact fields. Cap plaintext before encryption to
+  // prevent abuse and keep rows bounded.
+  private static readonly MAX_FACT_NAMESPACE = 100;
+  private static readonly MAX_FACT_KEY = 200;
+  private static readonly MAX_FACT_VALUE_BYTES = 65536;
+
+  /**
+   * Deterministic HMAC of (namespace, key) under the domain's blind-index
+   * key. Used as the lookup column for schemaless_facts. Domain-scoped so
+   * the same (namespace, key) under a different domain maps to a different
+   * hash.
+   */
+  private factLookupHash(domain: string, namespace: string, key: string): string {
+    const blindKey = deriveBlindIndexKey(this.masterKey, domain);
+    const h = crypto.createHmac("sha256", blindKey);
+    // Length-prefix to avoid (ns="a", k="bb") colliding with (ns="ab", k="b")
+    h.update(`${namespace.length}:${namespace}|${key.length}:${key}`);
+    const tag = h.digest("hex");
+    zeroBuffer(blindKey);
+    return tag;
+  }
+
+  private validateFactInput(namespace: string, key: string, valueSerialized: string): void {
+    if (namespace.length === 0) throw new Error("namespace cannot be empty");
+    if (key.length === 0) throw new Error("key cannot be empty");
+    if (namespace.length > Ledger.MAX_FACT_NAMESPACE)
+      throw new Error(`namespace exceeds ${Ledger.MAX_FACT_NAMESPACE} chars`);
+    if (key.length > Ledger.MAX_FACT_KEY)
+      throw new Error(`key exceeds ${Ledger.MAX_FACT_KEY} chars`);
+    if (Buffer.byteLength(valueSerialized, "utf8") > Ledger.MAX_FACT_VALUE_BYTES)
+      throw new Error(`value exceeds ${Ledger.MAX_FACT_VALUE_BYTES} bytes`);
+  }
+
+  setFact(
+    domain: string,
+    namespace: string,
+    key: string,
+    value: unknown,
+    opts: { expectedVersion?: number; agentId?: string } = {}
+  ): { fact_id: string; created: boolean; updated_at: string; version: number } {
+    const agentId = opts.agentId ?? "system";
+    const valueSerialized = JSON.stringify(value ?? null);
+    this.validateFactInput(namespace, key, valueSerialized);
+
+    const domainPseudo = this.ensureDomainMapping(domain);
+    const nsKeyHash = this.factLookupHash(domain, namespace, key);
+
+    const existing = this.db
+      .prepare(
+        "SELECT fact_id, version FROM schemaless_facts WHERE domain = ? AND ns_key_hash = ?"
+      )
+      .get(domainPseudo, nsKeyHash) as { fact_id: string; version: number } | undefined;
+
+    this.checkExpectedVersion(
+      "schemaless_facts",
+      existing?.version ?? 0,
+      opts.expectedVersion,
+      `${domain}/${namespace}/${key}`
+    );
+
+    const namespaceEnc = this.encryptForDomain(namespace, domain);
+    const keyEnc = this.encryptForDomain(key, domain);
+    const valueEnc = this.encryptForDomain(valueSerialized, domain);
+
+    if (existing) {
+      const newVersion = existing.version + 1;
+      this.db
+        .prepare(
+          `UPDATE schemaless_facts
+          SET namespace = ?, "key" = ?, value = ?, version = ?, updated_at = datetime('now')
+          WHERE fact_id = ?`
+        )
+        .run(namespaceEnc, keyEnc, valueEnc, newVersion, existing.fact_id);
+      const updated = this.db
+        .prepare("SELECT updated_at FROM schemaless_facts WHERE fact_id = ?")
+        .get(existing.fact_id) as { updated_at: string };
+      this.logAudit("set_fact", domainPseudo, [existing.fact_id], undefined, undefined, agentId);
+      return { fact_id: existing.fact_id, created: false, updated_at: updated.updated_at, version: newVersion };
+    }
+
+    const factId = generateULID();
+    this.db
+      .prepare(
+        `INSERT INTO schemaless_facts (fact_id, domain, ns_key_hash, namespace, "key", value, version)
+        VALUES (?, ?, ?, ?, ?, ?, 1)`
+      )
+      .run(factId, domainPseudo, nsKeyHash, namespaceEnc, keyEnc, valueEnc);
+    const created = this.db
+      .prepare("SELECT created_at FROM schemaless_facts WHERE fact_id = ?")
+      .get(factId) as { created_at: string };
+    this.logAudit("set_fact", domainPseudo, [factId], undefined, undefined, agentId);
+    return { fact_id: factId, created: true, updated_at: created.created_at, version: 1 };
+  }
+
+  getFact(domain: string, namespace: string, key: string): SchemaFact | null {
+    const domainPseudo = this.domainPseudonym(domain);
+    const nsKeyHash = this.factLookupHash(domain, namespace, key);
+    const row = this.db
+      .prepare(
+        "SELECT * FROM schemaless_facts WHERE domain = ? AND ns_key_hash = ?"
+      )
+      .get(domainPseudo, nsKeyHash) as any;
+    if (!row) return null;
+    return this.rowToFact(row);
+  }
+
+  listFacts(domain: string, namespace?: string): SchemaFact[] {
+    const domainPseudo = this.domainPseudonym(domain);
+    const rows = this.db
+      .prepare(
+        "SELECT * FROM schemaless_facts WHERE domain = ? ORDER BY updated_at DESC"
+      )
+      .all(domainPseudo) as any[];
+    if (namespace === undefined) {
+      return rows.map((r) => this.rowToFact(r));
+    }
+    // Namespace filter: decrypt namespace first and skip non-matches before
+    // paying to decrypt the other two columns. Saves ~2/3 of the GCM work
+    // when most rows don't match the filter.
+    const realDomain = this.resolveDomain(domainPseudo);
+    const matches: SchemaFact[] = [];
+    for (const r of rows) {
+      const ns = this.decryptForDomain(r.namespace, realDomain);
+      if (ns !== namespace) continue;
+      matches.push(this.rowToFact(r));
+    }
+    return matches;
+  }
+
+  deleteFact(factId: string, agentId: string = "system"): boolean {
+    const row = this.db
+      .prepare("SELECT domain FROM schemaless_facts WHERE fact_id = ?")
+      .get(factId) as { domain: string } | undefined;
+    if (!row) return false;
+    const result = this.db
+      .prepare("DELETE FROM schemaless_facts WHERE fact_id = ?")
+      .run(factId);
+    this.logAudit("delete_fact", row.domain, [factId], undefined, undefined, agentId);
+    return result.changes > 0;
+  }
+
+  private rowToFact(row: any): SchemaFact {
+    const realDomain = this.resolveDomain(row.domain);
+    const namespace = this.decryptForDomain(row.namespace, realDomain);
+    const key = this.decryptForDomain(row.key, realDomain);
+    const valueRaw = this.decryptForDomain(row.value, realDomain);
+    return {
+      fact_id: row.fact_id,
+      domain: realDomain,
+      namespace,
+      key,
+      value: safeJsonParse<unknown>(valueRaw, null),
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      version: row.version ?? 1,
+    };
   }
 
   // --- Composite State ---
@@ -1298,6 +1524,109 @@ export class Ledger {
     };
   }
 
+  // --- Sync helpers (encrypted-row access for usrcp-cloud client) ---
+
+  /**
+   * Return raw encrypted event rows with ledger_sequence > minSeq. The
+   * sync client forwards these verbatim to the hosted ledger — none of
+   * the encrypted columns are decrypted here.
+   */
+  listEncryptedEventsAbove(minSeq: number, limit: number = 500): Array<{
+    event_id: string;
+    ledger_sequence: number;
+    timestamp: string;
+    domain: string;
+    platform: string | null;
+    summary: string;
+    intent: string | null;
+    outcome: string | null;
+    detail: string | null;
+    artifacts: string | null;
+    tags: string | null;
+    session_id: string | null;
+    parent_event_id: string | null;
+    idempotency_key: string | null;
+  }> {
+    return this.db
+      .prepare(
+        `SELECT event_id, ledger_sequence, timestamp, domain, platform,
+                summary, intent, outcome, detail, artifacts, tags,
+                session_id, parent_event_id, idempotency_key
+         FROM timeline_events
+         WHERE ledger_sequence > ?
+         ORDER BY ledger_sequence ASC
+         LIMIT ?`
+      )
+      .all(minSeq, limit) as any[];
+  }
+
+  getMaxSequence(): number {
+    const row = this.db
+      .prepare("SELECT COALESCE(MAX(ledger_sequence), 0) AS max_seq FROM timeline_events")
+      .get() as { max_seq: number };
+    return Number(row.max_seq ?? 0);
+  }
+
+  /**
+   * Insert events pulled from the hosted ledger. Each event is assigned
+   * the next local sequence. Events already present by event_id are
+   * skipped. Blind-index tokens are NOT populated — pulled events are
+   * searchable only after the next full rebuild (next ledger open).
+   * Returns the number of events actually inserted.
+   */
+  applyPulledEvents(events: Array<{
+    event_id: string;
+    client_timestamp: string;
+    domain_pseudonym: string;
+    platform_enc?: string | null;
+    summary_enc: string;
+    intent_enc?: string | null;
+    outcome_enc?: string | null;
+    detail_enc?: string | null;
+    artifacts_enc?: string | null;
+    tags_enc?: string | null;
+    session_id_enc?: string | null;
+    parent_event_id_enc?: string | null;
+  }>): number {
+    const existsStmt = this.db.prepare(
+      "SELECT 1 FROM timeline_events WHERE event_id = ? LIMIT 1"
+    );
+    const insertStmt = this.db.prepare(
+      `INSERT INTO timeline_events
+        (event_id, timestamp, platform, domain, summary, intent, outcome,
+         detail, artifacts, tags, session_id, parent_event_id,
+         ledger_sequence, idempotency_key)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    let applied = 0;
+    const txn = this.db.transaction(() => {
+      let localSeq = this.getMaxSequence();
+      for (const e of events) {
+        if (existsStmt.get(e.event_id)) continue;
+        localSeq += 1;
+        insertStmt.run(
+          e.event_id,
+          e.client_timestamp,
+          e.platform_enc ?? "",
+          e.domain_pseudonym,
+          e.summary_enc,
+          e.intent_enc ?? null,
+          e.outcome_enc ?? null,
+          e.detail_enc ?? null,
+          e.artifacts_enc ?? null,
+          e.tags_enc ?? null,
+          e.session_id_enc ?? null,
+          e.parent_event_id_enc ?? null,
+          localSeq,
+          `cloud:${e.event_id}`
+        );
+        applied += 1;
+      }
+    });
+    txn();
+    return applied;
+  }
+
   // --- Key Rotation ---
 
   /**
@@ -1328,27 +1657,52 @@ export class Ledger {
         domainNames.push(realName);
       }
 
-      // Re-encrypt all timeline events (BEFORE domain_map changes)
+      // Precompute per-domain key material once. Without this, HKDF runs
+      // twice per row for events, and twice again per row for facts —
+      // O(rows) cost where O(domains) is enough.
+      interface DomainKeyBundle {
+        oldDomainKey: Buffer;
+        newDomainKey: Buffer;
+        newBlindKey: Buffer;
+        oldPseudo: string;
+        newPseudo: string;
+      }
+      const domainKeyCache = new Map<string, DomainKeyBundle>();
+      const pseudoForName = (key: Buffer, name: string) =>
+        "d_" + crypto.createHmac("sha256", key).update(`usrcp-domain-pseudo:${name}`).digest("hex").slice(0, 12);
+      for (const name of domainNames) {
+        domainKeyCache.set(name, {
+          oldDomainKey: deriveDomainEncryptionKey(oldKey, name),
+          newDomainKey: deriveDomainEncryptionKey(newKey, name),
+          newBlindKey: deriveBlindIndexKey(newKey, name),
+          oldPseudo: pseudoForName(oldKey, name),
+          newPseudo: pseudoForName(newKey, name),
+        });
+      }
+
+      // Re-encrypt all timeline events AND update their domain pseudonym
+      // in a single UPDATE — no separate per-domain pass afterwards.
       const events = this.db
         .prepare("SELECT event_id, domain, summary, intent, outcome, platform, detail, artifacts, tags, session_id, parent_event_id FROM timeline_events")
         .all() as any[];
 
       const updateEvent = this.db.prepare(
-        `UPDATE timeline_events SET summary=?, intent=?, outcome=?, platform=?, detail=?, artifacts=?, tags=?, session_id=?, parent_event_id=? WHERE event_id=?`
+        `UPDATE timeline_events SET domain=?, summary=?, intent=?, outcome=?, platform=?, detail=?, artifacts=?, tags=?, session_id=?, parent_event_id=? WHERE event_id=?`
       );
 
       for (const e of events) {
         const realDomain = pseudoToReal.get(e.domain) || e.domain;
-        const oldDomainKey = deriveDomainEncryptionKey(oldKey, realDomain);
-        const newDomainKey = deriveDomainEncryptionKey(newKey, realDomain);
+        const bundle = domainKeyCache.get(realDomain);
+        if (!bundle) continue; // domain not in map — should not happen
 
         const reenc = (val: string | null) => {
           if (!val) return null;
-          const plain = isEncrypted(val) ? decrypt(val, oldDomainKey) : val;
-          return encrypt(plain, newDomainKey);
+          const plain = isEncrypted(val) ? decrypt(val, bundle.oldDomainKey) : val;
+          return encrypt(plain, bundle.newDomainKey);
         };
 
         updateEvent.run(
+          bundle.newPseudo,
           reenc(e.summary), reenc(e.intent), reenc(e.outcome), reenc(e.platform),
           reenc(e.detail), reenc(e.artifacts), reenc(e.tags),
           reenc(e.session_id), reenc(e.parent_event_id), e.event_id
@@ -1356,13 +1710,12 @@ export class Ledger {
         reencrypted++;
       }
 
-      // Now update domain_map with new pseudonyms
+      // Now rewrite domain_map with new pseudonyms
       this.db.exec("DELETE FROM domain_map");
       const insertMap = this.db.prepare("INSERT INTO domain_map (pseudonym, encrypted_name) VALUES (?, ?)");
       for (const name of domainNames) {
-        // New pseudonym derived from new master key
-        const newPseudo = "d_" + crypto.createHmac("sha256", newKey).update(`usrcp-domain-pseudo:${name}`).digest("hex").slice(0, 12);
-        insertMap.run(newPseudo, encrypt(name, newGlobalKey));
+        const bundle = domainKeyCache.get(name)!;
+        insertMap.run(bundle.newPseudo, encrypt(name, newGlobalKey));
       }
 
       // Re-encrypt domain context with new pseudonyms
@@ -1370,22 +1723,49 @@ export class Ledger {
       this.db.exec("DELETE FROM domain_context");
       const insertCtx = this.db.prepare("INSERT INTO domain_context (domain, context, updated_at) VALUES (?, ?, datetime('now'))");
       for (const c of contexts) {
-        // Resolve old pseudonym to real domain name
-        const realDomain = domainMaps.find((dm: any) => dm.pseudonym === c.domain);
-        if (!realDomain) continue;
-        const realName = isEncrypted(realDomain.encrypted_name) ? decrypt(realDomain.encrypted_name, oldGlobalKey) : realDomain.encrypted_name;
-        const oldDomainKey = deriveDomainEncryptionKey(oldKey, realName);
-        const newDomainKey = deriveDomainEncryptionKey(newKey, realName);
-        const plain = isEncrypted(c.context) ? decrypt(c.context, oldDomainKey) : c.context;
-        const newPseudo = "d_" + crypto.createHmac("sha256", newKey).update(`usrcp-domain-pseudo:${realName}`).digest("hex").slice(0, 12);
-        insertCtx.run(newPseudo, encrypt(plain, newDomainKey));
+        const realName = pseudoToReal.get(c.domain);
+        if (!realName) continue;
+        const bundle = domainKeyCache.get(realName)!;
+        const plain = isEncrypted(c.context) ? decrypt(c.context, bundle.oldDomainKey) : c.context;
+        insertCtx.run(bundle.newPseudo, encrypt(plain, bundle.newDomainKey));
       }
 
-      // Update timeline_events domain column to new pseudonyms
-      for (const name of domainNames) {
-        const oldPseudo = "d_" + crypto.createHmac("sha256", oldKey).update(`usrcp-domain-pseudo:${name}`).digest("hex").slice(0, 12);
-        const newPseudo = "d_" + crypto.createHmac("sha256", newKey).update(`usrcp-domain-pseudo:${name}`).digest("hex").slice(0, 12);
-        this.db.prepare("UPDATE timeline_events SET domain = ? WHERE domain = ?").run(newPseudo, oldPseudo);
+      // Re-encrypt schemaless_facts using the same per-domain cache.
+      const facts = this.db.prepare(
+        "SELECT fact_id, domain, namespace, \"key\", value FROM schemaless_facts"
+      ).all() as any[];
+      const updateFact = this.db.prepare(
+        `UPDATE schemaless_facts SET domain = ?, ns_key_hash = ?, namespace = ?, "key" = ?, value = ? WHERE fact_id = ?`
+      );
+      for (const f of facts) {
+        const realDomain = pseudoToReal.get(f.domain) || f.domain;
+        const bundle = domainKeyCache.get(realDomain);
+        if (!bundle) continue;
+
+        const nsPlain = isEncrypted(f.namespace) ? decrypt(f.namespace, bundle.oldDomainKey) : f.namespace;
+        const keyPlain = isEncrypted(f.key) ? decrypt(f.key, bundle.oldDomainKey) : f.key;
+        const valuePlain = isEncrypted(f.value) ? decrypt(f.value, bundle.oldDomainKey) : f.value;
+
+        const newHash = crypto.createHmac("sha256", bundle.newBlindKey)
+          .update(`${nsPlain.length}:${nsPlain}|${keyPlain.length}:${keyPlain}`)
+          .digest("hex");
+
+        updateFact.run(
+          bundle.newPseudo,
+          newHash,
+          encrypt(nsPlain, bundle.newDomainKey),
+          encrypt(keyPlain, bundle.newDomainKey),
+          encrypt(valuePlain, bundle.newDomainKey),
+          f.fact_id
+        );
+      }
+
+      // Zero the cached per-domain keys. The global keys are zeroed
+      // separately in the rotation tail.
+      for (const bundle of domainKeyCache.values()) {
+        zeroBuffer(bundle.oldDomainKey);
+        zeroBuffer(bundle.newDomainKey);
+        zeroBuffer(bundle.newBlindKey);
       }
 
       // Re-encrypt identity

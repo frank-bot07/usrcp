@@ -297,6 +297,26 @@ describe("Encryption integration with Ledger", () => {
     expect(ctx.health.medication).toBe("sertraline");
   });
 
+  it("domain isolation: schemaless facts cannot be decrypted with wrong domain key", () => {
+    ledger.setFact("health", "meds", "daily", "sertraline 50mg");
+
+    const rawDb = new Database(dbPath, { readonly: true });
+    const row = rawDb
+      .prepare("SELECT namespace, \"key\", value, domain FROM schemaless_facts LIMIT 1")
+      .get() as any;
+    rawDb.close();
+
+    expect(row.namespace.startsWith("enc:")).toBe(true);
+    expect(row.value.startsWith("enc:")).toBe(true);
+
+    const masterKey = getMasterKey()!;
+    const wrongKey = deriveDomainEncryptionKey(masterKey, "coding");
+    expect(() => decrypt(row.value, wrongKey)).toThrow();
+
+    const rightKey = deriveDomainEncryptionKey(masterKey, "health");
+    expect(decrypt(row.value, rightKey)).toContain("sertraline");
+  });
+
   it("domain isolation: coding key cannot decrypt health data", () => {
     ledger.appendEvent(
       {

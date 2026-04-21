@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { Ledger } from "./ledger.js";
 import { getIdentity } from "./crypto.js";
+import { VersionConflictError } from "./types.js";
 import type { CoreIdentity, GlobalPreferences } from "./types.js";
 
 // --- Security constants ---
@@ -15,6 +16,29 @@ const MAX_SEARCH_QUERY = 200; // search input
 
 function formatUserId(rawId: string | undefined): string {
   return `usrcp://local/${rawId || "anonymous"}`;
+}
+
+function versionConflictResponse(err: VersionConflictError) {
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: JSON.stringify(
+          {
+            status: "version_conflict",
+            error: "VERSION_CONFLICT",
+            scope: err.scope,
+            target: err.target,
+            current_version: err.currentVersion,
+            expected_version: err.expectedVersion,
+            message: err.message,
+          },
+          null,
+          2
+        ),
+      },
+    ],
+  };
 }
 
 // Constrained record type: limits both key count and value size
@@ -251,6 +275,15 @@ export function createServer(passphrase?: string): { server: McpServer; shutdown
         .enum(["concise", "detailed", "socratic", "pair_programming"])
         .optional()
         .describe("How the user prefers AI to communicate"),
+      expected_version: z
+        .number()
+        .int()
+        .min(1)
+        .optional()
+        .describe(
+          "Optional: version from a prior read. If the stored version differs, " +
+          "the update is rejected with VERSION_CONFLICT. Use for read-modify-write flows."
+        ),
     },
     async (params) => {
       const update: Partial<CoreIdentity> = {};
@@ -262,7 +295,12 @@ export function createServer(passphrase?: string): { server: McpServer; shutdown
       if (params.communication_style !== undefined)
         update.communication_style = params.communication_style;
 
-      ledger.updateIdentity(update);
+      try {
+        ledger.updateIdentity(update, params.expected_version);
+      } catch (err) {
+        if (err instanceof VersionConflictError) return versionConflictResponse(err);
+        throw err;
+      }
       const updated = ledger.getIdentity();
 
       return {
@@ -306,6 +344,15 @@ export function createServer(passphrase?: string): { server: McpServer; shutdown
       custom: boundedRecord()
         .optional()
         .describe("Custom key-value preferences"),
+      expected_version: z
+        .number()
+        .int()
+        .min(1)
+        .optional()
+        .describe(
+          "Optional: version from a prior read. If the stored version differs, " +
+          "the update is rejected with VERSION_CONFLICT."
+        ),
     },
     async (params) => {
       const update: Partial<GlobalPreferences> = {};
@@ -317,7 +364,12 @@ export function createServer(passphrase?: string): { server: McpServer; shutdown
       if (params.custom !== undefined)
         update.custom = params.custom as Record<string, unknown>;
 
-      ledger.updatePreferences(update);
+      try {
+        ledger.updatePreferences(update, params.expected_version);
+      } catch (err) {
+        if (err instanceof VersionConflictError) return versionConflictResponse(err);
+        throw err;
+      }
       const updated = ledger.getPreferences();
 
       return {
@@ -349,12 +401,27 @@ export function createServer(passphrase?: string): { server: McpServer; shutdown
       context: boundedRecord().describe(
         "Key-value context to merge into the domain (e.g., { preferred_framework: 'nextjs', css: 'tailwind' })"
       ),
+      expected_version: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe(
+          "Optional: version from a prior read (0 = domain does not yet exist). " +
+          "If the stored version differs, the update is rejected with VERSION_CONFLICT."
+        ),
     },
     async (params) => {
-      ledger.upsertDomainContext(
-        params.domain,
-        params.context as Record<string, unknown>
-      );
+      try {
+        ledger.upsertDomainContext(
+          params.domain,
+          params.context as Record<string, unknown>,
+          params.expected_version
+        );
+      } catch (err) {
+        if (err instanceof VersionConflictError) return versionConflictResponse(err);
+        throw err;
+      }
       const updated = ledger.getDomainContext([params.domain]);
 
       return {
@@ -560,6 +627,145 @@ export function createServer(passphrase?: string): { server: McpServer; shutdown
           ],
         };
       }
+    }
+  );
+
+  // --- Tool: usrcp_set_fact ---
+  server.tool(
+    "usrcp_set_fact",
+    "Store a free-form fact in a domain namespace. Use for data the fixed schema doesn't model (habits, relationships, recurring tasks, mood, goals, etc.). Upserts one row per (domain, namespace, key) — re-calling with the same key overwrites. All values are encrypted with the domain-scoped key.",
+    {
+      domain: z
+        .string()
+        .min(1)
+        .max(MAX_STRING_SHORT)
+        .describe("Semantic domain (coding, personal, health, etc.)"),
+      namespace: z
+        .string()
+        .min(1)
+        .max(MAX_STRING_SHORT)
+        .describe("Namespace within the domain (e.g., 'habits', 'relationships')"),
+      key: z
+        .string()
+        .min(1)
+        .max(MAX_STRING_MEDIUM)
+        .describe("Key within the namespace (e.g., 'morning_routine')"),
+      value: z
+        .unknown()
+        .describe("Free-form value — any JSON-serializable data"),
+      expected_version: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe(
+          "Optional: version from a prior read (0 = fact does not yet exist). " +
+          "If the stored version differs, the write is rejected with VERSION_CONFLICT."
+        ),
+      caller: z
+        .string()
+        .max(MAX_STRING_SHORT)
+        .default("unknown")
+        .describe("Identifying name of the calling agent/platform"),
+    },
+    async (params) => {
+      let result;
+      try {
+        result = ledger.setFact(
+          params.domain,
+          params.namespace,
+          params.key,
+          params.value,
+          { expectedVersion: params.expected_version, agentId: params.caller }
+        );
+      } catch (err) {
+        if (err instanceof VersionConflictError) return versionConflictResponse(err);
+        throw err;
+      }
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(
+              {
+                status: result.created ? "created" : "updated",
+                fact_id: result.fact_id,
+                updated_at: result.updated_at,
+                version: result.version,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+  );
+
+  // --- Tool: usrcp_get_facts ---
+  server.tool(
+    "usrcp_get_facts",
+    "Read schemaless facts. If `key` is provided, returns a single fact; otherwise lists all facts in the domain (optionally filtered by namespace).",
+    {
+      domain: z
+        .string()
+        .min(1)
+        .max(MAX_STRING_SHORT)
+        .describe("Domain to read from"),
+      namespace: z
+        .string()
+        .max(MAX_STRING_SHORT)
+        .optional()
+        .describe("Optional: filter by namespace"),
+      key: z
+        .string()
+        .max(MAX_STRING_MEDIUM)
+        .optional()
+        .describe("Optional: fetch a single fact by key (namespace required if set)"),
+    },
+    async (params) => {
+      if (params.key !== undefined) {
+        if (params.namespace === undefined) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify(
+                  { error: "namespace required when key is provided" },
+                  null,
+                  2
+                ),
+              },
+            ],
+          };
+        }
+        const fact = ledger.getFact(params.domain, params.namespace, params.key);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                { fact },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+      const facts = ledger.listFacts(params.domain, params.namespace);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(
+              { count: facts.length, facts },
+              null,
+              2
+            ),
+          },
+        ],
+      };
     }
   );
 

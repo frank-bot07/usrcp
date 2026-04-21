@@ -75,6 +75,33 @@ export interface TamperTracker {
   sessionId: string;
 }
 
+export interface SchemaFact {
+  fact_id: string;
+  domain: string;
+  namespace: string;
+  key: string;
+  value: unknown;
+  created_at: string;
+  updated_at: string;
+  version: number;
+}
+
+export class VersionConflictError extends Error {
+  readonly code = "VERSION_CONFLICT" as const;
+  constructor(
+    public readonly scope: string,
+    public readonly currentVersion: number,
+    public readonly expectedVersion: number,
+    public readonly target?: string
+  ) {
+    super(
+      `Version conflict on ${scope}${target ? `:${target}` : ""} — ` +
+      `expected v${expectedVersion}, current is v${currentVersion}`
+    );
+    this.name = "VersionConflictError";
+  }
+}
+
 export interface AppendEventInput {
   domain: string;
   summary: string;

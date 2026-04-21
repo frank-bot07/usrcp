@@ -41,9 +41,9 @@ async function callTool(
 }
 
 describe("Server creation", () => {
-  it("creates a server with 10 tools", () => {
+  it("creates a server with 12 tools", () => {
     const tools = (server as any)._registeredTools;
-    expect(Object.keys(tools)).toHaveLength(10);
+    expect(Object.keys(tools)).toHaveLength(12);
   });
 
   it("registers all expected tools", () => {
@@ -58,6 +58,8 @@ describe("Server creation", () => {
     expect(tools).toContain("usrcp_audit_log");
     expect(tools).toContain("usrcp_rotate_key");
     expect(tools).toContain("usrcp_status");
+    expect(tools).toContain("usrcp_set_fact");
+    expect(tools).toContain("usrcp_get_facts");
   });
 });
 

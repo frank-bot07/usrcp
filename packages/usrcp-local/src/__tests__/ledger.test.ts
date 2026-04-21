@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Ledger } from "../ledger.js";
+import { VersionConflictError } from "../types.js";
 
 let ledger: Ledger;
 let dbPath: string;
@@ -560,5 +561,257 @@ describe.skip("Key Rotation", () => {
     const postTracker = (postState.global_preferences as any).custom.tamperTracker as any;
     expect(postTracker.count).toBe(0);
     expect(postTracker.lastTamper).toBe(null);
+  });
+});
+
+describe("Schemaless Facts", () => {
+  it("write/read roundtrip for a single fact", () => {
+    const res = ledger.setFact("personal", "habits", "morning_routine", {
+      wake: "06:30",
+      steps: ["water", "meditate", "run"],
+    });
+    expect(res.created).toBe(true);
+    expect(res.fact_id).toMatch(/^[0-9A-Z]{26}$/);
+
+    const fact = ledger.getFact("personal", "habits", "morning_routine");
+    expect(fact).not.toBeNull();
+    expect(fact!.namespace).toBe("habits");
+    expect(fact!.key).toBe("morning_routine");
+    expect(fact!.domain).toBe("personal");
+    expect(fact!.value).toEqual({ wake: "06:30", steps: ["water", "meditate", "run"] });
+  });
+
+  it("upserts on repeat write with same (domain, namespace, key)", () => {
+    const first = ledger.setFact("personal", "habits", "sleep", { hours: 7 });
+    expect(first.created).toBe(true);
+
+    const second = ledger.setFact("personal", "habits", "sleep", { hours: 8 });
+    expect(second.created).toBe(false);
+    expect(second.fact_id).toBe(first.fact_id);
+
+    const fact = ledger.getFact("personal", "habits", "sleep");
+    expect((fact!.value as any).hours).toBe(8);
+  });
+
+  it("distinguishes facts across namespaces with same key", () => {
+    ledger.setFact("personal", "habits", "morning", "a");
+    ledger.setFact("personal", "goals", "morning", "b");
+    expect(ledger.getFact("personal", "habits", "morning")!.value).toBe("a");
+    expect(ledger.getFact("personal", "goals", "morning")!.value).toBe("b");
+  });
+
+  it("lists all facts in a domain", () => {
+    ledger.setFact("personal", "habits", "a", 1);
+    ledger.setFact("personal", "habits", "b", 2);
+    ledger.setFact("personal", "goals", "c", 3);
+
+    const all = ledger.listFacts("personal");
+    expect(all.length).toBe(3);
+
+    const habits = ledger.listFacts("personal", "habits");
+    expect(habits.length).toBe(2);
+    expect(habits.map((f) => f.key).sort()).toEqual(["a", "b"]);
+  });
+
+  it("deletes facts by fact_id", () => {
+    const { fact_id } = ledger.setFact("personal", "goals", "x", 1);
+    expect(ledger.deleteFact(fact_id)).toBe(true);
+    expect(ledger.getFact("personal", "goals", "x")).toBeNull();
+    expect(ledger.deleteFact(fact_id)).toBe(false);
+  });
+
+  it("domain isolation: ns_key_hash differs across domains for same (ns, key)", () => {
+    ledger.setFact("work", "secrets", "totp", "A");
+    ledger.setFact("personal", "secrets", "totp", "B");
+
+    const row = (ledger as any).db
+      .prepare("SELECT domain, ns_key_hash FROM schemaless_facts")
+      .all() as any[];
+    expect(row.length).toBe(2);
+    expect(row[0].domain).not.toBe(row[1].domain);
+    expect(row[0].ns_key_hash).not.toBe(row[1].ns_key_hash);
+
+    expect((ledger.getFact("work", "secrets", "totp")!.value as string)).toBe("A");
+    expect((ledger.getFact("personal", "secrets", "totp")!.value as string)).toBe("B");
+  });
+
+  it("encrypts namespace, key, and value at rest", () => {
+    ledger.setFact("coding", "frameworks", "frontend", "nextjs");
+    const row = (ledger as any).db
+      .prepare("SELECT namespace, \"key\", value FROM schemaless_facts")
+      .get() as any;
+    expect(row.namespace.startsWith("enc:")).toBe(true);
+    expect(row.key.startsWith("enc:")).toBe(true);
+    expect(row.value.startsWith("enc:")).toBe(true);
+  });
+
+  it("rejects empty namespace or key", () => {
+    expect(() => ledger.setFact("personal", "", "foo", 1)).toThrow(/namespace/);
+    expect(() => ledger.setFact("personal", "ns", "", 1)).toThrow(/key/);
+  });
+
+  it("rejects oversized value", () => {
+    const huge = "x".repeat(65537);
+    expect(() => ledger.setFact("personal", "ns", "k", huge)).toThrow(/value exceeds/);
+  });
+
+  it("tracks version and increments on update", () => {
+    const first = ledger.setFact("personal", "habits", "run", { km: 5 });
+    expect(first.version).toBe(1);
+    const second = ledger.setFact("personal", "habits", "run", { km: 6 });
+    expect(second.version).toBe(2);
+    expect(ledger.getFact("personal", "habits", "run")!.version).toBe(2);
+  });
+
+  it("expected_version match succeeds and bumps version", () => {
+    const created = ledger.setFact("personal", "goals", "x", 1);
+    const updated = ledger.setFact("personal", "goals", "x", 2, { expectedVersion: created.version });
+    expect(updated.version).toBe(created.version + 1);
+  });
+
+  it("expected_version mismatch throws VERSION_CONFLICT", () => {
+    ledger.setFact("personal", "goals", "x", 1); // version = 1
+    ledger.setFact("personal", "goals", "x", 2); // version = 2
+    expect(() =>
+      ledger.setFact("personal", "goals", "x", 3, { expectedVersion: 1 })
+    ).toThrow(VersionConflictError);
+  });
+
+  it("expected_version=0 succeeds only for new facts", () => {
+    const res = ledger.setFact("personal", "new", "fresh", 1, { expectedVersion: 0 });
+    expect(res.created).toBe(true);
+    expect(res.version).toBe(1);
+    // A second call with expected=0 must fail (fact now exists)
+    expect(() =>
+      ledger.setFact("personal", "new", "fresh", 2, { expectedVersion: 0 })
+    ).toThrow(VersionConflictError);
+  });
+
+  it("key rotation preserves all facts with re-derived ns_key_hash", () => {
+    ledger.setFact("personal", "habits", "morning", { wake: "06:30" });
+    ledger.setFact("personal", "goals", "q1", { target: "ship v1" });
+    ledger.setFact("work", "secrets", "api", "rotate-me");
+
+    const beforeRows = (ledger as any).db
+      .prepare("SELECT fact_id, ns_key_hash FROM schemaless_facts ORDER BY fact_id")
+      .all() as any[];
+
+    ledger.rotateKey();
+
+    const afterRows = (ledger as any).db
+      .prepare("SELECT fact_id, ns_key_hash FROM schemaless_facts ORDER BY fact_id")
+      .all() as any[];
+
+    expect(afterRows.length).toBe(beforeRows.length);
+    // ns_key_hash must change because blind-index key is re-derived
+    for (let i = 0; i < beforeRows.length; i++) {
+      expect(afterRows[i].fact_id).toBe(beforeRows[i].fact_id);
+      expect(afterRows[i].ns_key_hash).not.toBe(beforeRows[i].ns_key_hash);
+    }
+
+    // Reads still work — lookup uses new key, matches new hash
+    expect((ledger.getFact("personal", "habits", "morning")!.value as any).wake).toBe("06:30");
+    expect((ledger.getFact("personal", "goals", "q1")!.value as any).target).toBe("ship v1");
+    expect(ledger.getFact("work", "secrets", "api")!.value).toBe("rotate-me");
+  });
+});
+
+describe("Optimistic Concurrency (v0.2.0)", () => {
+  it("identity starts at version 1 and bumps on update", () => {
+    expect(ledger.getIdentity().version).toBe(1);
+    const v = ledger.updateIdentity({ display_name: "Frank" });
+    expect(v).toBe(2);
+    expect(ledger.getIdentity().version).toBe(2);
+    ledger.updateIdentity({ display_name: "Frank B" });
+    expect(ledger.getIdentity().version).toBe(3);
+  });
+
+  it("identity expected_version match succeeds", () => {
+    const v = ledger.getIdentity().version;
+    const newV = ledger.updateIdentity({ display_name: "Frank" }, v);
+    expect(newV).toBe(v + 1);
+  });
+
+  it("identity expected_version mismatch throws VERSION_CONFLICT", () => {
+    const v = ledger.getIdentity().version;
+    ledger.updateIdentity({ display_name: "someone-else" }); // bumps version
+    expect(() => ledger.updateIdentity({ display_name: "Frank" }, v)).toThrow(VersionConflictError);
+
+    try {
+      ledger.updateIdentity({ display_name: "Frank" }, v);
+    } catch (err: any) {
+      expect(err.code).toBe("VERSION_CONFLICT");
+      expect(err.scope).toBe("core_identity");
+      expect(err.expectedVersion).toBe(v);
+      expect(err.currentVersion).toBe(v + 1);
+    }
+  });
+
+  it("preferences tracks version independently from identity", () => {
+    const idV = ledger.getIdentity().version;
+    ledger.updatePreferences({ verbosity: "minimal" });
+    expect(ledger.getPreferences().version).toBeGreaterThan(1);
+    expect(ledger.getIdentity().version).toBe(idV); // unchanged
+  });
+
+  it("preferences expected_version mismatch throws VERSION_CONFLICT", () => {
+    const v = ledger.getPreferences().version;
+    ledger.updatePreferences({ timezone: "Europe/Berlin" });
+    expect(() => ledger.updatePreferences({ timezone: "Asia/Tokyo" }, v)).toThrow(VersionConflictError);
+  });
+
+  it("domain_context version is 0 before first write, 1 after first write", () => {
+    expect(ledger.getDomainContextVersion("coding")).toBe(0);
+    ledger.upsertDomainContext("coding", { framework: "nextjs" });
+    expect(ledger.getDomainContextVersion("coding")).toBe(1);
+  });
+
+  it("domain_context expected_version=0 succeeds on first write, mismatches on second", () => {
+    ledger.upsertDomainContext("coding", { framework: "nextjs" }, 0);
+    // Now version=1. Caller using expected=0 must fail
+    expect(() =>
+      ledger.upsertDomainContext("coding", { framework: "remix" }, 0)
+    ).toThrow(VersionConflictError);
+  });
+
+  it("domain_context versions are independent per-domain", () => {
+    ledger.upsertDomainContext("coding", { x: 1 });
+    ledger.upsertDomainContext("coding", { x: 2 });
+    ledger.upsertDomainContext("writing", { y: 1 });
+    expect(ledger.getDomainContextVersion("coding")).toBe(2);
+    expect(ledger.getDomainContextVersion("writing")).toBe(1);
+  });
+
+  it("concurrent preference writes converge without data corruption", () => {
+    // Two writers racing — last write wins, no partial write, no crash
+    for (let i = 0; i < 50; i++) {
+      ledger.updatePreferences({ timezone: "A" });
+      ledger.updatePreferences({ timezone: "B" });
+    }
+    const prefs = ledger.getPreferences();
+    expect(["A", "B"]).toContain(prefs.timezone);
+    expect(prefs.version).toBeGreaterThan(100);
+  });
+
+  it("concurrent timeline writes all land (append-only, no conflict)", () => {
+    const ids = new Set<string>();
+    for (let i = 0; i < 20; i++) {
+      const { event_id } = ledger.appendEvent(
+        { domain: "coding", summary: `e${i}`, intent: "test", outcome: "success" },
+        "test"
+      );
+      ids.add(event_id);
+    }
+    expect(ids.size).toBe(20);
+    const timeline = ledger.getTimeline({ last_n: 100 });
+    expect(timeline.length).toBe(20);
+    // Every ledger_sequence is distinct and monotonic
+    const seqs = (ledger as any).db
+      .prepare("SELECT ledger_sequence FROM timeline_events ORDER BY ledger_sequence")
+      .all()
+      .map((r: any) => r.ledger_sequence);
+    for (let i = 1; i < seqs.length; i++) {
+      expect(seqs[i]).toBeGreaterThan(seqs[i - 1]);
+    }
   });
 });
