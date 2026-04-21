@@ -1,43 +1,27 @@
-# USRCP Quickstart v0.3.0
+# Quickstart — legacy prototype
 
-## Install
+> This file belonged to `usrcp-sdk v0.3.0`, a January-February 2026
+> prototype. It does **not** describe the current USRCP protocol or
+> reference implementation. See [`README.md`](./README.md) in this
+> directory for context, and [`/packages/usrcp-local/`](../packages/usrcp-local)
+> for the real MCP server.
+
+## Current install, not this
+
 ```bash
-npm i usrcp-sdk
+# The current reference implementation is usrcp-local (an MCP server),
+# not usrcp-sdk. Install it from a clone:
+
+cd packages/usrcp-local
+npm install && npm run build && npm link
+
+usrcp init --client=claude,cursor
 ```
 
-## Init Ledger (Zero-Config)
-```ts
-import { initLedger } from 'usrcp-sdk';
+See the repo root [`README.md`](../README.md) for the full quickstart,
+per-client integration docs, and the security model.
 
-const config = {
-  dbPath: './usrcp-ledger.db',
-  adapters: [
-    { type: 'openclaw', token: 'your-openclaw-token' },
-    { type: 'hermes', webhookUrl: 'https://your-hermes-webhook' },
-    { type: 'claude', apiKey: 'sk-claude-key' },
-    { type: 'codex', apiKey: 'sk-codex-key' }
-  ]
-};
+## Why this file is not deleted
 
-const ledger = await initLedger(config);
-// Auto-subscribes adapters, merges events to 'global' stream
-```
-
-## Append Event (e.g., Manual)
-```ts
-await ledger.appendEvent('global', { type: 'user_message', data: { content: 'Test', sender: 'Chad' } });
-```
-
-## Recall Cross-App Context
-```ts
-const state = await ledger.getState('global');
-// Returns reduced events from all adapters (OpenClaw sessions + Hermes webhooks + Claude completions + Codex streams)
-console.log(state); // { messages: [...], completions: [...], ... }
-```
-
-## Test Mock Sync
-Run `npm test`—verifies multi-app merge (e.g., OpenClaw message + Claude response recall).
-
-Extensible: Add custom adapter class for new apps. No polling—pure events.
-
-For ship: Run full tests, audit adapters, update CHANGELOG. Questions? Ping.
+Kept alongside `./README.md` so anyone landing from an npm link to
+`usrcp-sdk v0.3.0` can figure out what happened without a 404.

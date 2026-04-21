@@ -1,6 +1,19 @@
 # USRCP Go-To-Market Strategy
 
-**Grassroots Adoption via The Wedge**
+**Two Wedges: Security-Conscious Developers and Regulated Enterprises**
+
+---
+
+## Positioning
+
+USRCP is **not** general-purpose AI memory. Mem0 and Zep have that market covered and we will not out-execute them on semantic recall over chat history. USRCP is the structured-state and zero-knowledge layer — the thing you use when you need identity, preferences, projects, and interaction timeline to flow between Claude Desktop, Cursor, Continue, and Cline, and the thing you deploy when a memory provider seeing plaintext is a compliance non-starter.
+
+The two wedges follow from this:
+
+1. **Security-conscious developers** who use multiple AI editors daily and want their structured state (stack, style, projects) to follow them across tools, but don't want a third-party memory vendor reading their work.
+2. **Regulated-industry enterprises** (health, finance, legal) for whom the zero-knowledge hosted ledger is not an upsell — it is the only memory architecture their compliance team will sign off on.
+
+Grassroots first (developer wedge), enterprise second (compliance wedge). The developer wedge generates the proof, the stars, and the integrations. The enterprise wedge generates the revenue.
 
 ---
 
@@ -12,44 +25,36 @@ USRCP launches bottom-up. We build one integration so good that developers adopt
 
 ---
 
-## The Trojan Horse: Local MCP Server for Claude Code / Cursor / Any Agent
+## The Trojan Horse: Local MCP Server for Claude Desktop / Cursor / Any MCP Editor
 
-### Why This Is The Wedge
+### Why This Is The Developer Wedge
 
-The first integration is a **local MCP server** that implements USRCP as a tool any local AI agent can call. Here's why:
+The first integration is a **local MCP server** that any MCP-compatible AI agent can call:
 
-1. **MCP is already winning.** Claude Code, Cursor, Windsurf, and dozens of agents already support MCP servers. We don't need to convince anyone to adopt a new integration pattern — we plug into the one they already use.
+1. **MCP is already winning.** Claude Desktop, Cursor, Continue, Cline, Zed, Windsurf — dozens of agents speak MCP. We plug into the integration pattern they already use; we're not asking anyone to adopt a new one.
 
-2. **Instant value prop.** Install the MCP server. Every agent on your machine now has persistent memory of who you are, what you're working on, and how you like to work. No more repeating yourself. No more re-explaining your codebase to a new session.
+2. **Narrow, honest value prop.** Install the MCP server. Every agent on your machine can now read and write the same structured state — your identity, your preferences, your active projects, your domain-scoped context, and your interaction timeline. Write a preference in Claude Desktop; Cursor sees it on the next call. The pitch is cross-platform structured state, not "AI that remembers everything."
 
-3. **Zero infrastructure.** The local MCP server runs a SQLite-backed ledger on `localhost`. No cloud dependency. No account creation. No friction. `npx usrcp-local` and you're running.
+3. **Zero infrastructure.** The local MCP server runs an encrypted SQLite ledger on `localhost`. No cloud dependency. No account creation. No friction. `npx usrcp init` and you're running.
 
-4. **Graduation path.** When developers want cross-device sync or team features, they upgrade to the hosted ledger. The protocol is the same — they just change the ledger URL.
+4. **Graduation path to the hosted ledger.** When developers want cross-device sync or team-scoped ledgers, they upgrade. The protocol is the same — they just configure a `cloud_endpoint` and the local client starts pushing ciphertext to the sync server. The hosted ledger never sees plaintext.
 
 ### The Install Experience
 
 ```bash
-# One command. That's it.
-npx usrcp-local init
-
-# Or for Python-centric devs
-pip install usrcp && usrcp init
+npx usrcp init --client=claude,cursor
 ```
 
 This does three things:
-1. Creates `~/.usrcp/ledger.db` (SQLite) and `~/.usrcp/keys/` (local keychain)
-2. Registers as an MCP server in Claude Code config (`~/.claude/mcp_servers.json`)
-3. Starts serving on `localhost:7437` (USRCP default port)
+1. Creates `~/.usrcp/users/<slug>/` with an encrypted SQLite ledger and per-user keys (passphrase-derived master key, never written to disk in passphrase mode).
+2. Registers USRCP as an MCP server in both Claude Desktop's and Cursor's MCP config files. Also supports `continue` and `cline`, or `--client=all`.
+3. Serves on stdio when the agent spawns it (default) or on HTTPS with a bearer token when run with `--transport=http`.
 
-Now every Claude Code session, every Cursor chat, every local agent that speaks MCP can call:
-- `usrcp_get_state` — "Who is this user? What are they working on?"
-- `usrcp_append_event` — "Record that we just deployed the auth refactor"
+Every Claude Desktop session, every Cursor chat, every MCP-compatible agent can now call `usrcp_get_state` for the user's identity/preferences/projects/timeline and `usrcp_append_event` / `usrcp_set_fact` to write back.
 
 ### Why MCP and Not a Standalone SDK?
 
-An SDK requires developers to write integration code. An MCP server requires them to write **nothing**. The agent runtime already knows how to call MCP tools. We're not asking developers to build with USRCP — we're giving their existing agents superpowers for free.
-
-The SDK exists for developers who want deeper integration. But the wedge — the thing that gets the first 1,000 users — is the zero-code MCP server.
+An SDK requires developers to write integration code. An MCP server requires them to write **nothing** — the agent runtime already knows how to call MCP tools. We're giving their existing agents cross-platform structured state for free, which is the first thing a user notices because it eliminates the daily "re-explain your stack" tax.
 
 ---
 
@@ -57,75 +62,74 @@ The SDK exists for developers who want deeper integration. But the wedge — the
 
 New protocols have a chicken-and-egg problem: no users → no integrations → no users.
 
-USRCP bypasses this because **the local MCP server is both the producer and consumer of state on day one.**
+USRCP bypasses this because **the local MCP server is both the producer and consumer of structured state on day one.**
 
 ### Day 1 Value (Single User, Single Machine)
 
 Even with zero network effects, the local ledger provides:
-- Persistent memory across agent sessions (no more "I'm a new session, I don't know your preferences")
-- Cross-agent context (what you told Cursor is available to your CLI agent)
-- Interaction history and project timeline
+- Structured identity and preferences that persist across sessions. "I'm a TypeScript founder, verbose output, Pacific timezone" — written once, available everywhere.
+- Cross-editor state sharing: register with Claude Desktop and Cursor, write in one, read in the other.
+- Interaction timeline and active-project tracking, scoped per domain.
 
-This is already better than what exists. Memory today is either:
-- **Platform-locked** (Claude's memory only works in Claude)
-- **Session-scoped** (gone when the window closes)
-- **Manual** (CLAUDE.md files you maintain by hand)
+This is already better than what exists for the structured-state use case:
+- **Platform memory (Claude, ChatGPT)** is locked to that platform and hands your plaintext to the vendor.
+- **`CLAUDE.md` / `.cursorrules`** are static, per-repo, manually maintained, and not cross-tool.
+- **Custom vector DBs** solve semantic recall, not structured state, and require the developer to build the integration themselves.
 
-### Day 30 Value (Network Effects Begin)
+### Day 30 Value (Per-User Compound Interest)
 
-- Obsidian plugin syncs your notes/thinking into the ledger
-- VS Code extension tracks coding sessions
-- Browser extension captures research sessions
-- All of this context is available to any agent via one `get_state` call
+- Schemaless facts table lets domains store data the fixed schema doesn't model (habits, recurring tasks, relationships) without needing a schema migration.
+- Per-domain encryption isolation: coding-domain keys cannot decrypt health-domain data. Cryptographically enforced, not policy-enforced.
+- Multi-user local layout: shared family laptop or shared developer laptop, each human gets their own passphrase-protected ledger.
 
-### Day 90 Value (Cross-Device, Teams)
+### Day 90 Value (Cross-Device, Compliance-Grade)
 
-- Hosted ledger for cross-device sync
-- Team ledgers for shared project context
-- Enterprise deployment with SSO and audit logs
+- Hosted sync ledger (packages/usrcp-cloud) for cross-device: push from laptop, pull on phone. Server stores **ciphertext only** — the operator cannot read user data.
+- Team-scoped ledgers for shared project context (v0.2+).
+- Compliance-grade deployment: BAA-ready, audit-log-signed, SSO, for regulated industries where no existing memory vendor can honestly offer a zero-knowledge story.
 
 ---
 
 ## The 1,000 Developer Playbook
 
-### Phase 1: Seed (Week 1-4)
+### Phase 1: Seed (Week 1-4) — Developer Wedge
 
-**Target**: AI-native indie developers who are already using Claude Code or Cursor daily.
+**Target**: AI-native indie developers already using 2+ AI editors daily.
 
-1. **Ship `usrcp-local` as an npm package.** One command install. README shows a before/after: "Here's a Claude Code session without USRCP. Here's one with it. The agent already knows your stack, your style, your projects."
+1. **Ship `usrcp-local` as an npm package.** One command install. README shows a before/after: "Here's a Cursor session without USRCP: you re-explain your stack. Here's one with it: Cursor already knows because you told Claude Desktop yesterday."
 
-2. **Launch on Hacker News** with the framing: "We built the missing layer in the AI stack. MCP routes models. ACP routes agents. Nothing routes the human. Until now."
+2. **Launch on Hacker News** with the framing: *"We built structured user state as a protocol, not a product. MCP routes models. ACP routes agents. USRCP carries the human's structured state across both — encrypted, zero-knowledge, no vendor can read your memory."* Lead with the cryptographic architecture, not the TAM.
 
-3. **Post in Claude Code / Cursor / AI dev communities.** These are people who feel the pain every day. They restart sessions and re-explain context constantly.
+3. **Post in Claude Desktop / Cursor / Continue / Cline communities.** Target users who already use two editors and feel the state-rebuilding tax.
 
-4. **GitHub-first launch.** The spec, schemas, and local MCP server are all open source. Stars and forks are the early signal.
+4. **GitHub-first launch.** The spec, schemas, local MCP server, and hosted ledger scaffolding are all open source. Stars and forks are the early signal.
 
-### Phase 2: Expand (Week 5-12)
+### Phase 2: Expand (Week 5-12) — Second-editor Integrations
 
-5. **Build the Obsidian plugin.** Obsidian's community is technical, opinionated, and evangelical. They already believe in local-first, user-owned data. USRCP is philosophically aligned.
+5. **Verify cross-editor demo (Cursor).** Claude Desktop → structured write. Cursor → structured read. Same memory, two editors, no vendor reads plaintext. This is the proof artifact the pitch needs; it makes the protocol story real.
 
-6. **Build the VS Code extension.** Passive — auto-records coding sessions to the ledger. Now any agent knows what files you touched, what you committed, what bugs you hit.
+6. **Continue.dev and Cline integrations.** Open docs-PR for each, list USRCP in their MCP examples. Cheap, credibility-boosting.
 
-7. **Conference talks / YouTube content.** "The Three Protocol Stack" (MCP + ACP + USRCP) — position USRCP as the inevitable third layer.
+7. **Compliance positioning content.** One long-form post: "Why your memory vendor reading your plaintext is a compliance problem." Targets regulated-industry buyers who are already Googling this.
 
-### Phase 3: Monetize (Week 12+)
+### Phase 3: Monetize (Week 12+) — Compliance Wedge
 
-8. **Launch hosted ledger (usrcp.dev).** Free tier: 1 user, 10K events. Pro: $9/mo, unlimited. Team: $29/user/mo, shared context + audit log.
+8. **Launch hosted sync ledger (usrcp.dev).** Free tier: 1 user, 10K events. Pro: $9/mo, multi-device. Team: $29/user/mo, shared ledger + per-user audit signing.
 
-9. **Enterprise pilot.** Sell to AI-forward companies who want unified context across their agent fleet. "Your agents waste 40% of context window re-learning who the user is. USRCP eliminates that."
+9. **Regulated-industry pilot.** Target one health-tech AI company + one legal-tech AI company. Pitch: *"Your agents need persistent user state, but HIPAA/privilege rules make Mem0 a non-starter. USRCP's hosted ledger stores ciphertext only — we built the system so we can't read the data even if compelled."* Sign BAA, integrate, get case study.
 
 ---
 
 ## Competitive Moat
 
-| Competitor | Why We Win |
-|-----------|-----------|
-| **Platform memory (Claude, ChatGPT)** | Locked to one platform. USRCP is portable |
-| **CLAUDE.md / .cursorrules** | Manual, static files. USRCP is dynamic, auto-updating |
-| **Custom vector DBs** | Developer-built, per-app. USRCP is standardized, cross-app |
-| **Mem0 / similar startups** | API-first, not protocol-first. No interop standard. Vendor lock-in |
+| Competitor                           | How We Win                                                                                                                                   |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Platform memory (Claude, ChatGPT)** | Locked to one platform; vendor reads plaintext. USRCP is portable and zero-knowledge.                                                       |
+| **`CLAUDE.md` / `.cursorrules`**     | Static, per-repo, manual. USRCP is dynamic, cross-tool, schema + schemaless.                                                                 |
+| **Custom vector DBs**                | Developer-built, per-app. USRCP is standardized and ships an MCP layer their agents already know how to call.                               |
+| **Mem0 / Zep (semantic memory)**     | Different product. They do fuzzy recall over chat history; we do structured state with zero-knowledge encryption. Complementary, not rival. |
 
-The moat is the **protocol itself**. Once USRCP is the standard, we're the default hosted ledger — the way Stripe is the default payment processor despite open banking APIs existing.
+The moat is the **cryptographic architecture**, not the schema. Anyone can clone the schema; replicating zero-knowledge hosted sync with per-domain key isolation and cryptographically-signed audit logs is a rearchitecture project, and Mem0/Zep's current bet (semantic embeddings) has an accuracy ceiling that gets *worse* if they try to bolt on zero-knowledge. We don't need to win AI memory; we need to be the unquestionable choice for the structured-state and compliance tier.
 
 ---
 
