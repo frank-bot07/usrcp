@@ -6,7 +6,6 @@ import * as path from "node:path";
 import {
   generateKeyPair,
   deriveUserId,
-  deriveDomainKey,
   initializeIdentity,
   getIdentity,
 } from "../crypto.js";
@@ -46,32 +45,6 @@ describe("deriveUserId", () => {
   });
 });
 
-describe("deriveDomainKey", () => {
-  it("returns a 32-byte buffer", () => {
-    const key = deriveDomainKey("master-secret", "coding");
-    expect(Buffer.isBuffer(key)).toBe(true);
-    expect(key.length).toBe(32);
-  });
-
-  it("is deterministic", () => {
-    const k1 = deriveDomainKey("secret", "coding");
-    const k2 = deriveDomainKey("secret", "coding");
-    expect(k1.equals(k2)).toBe(true);
-  });
-
-  it("produces different keys for different domains", () => {
-    const k1 = deriveDomainKey("secret", "coding");
-    const k2 = deriveDomainKey("secret", "health");
-    expect(k1.equals(k2)).toBe(false);
-  });
-
-  it("produces different keys for different secrets", () => {
-    const k1 = deriveDomainKey("secret1", "coding");
-    const k2 = deriveDomainKey("secret2", "coding");
-    expect(k1.equals(k2)).toBe(false);
-  });
-});
-
 describe("initializeIdentity / getIdentity", () => {
   let origHome: string | undefined;
   let tmpHome: string;
@@ -104,7 +77,7 @@ describe("initializeIdentity / getIdentity", () => {
 
   it("creates key files on disk", () => {
     initializeIdentity(crypto.randomBytes(32));
-    const keysDir = path.join(tmpHome, ".usrcp", "keys");
+    const keysDir = path.join(tmpHome, ".usrcp", "users", "default", "keys");
     expect(fs.existsSync(path.join(keysDir, "identity.json"))).toBe(true);
     expect(fs.existsSync(path.join(keysDir, "private.pem"))).toBe(true);
     expect(fs.existsSync(path.join(keysDir, "public.pem"))).toBe(true);

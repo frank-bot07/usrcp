@@ -39,8 +39,107 @@ const TOKEN_HEX_LENGTH = 16;
 // Noise: dummy tokens per real token set
 const BLIND_INDEX_NOISE_COUNT = 3;
 
+// --- User scope (for multi-user on one machine) ---
+//
+// The current user slug selects which subdirectory of ~/.usrcp/users/
+// holds keys, ledger, and identity files. Default slug is "default" so
+// the single-user case works unchanged after migration.
+
+const USER_SLUG_RE = /^[a-z0-9][a-z0-9_-]{0,62}$/;
+let currentUserSlug: string = "default";
+
+export function setUserSlug(slug: string): void {
+  if (!USER_SLUG_RE.test(slug)) {
+    throw new Error(
+      `Invalid user slug "${slug}" — must be lowercase alphanumeric, ` +
+      `underscore, or hyphen; 1-63 chars; must start with alphanumeric.`
+    );
+  }
+  currentUserSlug = slug;
+}
+
+export function getUserSlug(): string {
+  return currentUserSlug;
+}
+
+export function getUsrcpBaseDir(): string {
+  return path.join(os.homedir(), ".usrcp");
+}
+
+export function getUserDir(): string {
+  return path.join(getUsrcpBaseDir(), "users", currentUserSlug);
+}
+
+export function listUserSlugs(): string[] {
+  const usersDir = path.join(getUsrcpBaseDir(), "users");
+  if (!fs.existsSync(usersDir)) return [];
+  return fs
+    .readdirSync(usersDir, { withFileTypes: true })
+    .filter((d) => d.isDirectory() && USER_SLUG_RE.test(d.name))
+    .map((d) => d.name)
+    .sort();
+}
+
 function getKeysDir(): string {
-  return path.join(os.homedir(), ".usrcp", "keys");
+  return path.join(getUserDir(), "keys");
+}
+
+/**
+ * Migrate a pre-v0.2 single-user layout to the v0.2 multi-user layout.
+ *
+ * Detects files directly under ~/.usrcp (ledger.db, keys/, mode, etc.)
+ * and moves them into ~/.usrcp/users/default/. Leaves a MIGRATED.md
+ * breadcrumb so the migration is not attempted again.
+ *
+ * No-op if:
+ * - ~/.usrcp does not exist (fresh install)
+ * - ~/.usrcp/users/ already exists (already migrated)
+ * - ~/.usrcp/MIGRATED.md exists (previous migration breadcrumb)
+ */
+export function migrateLegacyLayout(): { migrated: boolean; movedPaths: string[] } {
+  const base = getUsrcpBaseDir();
+  if (!fs.existsSync(base)) return { migrated: false, movedPaths: [] };
+
+  const usersDir = path.join(base, "users");
+  const breadcrumb = path.join(base, "MIGRATED.md");
+  if (fs.existsSync(usersDir) || fs.existsSync(breadcrumb)) {
+    return { migrated: false, movedPaths: [] };
+  }
+
+  // Things we know about from the v0.1 layout that should move
+  const candidates = [
+    "ledger.db",
+    "ledger.db-wal",
+    "ledger.db-shm",
+    "keys",
+  ];
+
+  const existing = candidates.filter((c) => fs.existsSync(path.join(base, c)));
+  if (existing.length === 0) return { migrated: false, movedPaths: [] };
+
+  const defaultDir = path.join(usersDir, "default");
+  fs.mkdirSync(defaultDir, { recursive: true, mode: 0o700 });
+
+  const moved: string[] = [];
+  for (const name of existing) {
+    const src = path.join(base, name);
+    const dst = path.join(defaultDir, name);
+    fs.renameSync(src, dst);
+    moved.push(name);
+  }
+
+  fs.writeFileSync(
+    breadcrumb,
+    `# USRCP migrated to multi-user layout\n\n` +
+    `Timestamp: ${new Date().toISOString()}\n\n` +
+    `Files previously under ~/.usrcp/ were moved into ~/.usrcp/users/default/ ` +
+    `to support multiple ledgers on one machine.\n\n` +
+    `Moved: ${moved.join(", ")}\n\n` +
+    `Run \`usrcp status\` or \`usrcp serve --user=default\` — behavior is unchanged.\n`,
+    { mode: 0o644 }
+  );
+
+  return { migrated: true, movedPaths: moved };
 }
 
 function getMasterKeyPath(): string {

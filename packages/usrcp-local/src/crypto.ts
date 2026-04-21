@@ -2,10 +2,10 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { deriveGlobalEncryptionKey, encrypt, decrypt, isEncrypted } from "./encryption.js";
+import { deriveGlobalEncryptionKey, encrypt, decrypt, isEncrypted, getUserDir, safeWriteFile } from "./encryption.js";
 
 function getKeysDir(): string {
-  return path.join(os.homedir(), ".usrcp", "keys");
+  return path.join(getUserDir(), "keys");
 }
 
 export interface KeyPair {
@@ -37,39 +37,6 @@ export function deriveUserId(publicKey: string): string {
 }
 
 /**
- * Write file safely — prevents symlink attacks.
- * Writes to a temp file then renames atomically.
- * Rejects if the target path is a symlink.
- */
-function safeWriteFile(filePath: string, content: string | Buffer | NodeJS.ArrayBufferView, mode: number): void {
-  // Reject symlinks — prevents writing to arbitrary paths
-  try {
-    const stat = fs.lstatSync(filePath);
-    if (stat.isSymbolicLink()) {
-      throw new Error(`Refusing to write: ${filePath} is a symlink`);
-    }
-  } catch (e: any) {
-    if (e.code !== "ENOENT") throw e;
-    // File doesn't exist — safe to create
-  }
-
-  // Write to temp file in same directory, then rename (atomic on same filesystem)
-  const dir = path.dirname(filePath);
-  const tmpPath = path.join(dir, `.tmp_${crypto.randomBytes(8).toString("hex")}`);
-  const fd = fs.openSync(tmpPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, mode);
-  try {
-    if (typeof content === "string") {
-      fs.writeSync(fd, content);
-    } else {
-      fs.writeSync(fd, content as Buffer);
-    }
-  } finally {
-    fs.closeSync(fd);
-  }
-  fs.renameSync(tmpPath, filePath);
-}
-
-/**
  * Initialize identity with encrypted private key storage.
  * masterKey is REQUIRED — the private key is encrypted before the first
  * byte hits disk. There is no plaintext window and no temp key.
@@ -91,8 +58,8 @@ export function initializeIdentity(masterKey: Buffer): LedgerIdentity {
   // Encrypt private key with the real master key BEFORE writing to disk
   const globalKey = deriveGlobalEncryptionKey(masterKey);
   const encryptedPrivateKey = encrypt(keyPair.privateKey, globalKey);
-  safeWriteFile(privateKeyPath, encryptedPrivateKey, 0o600);
-  safeWriteFile(publicKeyPath, keyPair.publicKey, 0o644);
+  safeWriteFile(privateKeyPath, Buffer.from(encryptedPrivateKey, "utf8"), 0o600);
+  safeWriteFile(publicKeyPath, Buffer.from(keyPair.publicKey, "utf8"), 0o644);
 
   const identity: LedgerIdentity = {
     user_id,
@@ -100,7 +67,7 @@ export function initializeIdentity(masterKey: Buffer): LedgerIdentity {
     created_at: new Date().toISOString(),
   };
 
-  safeWriteFile(identityPath, JSON.stringify(identity, null, 2), 0o600);
+  safeWriteFile(identityPath, Buffer.from(JSON.stringify(identity, null, 2), "utf8"), 0o600);
 
   return identity;
 }
@@ -119,7 +86,7 @@ export function ensurePrivateKeyEncrypted(masterKey: Buffer): void {
   // Encrypt and overwrite
   const globalKey = deriveGlobalEncryptionKey(masterKey);
   const encrypted = encrypt(content, globalKey);
-  safeWriteFile(privateKeyPath, encrypted, 0o600);
+  safeWriteFile(privateKeyPath, Buffer.from(encrypted, "utf8"), 0o600);
 }
 
 export function getIdentity(): LedgerIdentity | null {
@@ -132,17 +99,25 @@ export function getIdentity(): LedgerIdentity | null {
   }
 }
 
-export function deriveDomainKey(
-  masterSecret: string,
-  domain: string
-): Buffer {
-  return Buffer.from(
-    crypto.hkdfSync(
-      "sha256",
-      Buffer.from(masterSecret),
-      Buffer.from(domain),
-      Buffer.from("usrcp-domain-key-v1"),
-      32
-    )
-  );
+/**
+ * Decrypt the user's stored Ed25519 private key. Requires the master key
+ * (same key that encrypted it at init). Returns PEM. Caller is responsible
+ * for not logging or persisting the result.
+ */
+export function getDecryptedPrivateKeyPem(masterKey: Buffer): string {
+  const privPath = path.join(getKeysDir(), "private.pem");
+  if (!fs.existsSync(privPath)) {
+    throw new Error("Private key not found — has the ledger been initialized?");
+  }
+  const content = fs.readFileSync(privPath, "utf-8");
+  if (!isEncrypted(content)) {
+    // Legacy plaintext (pre-v0.1.3) — encrypt on next write via ensurePrivateKeyEncrypted
+    return content;
+  }
+  const globalKey = deriveGlobalEncryptionKey(masterKey);
+  const plain = decrypt(content, globalKey);
+  // Zero the derived key; can't zero the string
+  globalKey.fill(0);
+  return plain;
 }
+
