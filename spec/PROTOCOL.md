@@ -11,6 +11,47 @@
 
 ---
 
+## 0. Scope and Non-Goals
+
+USRCP is a protocol for **structured user state**: identity, preferences,
+active projects, per-domain context, free-form `(domain, namespace, key)`
+facts, and an append-only timeline of interaction events. The data model
+is schema-driven with a schemaless extension table; the search model is
+exact-keyword via HMAC blind index tokens.
+
+### Non-goals in v0.x
+
+- **Semantic search / embeddings / vector recall.** USRCP does not store
+  embeddings and does not support cosine-similarity queries. A request
+  like "find events similar in meaning to X" is out of scope. Callers
+  who need semantic recall should compose USRCP with a semantic memory
+  layer (Mem0, Zep, or a self-hosted vector DB); nothing in the protocol
+  prevents this, but nothing in USRCP supplies it either. See
+  [strategy/SEARCH_DECISION.md](../strategy/SEARCH_DECISION.md).
+- **Free-form conversational memory.** USRCP is not a chat-log store. If
+  an agent wants fuzzy recall over prior messages, that lives outside
+  USRCP.
+- **Server-side plaintext.** The hosted ledger (see §6) is ciphertext-only
+  by design. The server cannot decrypt user state; any future feature
+  that would require plaintext on the server is explicitly out of scope
+  for the protocol line.
+- **CRDTs and automatic merge.** Conflict resolution is last-write-wins
+  with optional `expected_version` optimistic concurrency (see §7). Rich
+  merge semantics are deferred.
+
+### What USRCP does provide
+
+- A wire format for reading, writing, and syncing structured state.
+- Per-domain encryption keys enforcing cryptographic isolation between
+  domains (e.g., "coding" keys cannot decrypt "health" data).
+- An encrypted audit log with HMAC integrity tags.
+- A hosted sync architecture in which the server persists opaque
+  ciphertext and verifies Ed25519-signed requests, but never holds or
+  derives a decryption key.
+- Optimistic concurrency on metadata records.
+
+---
+
 ## 1. Protocol Overview
 
 USRCP defines three operations against a **User State Ledger**:
@@ -327,7 +368,92 @@ Base URL: `https://<ledger_host>/v1/`
 
 ---
 
-## 7. Error Codes
+## 7. Concurrency Model
+
+USRCP does not assume a single writer per user. Multiple agents (across
+devices or within one device) may write concurrently. The semantics below
+define how each table handles overlapping writes. None of these require
+CRDTs or vector clocks in v0.x — last-write-wins and monotonic sequences
+cover all current workloads.
+
+### 7.1 Timeline events — append-only, no conflict
+
+Every `append_event` mints a fresh ULID and a monotonic `ledger_sequence`.
+Because no row is ever updated, concurrent writers cannot collide. Ordering
+across writers is determined by `ledger_sequence`; timestamps are
+descriptive, not authoritative. An agent that cares about total order
+across devices must use `ledger_sequence`, not `timestamp`.
+
+### 7.2 Identity, preferences, domain context, schemaless facts — last-write-wins
+
+These tables store a single current value per field (or per key). When two
+writers update the same record, the later write wins and the earlier write
+is silently lost. Each affected table carries an integer `version` column
+that the ledger increments on every successful write. The `updated_at`
+timestamp is the secondary tiebreaker for human inspection only; clients
+must not rely on it for correctness.
+
+Tables covered:
+
+| Table | Unit of LWW |
+|-------|-------------|
+| `core_identity` | whole row (singleton) |
+| `global_preferences` | whole row (singleton) |
+| `domain_context` | per `domain` |
+| `schemaless_facts` | per `(domain, namespace, key)` |
+
+Active projects also last-write-wins on the row, with `last_touched` as
+the tiebreaker (no `version` column — Phase-2 work if needed).
+
+### 7.3 Optimistic concurrency — `expected_version`
+
+Agents that require read-modify-write semantics must pass the
+`expected_version` they read back on the corresponding write. If the stored
+`version` has advanced in the interim, the write is rejected with
+`VERSION_CONFLICT` (HTTP 409) and the caller must re-read and retry.
+
+`expected_version` is **optional**. Omitting it retains the default
+last-write-wins behavior; existing clients built against v0.1 continue to
+work unchanged.
+
+For tables where a key may not yet exist (`domain_context`,
+`schemaless_facts`), `expected_version=0` means "no row exists" — succeeds
+on the first write and conflicts on a concurrent insert from another
+writer.
+
+Supported endpoints/tools:
+
+- `usrcp_update_identity`
+- `usrcp_update_preferences`
+- `usrcp_update_domain_context`
+- `usrcp_set_fact`
+
+A `VERSION_CONFLICT` response includes the current server version so the
+caller can decide whether to re-read, merge, and retry, or surface the
+conflict to the user:
+
+```json
+{
+  "status": "version_conflict",
+  "error": "VERSION_CONFLICT",
+  "scope": "global_preferences",
+  "target": null,
+  "current_version": 7,
+  "expected_version": 5,
+  "message": "Version conflict on global_preferences — expected v5, current is v7"
+}
+```
+
+### 7.4 What USRCP does **not** do in v0.x
+
+- **No CRDTs.** Strings and records are opaque; no automatic merge.
+- **No vector clocks.** Single logical ledger per user; `version` + ULID suffice.
+- **No automatic retry.** Callers re-read and retry at the application layer.
+- **No multi-writer timeline merge.** `ledger_sequence` is locally monotonic; global ordering across devices is a Phase-2 concern for the hosted ledger (see task 06).
+
+---
+
+## 8. Error Codes
 
 | Code | HTTP Status | Meaning |
 |------|-------------|---------|
@@ -337,3 +463,4 @@ Base URL: `https://<ledger_host>/v1/`
 | `RATE_LIMITED` | 429 | Too many requests — retry after `Retry-After` header |
 | `LEDGER_UNAVAILABLE` | 503 | Origin ledger is down — edge may serve stale cache |
 | `IDEMPOTENCY_CONFLICT` | 409 | Event with this idempotency key already exists |
+| `VERSION_CONFLICT` | 409 | `expected_version` did not match the current server version — re-read and retry |
