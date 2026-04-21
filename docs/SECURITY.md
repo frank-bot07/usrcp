@@ -73,6 +73,26 @@ Exposed via `usrcp_rotate_key` MCP tool.
 
 ## 3. Searchable Encryption
 
+### Architecture decision: exact-keyword, not semantic
+
+USRCP's search is **exact keyword matching over an HMAC blind index**.
+There are no embeddings, no vector similarity, and no semantic recall.
+This is a deliberate architectural choice, not an omission. See
+[strategy/SEARCH_DECISION.md](../strategy/SEARCH_DECISION.md) for the
+full tradeoff analysis. Briefly:
+
+- **Embeddings leak semantic structure even when encrypted.** Two
+  records with similar plaintext produce similar embeddings; a compromised
+  master key turns the encrypted index into a semantic similarity oracle
+  over every record, not a per-record decryption attack. Blind indexes
+  do not have this property — a compromised blind-index key reveals
+  keyword membership but does not reveal semantic clustering.
+- **Exact keyword matching is sufficient for structured state.** Queries
+  like "find events tagged `auth` in the `coding` domain" are the
+  intended shape of USRCP search. Fuzzy recall over conversational
+  history is the job of a separate semantic memory layer; callers are
+  free to run one in parallel.
+
 ### Blind index with n-gram tokens
 
 Search over encrypted data uses HMAC-SHA256 blind index tokens:
@@ -89,6 +109,19 @@ Example: "authentication" generates tokens for `aut`, `auth`, `uthen`, `thent`, 
 ### Frequency analysis resistance
 
 Each event inserts 3 random 8-character hex tokens alongside real tokens. An attacker analyzing token frequency sees a mix of deterministic and random values with no way to distinguish them without the blind index key.
+
+### What blind index does NOT provide
+
+- **Semantic similarity.** "anxiety medication" and "sertraline dosage" do
+  not match each other unless they share a token. This is by design — see
+  the architecture decision above.
+- **Ranking.** Matching is boolean per token; there is no TF-IDF score.
+  If ranking is needed, callers should fetch all matches and sort
+  application-side (e.g., by timestamp).
+- **Typo tolerance.** "authenication" will not match "authentication"
+  because their n-grams differ. Fuzzy matching would require either
+  normalized tokens on write (reducing the search space) or a separate
+  fuzzy-match layer that USRCP deliberately does not supply.
 
 ---
 
@@ -166,7 +199,7 @@ Key derivation uses hardened scrypt parameters: N=131072 (2^17), r=8, p=2. At th
 
 - **No HSM**: Keys are software-managed. Hardware Security Module integration would require native bindings to PKCS#11 or platform-specific APIs.
 
-- **stdio transport**: MCP communication is unencrypted plaintext over stdio. Any process that can read the pipe sees decrypted data in transit. **Mitigation for hosted ledger: TLS-encrypted HTTP transport.**
+- **stdio transport (default)**: MCP communication is unencrypted plaintext over stdio. Any process that can read the pipe — or any local attacker that can attach to the spawning client or the server — sees decrypted data in transit. This is the default because MCP clients (Claude Desktop, Claude Code) auto-spawn the server over stdio and the UX is frictionless. **Mitigation: run `usrcp init --transport=http` and `usrcp serve --transport=http` for a TLS + bearer-authenticated HTTPS transport (see §9).**
 
 - **Timestamps remain plaintext**: Activity timing patterns are visible. An attacker knows when the user was active but not what they did.
 
@@ -178,5 +211,60 @@ For Pro/Enterprise tiers where the threat model includes local attackers with ro
 
 1. **Rust decryption sidecar**: Move all encrypt/decrypt operations to a Rust process that communicates with the Node.js server via a Unix socket. Rust provides guaranteed memory zeroing via `zeroize` crate.
 2. **TEE integration**: Run the decryption sidecar inside an Intel SGX or ARM TrustZone enclave. The master key never exists in normal process memory.
-3. **Authenticated MCP transport**: Replace stdio with TLS-encrypted HTTP for the MCP server connection.
+3. **Authenticated MCP transport**: Available today — see §9.
 4. **FIPS mode**: Use a FIPS-validated OpenSSL build or BoringSSL with the Rust sidecar.
+
+---
+
+## 9. Authenticated HTTPS Transport (opt-in)
+
+`usrcp serve --transport=http` runs the MCP server over HTTPS on
+`127.0.0.1`, gated by a 32-byte bearer token. This closes the plaintext-
+over-stdio gap described in §8, at the cost of requiring the server to
+be running as a standalone process (stdio's auto-spawn convenience goes
+away).
+
+### What it does
+
+- **Self-signed TLS certificate**: Generated once at
+  `~/.usrcp/users/<slug>/tls/{cert,key}.pem`, mode `0600`, RSA-2048 with
+  SHA-256 signature, SAN covering `localhost` and `127.0.0.1`. Valid 1
+  year; regenerate by deleting and restarting `serve`. **Not a public-CA
+  cert** — clients must pin this cert or otherwise trust it explicitly.
+- **Bearer token**: 32 bytes of `crypto.randomBytes`, stored hex-encoded
+  at `~/.usrcp/users/<slug>/auth.token`, mode `0600`. Compared with
+  `crypto.timingSafeEqual` on every request.
+- **Scope**: Listens on `127.0.0.1` only — not on external interfaces.
+  The cert's SAN reflects that; the server rejects any non-TLS request.
+
+### What it does not do
+
+- **Does not trust any CA.** The cert is self-signed and uniquely tied
+  to this install. Clients that don't pin it must use
+  `rejectUnauthorized: false` scoped to this endpoint; that weakens the
+  TLS story but is acceptable for `127.0.0.1` because the network path
+  is not attacker-reachable.
+- **Does not prevent local heap extraction.** The same limitations from
+  §8 apply — a local attacker with root who can attach to either end
+  of the connection still sees plaintext in process memory.
+- **Does not rotate tokens.** Delete `auth.token`, restart the server,
+  and the next `ensureAuthToken()` call generates a new one. Update
+  dependents manually.
+
+### Registering the transport with an MCP client
+
+`usrcp init --transport=http` writes an HTTP-style entry to Claude
+Desktop's config:
+
+```json
+"usrcp": {
+  "type": "http",
+  "url": "https://127.0.0.1:9876/mcp",
+  "headers": { "Authorization": "Bearer <token>" }
+}
+```
+
+The user is responsible for running the server (the client won't spawn
+it). Typical options: `usrcp serve --transport=http` in a dedicated
+shell, or a launchd/systemd service. Registered entries auto-spawn
+only under the stdio-style `{ command, args }` form.
