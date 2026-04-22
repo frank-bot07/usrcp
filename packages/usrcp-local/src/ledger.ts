@@ -300,6 +300,19 @@ export class Ledger {
   }
 
   /**
+   * Deterministic HMAC of a channel_id for indexed lookup. Uses the
+   * master key directly so it is scoped to this ledger but not to any
+   * domain — channel_ids cross domain boundaries (a #general channel
+   * may carry "coding" and "personal" messages interleaved).
+   */
+  private channelIdHash(channelId: string): string {
+    return crypto
+      .createHmac("sha256", this.masterKey)
+      .update(`usrcp-channel-id:${channelId}`)
+      .digest("hex");
+  }
+
+  /**
    * Ensure a domain mapping exists.
    */
   private ensureDomainMapping(domain: string): string {
@@ -460,6 +473,22 @@ export class Ledger {
       }
     }
 
+    // v0.2.1 migration: platform-adapter columns on timeline_events.
+    //   channel_id / thread_id / external_user_id : encrypted with global key
+    //   channel_hash : deterministic HMAC(channel_id) for by-channel lookup
+    // New columns default to NULL; rowToEvent treats null-or-empty as "unset"
+    // and does not attempt to decrypt.
+    for (const col of ["channel_id", "thread_id", "external_user_id", "channel_hash"]) {
+      try {
+        this.db.exec(`ALTER TABLE timeline_events ADD COLUMN ${col} TEXT`);
+      } catch {
+        // Column already exists
+      }
+    }
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_events_channel_hash ON timeline_events(channel_hash) WHERE channel_hash IS NOT NULL"
+    );
+
     // Rebuild blind index if empty but events exist
     const blindCount = this.db
       .prepare("SELECT COUNT(*) as c FROM blind_index")
@@ -535,6 +564,21 @@ export class Ledger {
     const parentRes = row.parent_event_id ? safeDecrypt(row.parent_event_id, '', 'parent_event_id') : {value: '', tampered: false};
     eventTampered ||= parentRes.tampered;
 
+    // Platform-adapter columns (v0.2.1+) — encrypted under global key,
+    // not the per-domain key. Use safeDecryptGlobal.
+    const channelIdRes = row.channel_id
+      ? this.safeDecryptGlobal(row.channel_id, '', 'channel_id')
+      : { value: '', tampered: false };
+    eventTampered ||= channelIdRes.tampered;
+    const threadIdRes = row.thread_id
+      ? this.safeDecryptGlobal(row.thread_id, '', 'thread_id')
+      : { value: '', tampered: false };
+    eventTampered ||= threadIdRes.tampered;
+    const externalUserIdRes = row.external_user_id
+      ? this.safeDecryptGlobal(row.external_user_id, '', 'external_user_id')
+      : { value: '', tampered: false };
+    eventTampered ||= externalUserIdRes.tampered;
+
     const event: TimelineEvent & { tampered?: boolean } = {
       event_id: row.event_id,
       timestamp: row.timestamp,
@@ -548,6 +592,9 @@ export class Ledger {
       tags: safeJsonParse(tagsRes.value, []),
       session_id: sessionRes.value || undefined,
       parent_event_id: parentRes.value || undefined,
+      channel_id: channelIdRes.value || undefined,
+      thread_id: threadIdRes.value || undefined,
+      external_user_id: externalUserIdRes.value || undefined,
     };
 
     if (eventTampered) {
@@ -888,12 +935,28 @@ export class Ledger {
     const parentIdEncrypted = event.parent_event_id
       ? this.encryptForDomain(event.parent_event_id, event.domain)
       : null;
+    // Platform-adapter columns. channel_id/thread_id/external_user_id are
+    // encrypted with the global key (not the per-domain key) because the
+    // same channel surface can produce events across multiple domains,
+    // and we want a single deterministic hash space for channel_hash.
+    const channelIdEncrypted = event.channel_id
+      ? this.encryptGlobal(event.channel_id)
+      : null;
+    const threadIdEncrypted = event.thread_id
+      ? this.encryptGlobal(event.thread_id)
+      : null;
+    const externalUserIdEncrypted = event.external_user_id
+      ? this.encryptGlobal(event.external_user_id)
+      : null;
+    const channelHash = event.channel_id
+      ? this.channelIdHash(event.channel_id)
+      : null;
 
     this.db
       .prepare(
         `INSERT INTO timeline_events
-          (event_id, timestamp, platform, domain, summary, intent, outcome, detail, artifacts, tags, session_id, parent_event_id, ledger_sequence, idempotency_key)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          (event_id, timestamp, platform, domain, summary, intent, outcome, detail, artifacts, tags, session_id, parent_event_id, ledger_sequence, idempotency_key, channel_id, thread_id, external_user_id, channel_hash)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         event_id,
@@ -909,7 +972,11 @@ export class Ledger {
         sessionIdEncrypted,
         parentIdEncrypted,
         ledger_sequence,
-        idempotencyKey || null
+        idempotencyKey || null,
+        channelIdEncrypted,
+        threadIdEncrypted,
+        externalUserIdEncrypted,
+        channelHash
       );
 
     // Store blind index tokens for search (no plaintext leakage)
@@ -1048,6 +1115,27 @@ export class Ledger {
       .prepare("SELECT pseudonym, encrypted_name FROM domain_map")
       .all() as any[];
     return rows.map((r: any) => this.decryptGlobal(r.encrypted_name)).filter(Boolean);
+  }
+
+  /**
+   * Fetch recent events tagged with the given channel_id. Looks up via
+   * the deterministic channel_hash (HMAC of channel_id under the master
+   * key) — the channel_id ciphertext itself uses a random IV and can't
+   * be queried directly.
+   */
+  getRecentEventsByChannel(channelId: string, limit: number = 10): TimelineEvent[] {
+    const hash = this.channelIdHash(channelId);
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM timeline_events
+         WHERE channel_hash = ?
+         ORDER BY ledger_sequence DESC
+         LIMIT ?`
+      )
+      .all(hash, limit) as any[];
+    const results = rows.map((r) => this.rowToEvent(r));
+    this.logAudit("get_events_by_channel", undefined, results.map((e) => e.event_id), undefined, JSON.stringify(results).length);
+    return results;
   }
 
   // --- Event Pruning & Compaction ---
@@ -1683,12 +1771,23 @@ export class Ledger {
       // Re-encrypt all timeline events AND update their domain pseudonym
       // in a single UPDATE — no separate per-domain pass afterwards.
       const events = this.db
-        .prepare("SELECT event_id, domain, summary, intent, outcome, platform, detail, artifacts, tags, session_id, parent_event_id FROM timeline_events")
+        .prepare("SELECT event_id, domain, summary, intent, outcome, platform, detail, artifacts, tags, session_id, parent_event_id, channel_id, thread_id, external_user_id FROM timeline_events")
         .all() as any[];
 
       const updateEvent = this.db.prepare(
-        `UPDATE timeline_events SET domain=?, summary=?, intent=?, outcome=?, platform=?, detail=?, artifacts=?, tags=?, session_id=?, parent_event_id=? WHERE event_id=?`
+        `UPDATE timeline_events SET domain=?, summary=?, intent=?, outcome=?, platform=?, detail=?, artifacts=?, tags=?, session_id=?, parent_event_id=?, channel_id=?, thread_id=?, external_user_id=?, channel_hash=? WHERE event_id=?`
       );
+
+      const reencGlobalNullable = (val: string | null): string | null => {
+        if (!val) return null;
+        const plain = isEncrypted(val) ? decrypt(val, oldGlobalKey) : val;
+        return encrypt(plain, newGlobalKey);
+      };
+
+      const decryptGlobalMaybe = (val: string | null): string | null => {
+        if (!val) return null;
+        return isEncrypted(val) ? decrypt(val, oldGlobalKey) : val;
+      };
 
       for (const e of events) {
         const realDomain = pseudoToReal.get(e.domain) || e.domain;
@@ -1701,11 +1800,23 @@ export class Ledger {
           return encrypt(plain, bundle.newDomainKey);
         };
 
+        // Platform-adapter columns use the global key, not the per-domain
+        // key. channel_hash is re-derived under the new master key.
+        const channelIdPlain = decryptGlobalMaybe(e.channel_id);
+        const newChannelHash = channelIdPlain
+          ? crypto.createHmac("sha256", newKey).update(`usrcp-channel-id:${channelIdPlain}`).digest("hex")
+          : null;
+
         updateEvent.run(
           bundle.newPseudo,
           reenc(e.summary), reenc(e.intent), reenc(e.outcome), reenc(e.platform),
           reenc(e.detail), reenc(e.artifacts), reenc(e.tags),
-          reenc(e.session_id), reenc(e.parent_event_id), e.event_id
+          reenc(e.session_id), reenc(e.parent_event_id),
+          reencGlobalNullable(e.channel_id),
+          reencGlobalNullable(e.thread_id),
+          reencGlobalNullable(e.external_user_id),
+          newChannelHash,
+          e.event_id
         );
         reencrypted++;
       }

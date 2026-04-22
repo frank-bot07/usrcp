@@ -1,0 +1,44 @@
+{
+  "name": "usrcp-discord",
+  "version": "0.0.1",
+  "description": "Discord capture+reader adapter for USRCP — vision-proof cross-channel memory",
+  "main": "dist/index.js",
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts"
+  ],
+  "bin": {
+    "usrcp-discord": "dist/index.js"
+  },
+  "scripts": {
+    "prebuild": "cd ../usrcp-local && npm run build",
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "lint": "tsc --noEmit",
+    "pretest": "cd ../usrcp-local && npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "usrcp",
+    "discord",
+    "adapter",
+    "memory"
+  ],
+  "author": "USRCP Contributors",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "discord.js": "^14.16.3",
+    "usrcp-local": "file:../usrcp-local"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.17",
+    "typescript": "5.9.3",
+    "vitest": "4.1.4"
+  }
+}

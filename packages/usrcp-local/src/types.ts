@@ -31,6 +31,13 @@ export interface TimelineEvent {
   tags?: string[];
   session_id?: string;
   parent_event_id?: string;
+  // External channel/thread/user identifiers — used by platform adapters
+  // (e.g., Discord, Telegram) to scope events to a conversation surface.
+  // All three are encrypted at rest. Legacy rows have them as empty
+  // strings (migration fills a sentinel, not null).
+  channel_id?: string;
+  thread_id?: string;
+  external_user_id?: string;
 }
 
 export interface Artifact {
@@ -113,4 +120,11 @@ export interface AppendEventInput {
   session_id?: string;
   parent_event_id?: string;
   idempotency_key?: string;
+  // Platform-adapter fields: used by Discord/Telegram/Slack adapters to
+  // tag events with the conversation surface they came from. All three
+  // are encrypted at rest; channel_id is additionally indexed via an
+  // HMAC blind-index (`channel_hash`) for efficient by-channel lookup.
+  channel_id?: string;
+  thread_id?: string;
+  external_user_id?: string;
 }
