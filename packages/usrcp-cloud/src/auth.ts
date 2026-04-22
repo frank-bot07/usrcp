@@ -93,16 +93,18 @@ export async function verifyAndClaim(
   body: string,
   now: number = Date.now()
 ): Promise<AuthenticatedRequest> {
-  const pub = stringHeader(headers, "x-usrcp-publickey");
+  const pubRaw = stringHeader(headers, "x-usrcp-publickey");
   const tsStr = stringHeader(headers, "x-usrcp-timestamp");
   const nonce = stringHeader(headers, "x-usrcp-nonce");
   const sigB64 = stringHeader(headers, "x-usrcp-signature");
 
-  if (!pub || !tsStr || !nonce || !sigB64) {
+  if (!pubRaw || !tsStr || !nonce || !sigB64) {
     throw new AuthError("MISSING_AUTH_HEADERS", "Missing required USRCP auth headers");
   }
+  // Header value is base64-encoded PEM (PEM contains newlines, invalid in headers)
+  const pub = Buffer.from(pubRaw, "base64").toString("utf8");
   if (!pub.includes("BEGIN PUBLIC KEY")) {
-    throw new AuthError("BAD_PUBLIC_KEY", "X-USRCP-PublicKey must be PEM-encoded");
+    throw new AuthError("BAD_PUBLIC_KEY", "X-USRCP-PublicKey must be base64-encoded PEM");
   }
   if (!/^[0-9a-fA-F]{8,64}$/.test(nonce)) {
     throw new AuthError("BAD_NONCE", "X-USRCP-Nonce must be 8-64 hex chars");

@@ -27,7 +27,9 @@ function headersFrom(
   signed: { timestampMs: number; nonce: string; signature: string }
 ): Record<string, string> {
   return {
-    "x-usrcp-publickey": pub,
+    // PEM contains newlines — not valid in HTTP headers. Wire format
+    // is base64-encoded PEM; server decodes before parsing.
+    "x-usrcp-publickey": Buffer.from(pub).toString("base64"),
     "x-usrcp-timestamp": String(signed.timestampMs),
     "x-usrcp-nonce": signed.nonce,
     "x-usrcp-signature": signed.signature,
@@ -117,7 +119,7 @@ describe("signRequest / verifyAndClaim", () => {
       privateKeyEncoding: { type: "pkcs8", format: "pem" },
     });
     const headers = {
-      "x-usrcp-publickey": publicKey as string,
+      "x-usrcp-publickey": Buffer.from(publicKey as string).toString("base64"),
       "x-usrcp-timestamp": String(Date.now()),
       "x-usrcp-nonce": "abc12345",
       "x-usrcp-signature": Buffer.from("x").toString("base64url"),

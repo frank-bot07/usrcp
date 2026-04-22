@@ -35,7 +35,9 @@ async function signedInject(
     url,
     headers: {
       "content-type": "application/json",
-      "x-usrcp-publickey": publicKeyPem,
+      // PEM contains newlines — not valid in HTTP headers. Wire format
+      // is base64-encoded PEM; server decodes before parsing.
+      "x-usrcp-publickey": Buffer.from(publicKeyPem).toString("base64"),
       "x-usrcp-timestamp": String(signed.timestampMs),
       "x-usrcp-nonce": signed.nonce,
       "x-usrcp-signature": signed.signature,

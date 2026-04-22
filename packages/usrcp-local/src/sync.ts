@@ -82,7 +82,7 @@ async function signedFetch(
     method,
     headers: {
       "content-type": "application/json",
-      "x-usrcp-publickey": publicKeyPem,
+      "x-usrcp-publickey": Buffer.from(publicKeyPem).toString("base64"),
       "x-usrcp-timestamp": String(signed.timestampMs),
       "x-usrcp-nonce": signed.nonce,
       "x-usrcp-signature": signed.signature,
