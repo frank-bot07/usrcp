@@ -99,7 +99,8 @@ describe("syncPush", () => {
 
     // Verify signing headers present
     const headers = captured!.init.headers as Record<string, string>;
-    expect(headers["x-usrcp-publickey"]).toContain("BEGIN PUBLIC KEY");
+    // Header is base64-encoded PEM (raw PEM has newlines, invalid in headers)
+    expect(Buffer.from(headers["x-usrcp-publickey"], "base64").toString()).toContain("BEGIN PUBLIC KEY");
     expect(headers["x-usrcp-timestamp"]).toMatch(/^\d+$/);
     expect(headers["x-usrcp-nonce"]).toMatch(/^[0-9a-f]+$/);
     expect(headers["x-usrcp-signature"].length).toBeGreaterThan(40);
