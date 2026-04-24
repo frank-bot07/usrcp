@@ -11,7 +11,7 @@
  */
 
 import { Client, GatewayIntentBits, Events, type Message } from "discord.js";
-import { Ledger } from "usrcp-local/dist/ledger.js";
+import { Ledger } from "usrcp-local/dist/ledger/index.js";
 import { loadOrInitConfig } from "./config.js";
 import { captureMessage, type CaptureMessage } from "./capture.js";
 import { composeAndReply } from "./reader.js";

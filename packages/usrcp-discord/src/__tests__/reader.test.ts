@@ -12,7 +12,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Ledger } from "usrcp-local/dist/ledger.js";
+import { Ledger } from "usrcp-local/dist/ledger/index.js";
 import { setUserSlug } from "usrcp-local/dist/encryption.js";
 import { captureMessage, type CaptureMessage } from "../capture.js";
 import { buildSystemPrompt, composeAndReply } from "../reader.js";

@@ -18,7 +18,7 @@ import {
   prepareKeyRotation,
   commitKeyRotation,
 } from "../encryption.js";
-import { Ledger } from "../ledger.js";
+import { Ledger } from "../ledger/index.js";
 
 describe("AES-256-GCM encrypt/decrypt", () => {
   const key = crypto.randomBytes(32);

@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as encryption from "../encryption.js";
-import { Ledger } from "../ledger.js";
+import { Ledger } from "../ledger/index.js";
 
 vi.mock("../encryption.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../encryption.js")>();

@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { Ledger } from "./ledger.js";
+import { Ledger } from "./ledger/index.js";
 import { getIdentity } from "./crypto.js";
 import { VersionConflictError } from "./types.js";
 import type { CoreIdentity, GlobalPreferences } from "./types.js";

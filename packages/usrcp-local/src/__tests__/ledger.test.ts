@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as encryption from "../encryption.js";
-import { Ledger } from "../ledger.js";
+import { Ledger } from "../ledger/index.js";
 import { VersionConflictError } from "../types.js";
 import { decrypt, deriveGlobalEncryptionKey, zeroBuffer } from "../encryption.js";
 
