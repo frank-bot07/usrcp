@@ -1028,19 +1028,29 @@ export class Ledger {
     if (allMatchingEventIds.size === 0) return [];
     const matchingEventIds = allMatchingEventIds;
 
-    // Fetch the actual events
+    // Fetch the actual events. Chunk to SQLite's parameter limit
+    // (SQLITE_MAX_VARIABLE_NUMBER defaults to 999) to avoid
+    // "too many SQL variables" when the match set is large.
     const ids = [...matchingEventIds];
-    const placeholders = ids.map(() => "?").join(",");
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM timeline_events
-        WHERE event_id IN (${placeholders})
-        ORDER BY ledger_sequence DESC
-        LIMIT ?`
-      )
-      .all(...ids, limit) as any[];
+    const CHUNK_SIZE = 999;
+    const rows: any[] = [];
+    for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+      const chunk = ids.slice(i, i + CHUNK_SIZE);
+      const placeholders = chunk.map(() => "?").join(",");
+      const chunkRows = this.db
+        .prepare(
+          `SELECT * FROM timeline_events
+          WHERE event_id IN (${placeholders})`
+        )
+        .all(...chunk) as any[];
+      rows.push(...chunkRows);
+    }
 
-    const results = rows.map((r) => this.rowToEvent(r));
+    // Sort and limit in memory since we chunked the SELECT.
+    rows.sort((a, b) => b.ledger_sequence - a.ledger_sequence);
+    const limitedRows = rows.slice(0, limit);
+
+    const results = limitedRows.map((r) => this.rowToEvent(r));
     this.logAudit("search_timeline", undefined, results.map((e) => e.event_id), `query_length=${query.length}`);
     return results;
   }
@@ -1149,12 +1159,17 @@ export class Ledger {
 
     if (eventIds.length === 0) return 0;
 
-    const placeholders = eventIds.map(() => "?").join(",");
-
-    // Delete from blind index
-    this.db
-      .prepare(`DELETE FROM blind_index WHERE event_id IN (${placeholders})`)
-      .run(...eventIds);
+    // Chunk to SQLite's parameter limit (SQLITE_MAX_VARIABLE_NUMBER
+    // defaults to 999) so a large prune doesn't blow up on "too many
+    // SQL variables".
+    const CHUNK_SIZE = 999;
+    for (let i = 0; i < eventIds.length; i += CHUNK_SIZE) {
+      const chunk = eventIds.slice(i, i + CHUNK_SIZE);
+      const placeholders = chunk.map(() => "?").join(",");
+      this.db
+        .prepare(`DELETE FROM blind_index WHERE event_id IN (${placeholders})`)
+        .run(...chunk);
+    }
 
     // Delete events (secure_delete pragma ensures zero-fill)
     const result = this.db
