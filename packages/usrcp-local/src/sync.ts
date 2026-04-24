@@ -11,7 +11,7 @@
  */
 
 import * as crypto from "node:crypto";
-import { Ledger } from "./ledger.js";
+import { Ledger } from "./ledger/index.js";
 import { getIdentity, getDecryptedPrivateKeyPem } from "./crypto.js";
 import { readConfig, updateConfig } from "./config.js";
 import { initializeMasterKey, isPassphraseMode } from "./encryption.js";

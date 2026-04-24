@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createServer } from "./server.js";
-import { Ledger } from "./ledger.js";
+import { Ledger } from "./ledger/index.js";
 import { initializeIdentity, getIdentity } from "./crypto.js";
 import {
   isPassphraseMode,

@@ -13,7 +13,7 @@ import {
   deriveDomainEncryptionKey,
   decrypt,
 } from "../encryption.js";
-import { Ledger } from "../ledger.js";
+import { Ledger } from "../ledger/index.js";
 
 let tmpHome: string;
 let origHome: string | undefined;
