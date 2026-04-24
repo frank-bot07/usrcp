@@ -476,10 +476,28 @@ export class Ledger {
 
   // --------------------------------------------------------------------------
   // Stub declarations for methods implemented in concern files.
-  // These are declared here (with placeholder bodies) so that:
-  //   (a) core.ts compiles as a standalone module
-  //   (b) the constructor can call them (they are overwritten on the prototype
-  //       by each concern file's side-effect import)
+  //
+  // These stubs exist so that:
+  //   (a) core.ts compiles as a standalone module — its own methods
+  //       (constructor, migrate, getTamperTracker) call logAudit,
+  //       rebuildBlindIndex, getPreferences, updatePreferences directly.
+  //   (b) If someone imports directly from ledger/core.js instead of the
+  //       barrel (ledger/index.js), they get a loud runtime error instead
+  //       of a silently undefined method.
+  //
+  // At module load, each concern file's side-effect import does
+  //   Ledger.prototype.logAudit = function(...) { ... }
+  // which overwrites these stubs with the real implementations. This
+  // prototype augmentation is idempotent — re-importing the barrel does
+  // not reset them.
+  //
+  // ⚠️  SIGNATURE DRIFT RISK:
+  // Each stub signature is duplicated by a `declare module "./core.js"`
+  // block in the corresponding concern file (audit.ts, keys.ts,
+  // identity.ts). TypeScript's declaration merging means the concern
+  // file's signature wins for callers — TS will NOT report a mismatch
+  // if the stub here drifts from the concern file's declaration. When
+  // you change a signature, you MUST update both locations.
   //
   // IMPORTANT: Each stub is declared as a regular method (not an arrow
   // function / instance property) so that prototype assignment in concern
