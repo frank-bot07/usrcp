@@ -69,6 +69,31 @@ Domain keys provide cryptographic isolation: a coding agent with access to `doma
 
 Exposed via `usrcp_rotate_key` MCP tool.
 
+#### Rotation and tampered rows
+
+Rotation re-encrypts every ciphertext column under the new master key. Most rows
+round-trip cleanly, but a row whose ciphertext fails GCM authentication during
+rotation is unrecoverable — the plaintext cannot be produced, so it cannot be
+re-encrypted. Causes include deliberate tampering, on-disk corruption, or a row
+written by a key that no longer matches (e.g. a partial restore).
+
+When this happens:
+
+- The row is **left in place** under its old ciphertext and old domain pseudonym.
+  It is not silently dropped, so external audits of the raw database can still
+  observe that a tampered row exists.
+- Rotation **does not abort**. The remaining rows are re-encrypted as normal.
+- Each skipped row is counted in the `skipped` field of the rotation result,
+  alongside `reencrypted`.
+- A `key_rotation_skipped` audit-log entry records the total skipped count.
+- Under the new master key, skipped rows remain unreadable: reads surface them
+  with tampered-field markers rather than crashing the whole timeline. The blind
+  index has no tokens for them, so keyword search will not match.
+
+**Legacy plaintext rows** (predating domain-scoped encryption) are not
+considered damaged — they are treated as plaintext, encrypted under the new
+domain key, and become first-class ciphertext rows from that point on.
+
 ---
 
 ## 3. Searchable Encryption

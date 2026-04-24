@@ -511,15 +511,20 @@ export class Ledger {
     );
     const transaction = this.db.transaction(() => {
       for (const event of events) {
-        const realDomain = this.resolveDomain(event.domain);
-        const summary = this.decryptForDomain(event.summary || "", realDomain);
-        const intent = this.decryptForDomain(event.intent || "", realDomain);
-        const tagsDecrypted = this.decryptForDomain(event.tags || "[]", realDomain);
-        const tagsArray = safeJsonParse<string[]>(tagsDecrypted, []);
-        const searchableText = [summary, intent, ...tagsArray].join(" ");
-        const tokens = this.getBlindTokens(searchableText, realDomain);
-        for (const token of tokens) {
-          insertToken.run(event.event_id, token, event.domain); // Store with pseudonym
+        try {
+          const realDomain = this.resolveDomain(event.domain);
+          const summary = this.decryptForDomain(event.summary || "", realDomain);
+          const intent = this.decryptForDomain(event.intent || "", realDomain);
+          const tagsDecrypted = this.decryptForDomain(event.tags || "[]", realDomain);
+          const tagsArray = safeJsonParse<string[]>(tagsDecrypted, []);
+          const searchableText = [summary, intent, ...tagsArray].join(" ");
+          const tokens = this.getBlindTokens(searchableText, realDomain);
+          for (const token of tokens) {
+            insertToken.run(event.event_id, token, event.domain); // Store with pseudonym
+          }
+        } catch {
+          // Tampered / unreadable event — skip blind tokens for it.
+          // The row itself is preserved for audit; searches will miss it.
         }
       }
     });
@@ -1721,10 +1726,19 @@ export class Ledger {
    * Rotate the master encryption key and re-encrypt all data.
    * This is an atomic operation — either everything is re-encrypted or nothing is.
    */
-  rotateKey(passphrase?: string): { version: number; reencrypted: number } {
+  rotateKey(passphrase?: string): { version: number; reencrypted: number; skipped: number } {
     // Phase 1: Prepare new key material WITHOUT writing to disk
     const { oldKey, newKey, version, pendingFiles } = prepareKeyRotation(this.masterKey, passphrase);
     let reencrypted = 0;
+    // Rotation and tampered rows: if a row fails to decrypt with the old key
+    // (GCM auth failure from tampering, corruption, or key mismatch) it is
+    // unrecoverable — the plaintext cannot be produced to re-encrypt. Rather
+    // than failing the entire rotation, we log a warning, leave the row in
+    // place, and continue. The row remains unreadable under the new key too,
+    // but its presence is preserved so external audits can see it.
+    // Callers are informed via the returned `skipped` count and an
+    // audit log entry.
+    let skipped = 0;
 
     const transaction = this.db.transaction(() => {
       const oldGlobalKey = deriveGlobalEncryptionKey(oldKey);
@@ -1800,25 +1814,36 @@ export class Ledger {
           return encrypt(plain, bundle.newDomainKey);
         };
 
-        // Platform-adapter columns use the global key, not the per-domain
-        // key. channel_hash is re-derived under the new master key.
-        const channelIdPlain = decryptGlobalMaybe(e.channel_id);
-        const newChannelHash = channelIdPlain
-          ? crypto.createHmac("sha256", newKey).update(`usrcp-channel-id:${channelIdPlain}`).digest("hex")
-          : null;
+        try {
+          // Platform-adapter columns use the global key, not the per-domain
+          // key. channel_hash is re-derived under the new master key.
+          const channelIdPlain = decryptGlobalMaybe(e.channel_id);
+          const newChannelHash = channelIdPlain
+            ? crypto.createHmac("sha256", newKey).update(`usrcp-channel-id:${channelIdPlain}`).digest("hex")
+            : null;
 
-        updateEvent.run(
-          bundle.newPseudo,
-          reenc(e.summary), reenc(e.intent), reenc(e.outcome), reenc(e.platform),
-          reenc(e.detail), reenc(e.artifacts), reenc(e.tags),
-          reenc(e.session_id), reenc(e.parent_event_id),
-          reencGlobalNullable(e.channel_id),
-          reencGlobalNullable(e.thread_id),
-          reencGlobalNullable(e.external_user_id),
-          newChannelHash,
-          e.event_id
-        );
-        reencrypted++;
+          updateEvent.run(
+            bundle.newPseudo,
+            reenc(e.summary), reenc(e.intent), reenc(e.outcome), reenc(e.platform),
+            reenc(e.detail), reenc(e.artifacts), reenc(e.tags),
+            reenc(e.session_id), reenc(e.parent_event_id),
+            reencGlobalNullable(e.channel_id),
+            reencGlobalNullable(e.thread_id),
+            reencGlobalNullable(e.external_user_id),
+            newChannelHash,
+            e.event_id
+          );
+          reencrypted++;
+        } catch (err) {
+          // Any decrypt failure means a field is damaged and the row
+          // is unrecoverable. Leave it in place (old ciphertext, old
+          // domain pseudo) so external audits can see the damaged row,
+          // and continue rotation for the rest of the ledger.
+          console.warn(
+            `[usrcp] rotateKey: skipping damaged timeline event ${e.event_id}: ${(err as Error).message}`
+          );
+          skipped++;
+        }
       }
 
       // Now rewrite domain_map with new pseudonyms
@@ -1837,8 +1862,19 @@ export class Ledger {
         const realName = pseudoToReal.get(c.domain);
         if (!realName) continue;
         const bundle = domainKeyCache.get(realName)!;
-        const plain = isEncrypted(c.context) ? decrypt(c.context, bundle.oldDomainKey) : c.context;
-        insertCtx.run(bundle.newPseudo, encrypt(plain, bundle.newDomainKey));
+        try {
+          const plain = isEncrypted(c.context) ? decrypt(c.context, bundle.oldDomainKey) : c.context;
+          insertCtx.run(bundle.newPseudo, encrypt(plain, bundle.newDomainKey));
+        } catch (err) {
+          // Tampered / corrupted context — leave the old row in place
+          // under its old pseudo so it doesn't collide with the rewritten
+          // domain_context table.
+          console.warn(
+            `[usrcp] rotateKey: skipping damaged domain_context for ${c.domain}: ${(err as Error).message}`
+          );
+          insertCtx.run(c.domain, c.context);
+          skipped++;
+        }
       }
 
       // Re-encrypt schemaless_facts using the same per-domain cache.
@@ -1853,22 +1889,31 @@ export class Ledger {
         const bundle = domainKeyCache.get(realDomain);
         if (!bundle) continue;
 
-        const nsPlain = isEncrypted(f.namespace) ? decrypt(f.namespace, bundle.oldDomainKey) : f.namespace;
-        const keyPlain = isEncrypted(f.key) ? decrypt(f.key, bundle.oldDomainKey) : f.key;
-        const valuePlain = isEncrypted(f.value) ? decrypt(f.value, bundle.oldDomainKey) : f.value;
+        try {
+          const nsPlain = isEncrypted(f.namespace) ? decrypt(f.namespace, bundle.oldDomainKey) : f.namespace;
+          const keyPlain = isEncrypted(f.key) ? decrypt(f.key, bundle.oldDomainKey) : f.key;
+          const valuePlain = isEncrypted(f.value) ? decrypt(f.value, bundle.oldDomainKey) : f.value;
 
-        const newHash = crypto.createHmac("sha256", bundle.newBlindKey)
-          .update(`${nsPlain.length}:${nsPlain}|${keyPlain.length}:${keyPlain}`)
-          .digest("hex");
+          const newHash = crypto.createHmac("sha256", bundle.newBlindKey)
+            .update(`${nsPlain.length}:${nsPlain}|${keyPlain.length}:${keyPlain}`)
+            .digest("hex");
 
-        updateFact.run(
-          bundle.newPseudo,
-          newHash,
-          encrypt(nsPlain, bundle.newDomainKey),
-          encrypt(keyPlain, bundle.newDomainKey),
-          encrypt(valuePlain, bundle.newDomainKey),
-          f.fact_id
-        );
+          updateFact.run(
+            bundle.newPseudo,
+            newHash,
+            encrypt(nsPlain, bundle.newDomainKey),
+            encrypt(keyPlain, bundle.newDomainKey),
+            encrypt(valuePlain, bundle.newDomainKey),
+            f.fact_id
+          );
+        } catch (err) {
+          // Tampered fact — leave the row in place with old ciphertext
+          // and old pseudonym so audits can see it.
+          console.warn(
+            `[usrcp] rotateKey: skipping damaged fact ${f.fact_id}: ${(err as Error).message}`
+          );
+          skipped++;
+        }
       }
 
       // Zero the cached per-domain keys. The global keys are zeroed
@@ -1967,7 +2012,10 @@ export class Ledger {
     this.rebuildBlindIndex();
 
     this.logAudit("key_rotation", undefined, undefined, `version=${version}`);
-    return { version, reencrypted };
+    if (skipped > 0) {
+      this.logAudit("key_rotation_skipped", undefined, undefined, `count=${skipped}`);
+    }
+    return { version, reencrypted, skipped };
   }
 
   // --- Maintenance ---

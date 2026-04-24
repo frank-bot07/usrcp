@@ -1,9 +1,21 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as encryption from "../encryption.js";
 import { Ledger } from "../ledger.js";
 import { VersionConflictError } from "../types.js";
+import { decrypt, deriveGlobalEncryptionKey, zeroBuffer } from "../encryption.js";
+
+vi.mock("../encryption.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../encryption.js")>();
+  return {
+    ...actual,
+    // commitKeyRotation is called by Ledger.rotateKey; mocking it lets us
+    // simulate a Phase-3 disk-write failure without touching global fs state.
+    commitKeyRotation: vi.fn(actual.commitKeyRotation),
+  };
+});
 
 let ledger: Ledger;
 let dbPath: string;
@@ -435,7 +447,7 @@ describe("Stats", () => {
   });
 });
 
-describe.skip("Key Rotation", () => {
+describe("Key Rotation", () => {
   it("re-encrypts all data and preserves functionality", () => {
     // Setup diverse data
     ledger.updateIdentity({ display_name: "Test User", roles: ["developer"] });
@@ -473,6 +485,8 @@ describe.skip("Key Rotation", () => {
     };
 
     const oldMaster = Buffer.from((ledger as any).masterKey);
+    const oldEvents = ((ledger as any).db).prepare("SELECT domain FROM timeline_events").all() as any[];
+    const oldPseudos = new Set<string>(oldEvents.map((e: any) => e.domain));
 
     const rotationResult = ledger.rotateKey();
     expect(rotationResult.version).toBeGreaterThan(0);
@@ -491,15 +505,15 @@ describe.skip("Key Rotation", () => {
     expect(newState.identity.roles).toEqual(oldState.identity.roles);
     expect(newState.prefs.timezone).toBe(oldState.prefs.timezone);
     expect(newState.projects[0].name).toBe(oldState.projects[0].name);
-    expect(newState.timeline[0].summary).toBe("Implemented rotation test");
-    expect(newState.timeline[1].domain).toBe("writing");
+    // getTimeline returns newest-first, so the writing event (appended second)
+    // is at [0] and the coding event (appended first) is at [1].
+    expect(newState.timeline[1].summary).toBe("Implemented rotation test");
+    expect(newState.timeline[0].domain).toBe("writing");
     expect(newState.domains.coding.preferred_language).toBe("typescript");
 
-    // Pseudonyms re-derived (changed)
-    const oldEvents = ((ledger as any).db).prepare("SELECT domain FROM timeline_events").all() as any[];
-    const oldPseudos = new Set(oldEvents.map((e: any) => e.domain));
+    // Pseudonyms re-derived (changed) — oldPseudos captured before rotation.
     const newEvents = ((ledger as any).db).prepare("SELECT domain FROM timeline_events").all() as any[];
-    const newPseudos = new Set(newEvents.map((e: any) => e.domain));
+    const newPseudos = new Set<string>(newEvents.map((e: any) => e.domain));
     expect([...oldPseudos].every((p) => !newPseudos.has(p))).toBe(true);
 
     // Old key cannot decrypt new data
@@ -512,22 +526,22 @@ describe.skip("Key Rotation", () => {
 
   it("recovers from file write failure during commit", () => {
     ledger.updateIdentity({ display_name: "Recovery Test" });
-    const oldState = ledger.getIdentity();
 
-    const mockWrite = vi.spyOn(fs, 'writeFileSync').mockImplementation(() => {
+    // Phase 2 (the transaction) commits pending_key before Phase 3 writes
+    // key files. Forcing Phase 3's commitKeyRotation to fail leaves the
+    // rotation in the "interrupted" state that the recovery path handles.
+    vi.mocked(encryption.commitKeyRotation).mockImplementationOnce(() => {
       throw new Error("disk failure");
     });
 
     expect(() => ledger.rotateKey()).toThrow("disk failure");
 
-    mockWrite.mockRestore();
-
-    // Create new ledger instance - should recover
+    // Create new ledger instance — should detect pending_key and recover.
     const recoveredLedger = new Ledger(dbPath);
     const recoveredState = recoveredLedger.getIdentity();
     expect(recoveredState.display_name).toBe("Recovery Test");
-    // No pending key left
-    const rotation = recoveredLedger.db.prepare("SELECT pending_key FROM rotation_state").get() as any;
+    // Recovery clears pending_key.
+    const rotation = (recoveredLedger as any).db.prepare("SELECT pending_key FROM rotation_state").get() as any;
     expect(rotation.pending_key).toBe(null);
     recoveredLedger.close();
   });

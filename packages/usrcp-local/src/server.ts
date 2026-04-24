@@ -603,6 +603,7 @@ export function createServer(passphrase?: string): { server: McpServer; shutdown
                   status: "rotated",
                   version: result.version,
                   reencrypted: result.reencrypted,
+                  skipped: result.skipped,
                 },
                 null,
                 2

@@ -1,8 +1,20 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as encryption from "../encryption.js";
 import { Ledger } from "../ledger.js";
+
+vi.mock("../encryption.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../encryption.js")>();
+  return {
+    ...actual,
+    // commitKeyRotation runs in Phase 3 of rotateKey (disk write after the DB
+    // transaction commits). Mocking it lets tests simulate a disk-write
+    // failure without chmod'ing real filesystem paths.
+    commitKeyRotation: vi.fn(actual.commitKeyRotation),
+  };
+});
 
 let ledger: Ledger;
 let dbPath: string;
@@ -308,45 +320,88 @@ describe("Safe JSON parsing", () => {
   });
 });
 
-describe.skip("Advanced Key Rotation", () => {
-  it("rolls back transaction on decrypt error during re-encryption", () => {
-    // Setup data
-    ledger.updateIdentity({ display_name: "Test" });
+describe("Advanced Key Rotation", () => {
+  it("recovers from disk-write failure during rotation commit", async () => {
+    // After the DB transaction commits (pending_key stored), Phase 3 writes
+    // the new key files to disk. If that write fails, the ledger must be
+    // recoverable on the next open by reading pending_key from rotation_state.
+    const { commitKeyRotation: realCommit } =
+      await vi.importActual<typeof import("../encryption.js")>("../encryption.js");
+
+    ledger.updateIdentity({ display_name: "DiskFailTest" });
     ledger.appendEvent({
       domain: "test",
       summary: "event",
       intent: "test",
       outcome: "success",
-      detail: { key: "value" },
     }, "test");
 
-    const oldState = {
-      identity: ledger.getIdentity(),
-      timeline: ledger.getTimeline(),
-    };
+    const commitMock = vi.mocked(encryption.commitKeyRotation);
+    commitMock.mockImplementationOnce(() => {
+      throw new Error("simulated disk-write failure");
+    });
 
-    // Corrupt one encrypted field to cause decrypt failure during rotation
-    const event = ledger.getTimeline({ last_n: 1 })[0];
-    const rawDetail = ((ledger as any).db).prepare("SELECT detail FROM timeline_events WHERE event_id = ?").get(event.event_id) as any;
-    const parts = rawDetail.detail.split(":");
-    const buf = Buffer.from(parts[1], "base64");
-    buf[buf.length - 16] ^= 0xff; // Corrupt auth tag
-    const corrupted = "enc:" + buf.toString("base64");
-    ((ledger as any).db).prepare("UPDATE timeline_events SET detail = ? WHERE event_id = ?").run(corrupted, event.event_id);
+    expect(() => ledger.rotateKey()).toThrow(/simulated disk-write failure/);
 
-    // Rotation should throw during re-encryption decrypt, rollback tx
-    expect(() => ledger.rotateKey()).toThrow();
+    // Restore the real implementation so the recovery path can write keys.
+    commitMock.mockImplementation(realCommit);
 
-    // State should be intact (old encryption)
-    const recoveredState = {
-      identity: ledger.getIdentity(),
-      timeline: ledger.getTimeline({ last_n: 1 }),
-    };
-    expect(recoveredState.identity.display_name).toBe("Test");
-    expect(recoveredState.timeline[0].detail).toEqual({}); // tampered fallback
-    // No pending key set
-    const rotation = ((ledger as any).db).prepare("SELECT pending_key FROM rotation_state").get() as any;
+    // Reopen — constructor detects pending_key and completes the key write.
+    ledger.close();
+    const recovered = new Ledger(dbPath);
+    expect(recovered.getIdentity().display_name).toBe("DiskFailTest");
+    const rotation = ((recovered as any).db)
+      .prepare("SELECT pending_key FROM rotation_state")
+      .get() as any;
     expect(rotation.pending_key).toBe(null);
+    recovered.close();
+    // Rebind `ledger` to the recovered instance so afterEach can close it
+    // cleanly (close is idempotent — the original was already closed).
+    ledger = new Ledger(dbPath);
+  });
+
+  it("skips tampered rows and completes rotation", () => {
+    // Tampered rows are no longer cause to abort rotation. They are left
+    // in place under their old pseudonym / old ciphertext, reported in the
+    // `skipped` count, and stay unreadable under the new key.
+    ledger.appendEvent({
+      domain: "test",
+      summary: "good event",
+      intent: "t",
+      outcome: "success",
+    }, "test");
+    ledger.appendEvent({
+      domain: "test",
+      summary: "bad event",
+      intent: "t",
+      outcome: "success",
+    }, "test");
+
+    const target = ledger.getTimeline({ last_n: 1 })[0];
+    const raw = ((ledger as any).db)
+      .prepare("SELECT summary FROM timeline_events WHERE event_id = ?")
+      .get(target.event_id) as any;
+    const parts = raw.summary.split(":");
+    const buf = Buffer.from(parts[1], "base64");
+    buf[buf.length - 16] ^= 0xff;
+    const corrupted = "enc:" + buf.toString("base64");
+    ((ledger as any).db)
+      .prepare("UPDATE timeline_events SET summary = ? WHERE event_id = ?")
+      .run(corrupted, target.event_id);
+
+    const result = ledger.rotateKey();
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+    expect(result.reencrypted).toBeGreaterThanOrEqual(1);
+
+    // Good event survived rotation and decrypts cleanly under the new key.
+    const remaining = ledger.getTimeline();
+    expect(remaining.map((e) => e.summary)).toContain("good event");
+    // Tampered row stays in the table for auditability; it surfaces with a
+    // tampered marker rather than being silently dropped.
+    const stillThere = ((ledger as any).db)
+      .prepare("SELECT event_id FROM timeline_events WHERE event_id = ?")
+      .get(target.event_id) as any;
+    expect(stillThere).toBeDefined();
   });
 
   it("handles rotation with mixed encrypted/unencrypted legacy data", () => {
@@ -378,8 +433,10 @@ describe.skip("Advanced Key Rotation", () => {
     const newState = ledger.getDomainContext(["legacy"]);
     expect(newState.legacy).toEqual({}); // still {}, but was encrypted
 
-    // Verify raw is now encrypted
-    const rawCtx = ((ledger as any).db).prepare("SELECT context FROM domain_context WHERE domain = ?").get(pseudo) as any;
+    // Verify raw is now encrypted. Rotation re-pseudonymizes every domain
+    // under the new master key, so we must look the row up by the new pseudo.
+    const newPseudo = (ledger as any).domainPseudonym("legacy");
+    const rawCtx = ((ledger as any).db).prepare("SELECT context FROM domain_context WHERE domain = ?").get(newPseudo) as any;
     expect(rawCtx.context.startsWith("enc:")).toBe(true);
     expect(rawCtx.context).not.toBe("legacy plaintext context");
 
