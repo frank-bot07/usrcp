@@ -98,7 +98,7 @@ This is already better than what exists for the structured-state use case:
 
 1. **Ship `usrcp-local` as an npm package.** One command install. README shows a before/after: "Here's a Cursor session without USRCP: you re-explain your stack. Here's one with it: Cursor already knows because you told Claude Desktop yesterday."
 
-2. **Launch on Hacker News** with the framing: *"We built structured user state as a protocol, not a product. MCP routes models. ACP routes agents. USRCP carries the human's structured state across both — encrypted, zero-knowledge, no vendor can read your memory."* Lead with the cryptographic architecture, not the TAM.
+2. **Launch on Hacker News** with the framing: *"We built structured user state as a protocol, not a product. MCP routes models. ACP routes agents. USRCP carries the human's structured state across both — encrypted, zero-knowledge, no vendor can read your state."* Lead with the cryptographic architecture, not the TAM.
 
 3. **Post in Claude Desktop / Cursor / Continue / Cline communities.** Target users who already use two editors and feel the state-rebuilding tax.
 
@@ -106,7 +106,7 @@ This is already better than what exists for the structured-state use case:
 
 ### Phase 2: Expand (Week 5-12) — Second-editor Integrations
 
-5. **Verify cross-editor demo (Cursor).** Claude Desktop → structured write. Cursor → structured read. Same memory, two editors, no vendor reads plaintext. This is the proof artifact the pitch needs; it makes the protocol story real.
+5. **Verify cross-editor demo (Cursor).** Claude Desktop → structured write. Cursor → structured read. Same structured state, two editors, no vendor reads plaintext. This is the proof artifact the pitch needs; it makes the protocol story real.
 
 6. **Continue.dev and Cline integrations.** Open docs-PR for each, list USRCP in their MCP examples. Cheap, credibility-boosting.
 

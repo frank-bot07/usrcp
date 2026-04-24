@@ -4,7 +4,7 @@
 
 ## Goal
 
-Get USRCP running inside an editor that **isn't Claude Code**. The point is to prove cross-platform value (one user, two agents, same memory) — once that demo exists, the protocol pitch becomes real. N=2 is when USRCP stops being a memory backend and starts being a protocol.
+Get USRCP running inside an editor that **isn't Claude Code**. The point is to prove cross-platform value (one user, two agents, same structured state) — once that demo exists, the protocol pitch becomes real. N=2 is when USRCP stops being a Claude-Code-only state backend and starts being a protocol.
 
 ## Target priority
 
@@ -27,13 +27,13 @@ Build a recordable demo:
 
 1. In Claude Code: write a session that establishes user identity ("I'm a TypeScript expert, working on USRCP")
 2. In Cursor: ask "what languages am I expert in?" → USRCP returns the identity
-3. Record a 30-second screencast showing the same memory accessed from both editors
+3. Record a 30-second screencast showing the same structured state accessed from both editors
 
 This is the proof artifact for the protocol pitch.
 
 ### 3. Outreach
 
-- **Cursor team:** Discord / Twitter / email. Position as: "we built the memory layer your users keep asking for in feedback threads — happy to write a blog post about it." Lead with the demo video.
+- **Cursor team:** Discord / Twitter / email. Position as: "we built the cross-platform structured-state layer your users keep asking for in feedback threads — identity, preferences, projects, interaction timeline — happy to write a blog post about it." Lead with the demo video.
 - **Continue.dev:** File a GitHub issue + open a PR adding USRCP to their docs as a recommended MCP server. Smaller team, more responsive.
 - **Cline:** Similar PR pattern — add to their MCP server list.
 

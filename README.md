@@ -172,7 +172,7 @@ Coverage: ledger CRUD, crypto, MCP server, security boundaries, encryption round
 
 Open-source protocol (Apache 2.0). The reference implementation is free and local-first. Revenue comes from the hosted ledger — cross-device sync, team ledgers, compliance-grade audit features — all operating on ciphertext only.
 
-The wedge isn't "every AI-using human." It's **security-conscious developers and regulated enterprises** who can't ship AI memory that phones a third party with plaintext. See [strategy/PITCH.md](strategy/PITCH.md) and [strategy/GTM.md](strategy/GTM.md) for the full positioning.
+The wedge isn't "every AI-using human." It's **security-conscious developers and regulated enterprises** who can't adopt an AI state store that phones a third party with plaintext. See [strategy/PITCH.md](strategy/PITCH.md) and [strategy/GTM.md](strategy/GTM.md) for the full positioning.
 
 ## License
 
