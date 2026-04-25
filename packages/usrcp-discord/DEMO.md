@@ -32,6 +32,22 @@ Neither lives in the repo; both go into `~/.usrcp/discord-config.json`
 5. Sidebar → **OAuth2 → URL Generator**. Scope: `bot`. Bot Permissions:
    at minimum `Read Messages/View Channels`, `Send Messages`, `Read Message History`.
    Visit the generated URL → invite the bot to the guild you control.
+6. **Rename the managed role to avoid autocomplete collision.** Discord
+   auto-creates a role named the same as the bot (e.g., `usrcp-dev`)
+   when you invite it. When you later type `@usrcp-dev` in a channel,
+   autocomplete shows two entries — the bot user (with a **BOT** badge)
+   and the role (no badge). Picking the role serializes the mention as
+   `<@&role_id>` instead of `<@user_id>`, and the bot's mention check
+   won't match — your @-mentions silently won't trigger replies.
+
+   In your test server: **Server Settings → Roles → find `usrcp-dev` →
+   rename to `usrcp-dev-role`** (or anything that won't collide with the
+   bot's name). After this, typing `@usrcp` autocompletes to the bot
+   user only.
+
+   If you don't rename: every time you @-mention, look for the **BOT**
+   badge in the autocomplete dropdown and pick that entry — never the
+   unbadged one.
 
 ### 2. Get an Anthropic API key
 
