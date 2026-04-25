@@ -169,4 +169,43 @@ describe("Tamper Detection", () => {
     expect(tamperEntries.length).toBeLessThanOrEqual(10);
     expect(capEntries.length).toBeLessThanOrEqual(1);
   });
+
+  // Regression for the read-path crash discovered during the Discord
+  // vision-proof demo: rotation tamper-tolerance (PR #2) lets domain_map
+  // entries legitimately carry ciphertext encrypted by a previous master
+  // key. resolveDomain() used to call the throwing decryptGlobal, so any
+  // timeline read crashed with "Unsupported state or unable to authenticate
+  // data". Now uses decryptGlobalSafe with the pseudonym as fallback.
+  it("getTimeline tolerates a corrupted domain_map entry without throwing", () => {
+    ledger.appendEvent(
+      {
+        domain: "discord",
+        summary: "captured a message",
+        intent: "test",
+        outcome: "success",
+      },
+      "test"
+    );
+
+    // The append above wrote a domain_map row for "discord". Corrupt its
+    // encrypted_name (simulates a rotation-skipped entry on stale key).
+    const row = (ledger as any).db
+      .prepare("SELECT pseudonym, encrypted_name FROM domain_map LIMIT 1")
+      .get() as { pseudonym: string; encrypted_name: string };
+    expect(row).toBeTruthy();
+    expect(row.encrypted_name.startsWith("enc:")).toBe(true);
+
+    const parts = row.encrypted_name.split(":");
+    const buf = Buffer.from(parts[1], "base64");
+    buf[buf.length - 5] ^= 0xff;
+    const corrupted = "enc:" + buf.toString("base64");
+    (ledger as any).db
+      .prepare("UPDATE domain_map SET encrypted_name = ? WHERE pseudonym = ?")
+      .run(corrupted, row.pseudonym);
+
+    // The read path must NOT throw; the pseudonym is the fallback domain.
+    const events = ledger.getTimeline({ last_n: 1 });
+    expect(events).toHaveLength(1);
+    expect(events[0].domain).toBe(row.pseudonym);
+  });
 });

@@ -230,7 +230,12 @@ export class Ledger {
       .prepare("SELECT encrypted_name FROM domain_map WHERE pseudonym = ?")
       .get(pseudonym) as any;
     if (!row) return pseudonym; // Fallback
-    return this.decryptGlobal(row.encrypted_name) || pseudonym;
+    // Use silent-safe decrypt (not the audit-logging safeDecryptGlobal):
+    // resolveDomain is called once per timeline row in rowToEvent, so the
+    // audit-logging variant would flood the tamper tracker on legitimate
+    // rotation-skipped domain_map entries. Per-event tampered flags are
+    // already tracked at field granularity inside rowToEvent.
+    return this.decryptGlobalSafe(row.encrypted_name, pseudonym) || pseudonym;
   }
 
   /**
