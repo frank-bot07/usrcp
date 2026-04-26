@@ -1,0 +1,46 @@
+{
+  "name": "usrcp-slack",
+  "version": "0.0.1",
+  "description": "Slack capture+reader adapter for USRCP — vision-proof cross-channel memory via @slack/bolt + Socket Mode",
+  "main": "dist/index.js",
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts"
+  ],
+  "bin": {
+    "usrcp-slack": "dist/index.js"
+  },
+  "scripts": {
+    "prebuild": "cd ../usrcp-local && npm run build",
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "lint": "tsc --noEmit",
+    "pretest": "cd ../usrcp-local && npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "usrcp",
+    "slack",
+    "adapter",
+    "memory"
+  ],
+  "author": "USRCP Contributors",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@slack/bolt": "^4.7.1",
+    "usrcp-local": "file:../usrcp-local"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/node": "22.19.17",
+    "better-sqlite3": "*",
+    "typescript": "5.9.3",
+    "vitest": "4.1.4"
+  }
+}

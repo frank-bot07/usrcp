@@ -196,6 +196,7 @@ async function ensureLedger(): Promise<void> {
 const KNOWN_ADAPTERS = [
   { name: "Discord", value: "discord" },
   { name: "Telegram", value: "telegram" },
+  { name: "Slack", value: "slack" },
 ] as const;
 
 type KnownAdapterValue = (typeof KNOWN_ADAPTERS)[number]["value"];
@@ -253,6 +254,11 @@ function printSummary(adapters: string[]): void {
     console.log("  Start the Telegram bot:");
     console.log("    usrcp-telegram");
     console.log("    # or: USRCP_PASSPHRASE=<pp> usrcp-telegram");
+  }
+  if (adapters.includes("slack")) {
+    console.log("  Start the Slack bot:");
+    console.log("    usrcp-slack");
+    console.log("    # or: USRCP_PASSPHRASE=<pp> usrcp-slack");
   }
   console.log("");
   console.log("  Add another adapter later:  usrcp setup --adapter=<name>");
