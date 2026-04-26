@@ -197,6 +197,7 @@ const KNOWN_ADAPTERS = [
   { name: "Discord", value: "discord" },
   { name: "Telegram", value: "telegram" },
   { name: "Slack", value: "slack" },
+  { name: "iMessage (macOS)", value: "imessage" },
 ] as const;
 
 type KnownAdapterValue = (typeof KNOWN_ADAPTERS)[number]["value"];
@@ -259,6 +260,11 @@ function printSummary(adapters: string[]): void {
     console.log("  Start the Slack bot:");
     console.log("    usrcp-slack");
     console.log("    # or: USRCP_PASSPHRASE=<pp> usrcp-slack");
+  }
+  if (adapters.includes("imessage")) {
+    console.log("  Start the iMessage watcher:");
+    console.log("    usrcp-imessage");
+    console.log("    # or: USRCP_PASSPHRASE=<pp> usrcp-imessage");
   }
   console.log("");
   console.log("  Add another adapter later:  usrcp setup --adapter=<name>");
