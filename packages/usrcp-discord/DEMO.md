@@ -1,5 +1,9 @@
 # USRCP Discord — End-to-End Vision Demo
 
+> **Most users want `usrcp setup` instead.** This document is a reference for what the wizard automates. Follow these steps manually only if you have a reason not to use the wizard.
+
+
+
 This is the manual checklist for **criterion 2** from
 [`tasks/00-discord-end-to-end-demo.md`](../../tasks/00-discord-end-to-end-demo.md):
 

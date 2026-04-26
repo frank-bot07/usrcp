@@ -22,9 +22,10 @@
  *   ~30 msg/sec global, 1 msg/sec per chat, 20 msg/min per group.
  */
 
+import { execSync } from "node:child_process";
 import { Bot, type Context } from "grammy";
 import { Ledger } from "usrcp-local/dist/ledger/index.js";
-import { loadOrInitConfig } from "./config.js";
+import { loadConfig } from "./config.js";
 import { captureMessage, type CaptureMessage } from "./capture.js";
 import { composeAndReply } from "./reader.js";
 import { AnthropicLlm } from "./llm.js";
@@ -97,7 +98,18 @@ function shouldReply(ctx: Context, botId: number, botUsername: string): boolean 
 }
 
 async function main() {
-  const config = await loadOrInitConfig({ reset: hasFlag("reset-config") });
+  // --reset-config delegates to the unified wizard instead of prompting inline.
+  if (hasFlag("reset-config")) {
+    console.error("[usrcp-telegram] --reset-config: launching 'usrcp setup --adapter=telegram'...");
+    try {
+      execSync("usrcp setup --adapter=telegram", { stdio: "inherit" });
+    } catch {
+      process.exit(1);
+    }
+    process.exit(0);
+  }
+
+  const config = loadConfig();
 
   const passphrase = process.env.USRCP_PASSPHRASE;
   const ledger = new Ledger(undefined, passphrase);

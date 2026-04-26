@@ -30,6 +30,7 @@ import {
 } from "./adapters/terminal/index.js";
 import { resolveUsrcpBin } from "./adapters/terminal/shared.js";
 import { refreshContextMd } from "./adapters/terminal/context-md.js";
+import { runSetup } from "./setup.js";
 
 function hasFlag(name: string): boolean {
   return process.argv.some((a) => a === `--${name}`);
@@ -761,6 +762,12 @@ switch (command) {
       process.exit(1);
     });
     break;
+  case "setup":
+    runSetup({ adapter: getArg("adapter") }).catch((err) => {
+      console.error("[usrcp setup] Fatal:", err instanceof Error ? err.message : "Unknown error");
+      process.exit(1);
+    });
+    break;
   default:
     if (!command) {
       cmdServe().catch((err) => {
@@ -772,6 +779,7 @@ switch (command) {
       console.error(`  Usage: usrcp <command> [options]
 
   Commands:
+    setup            Guided setup wizard — configure ledger + adapters in one flow
     init             Initialize local ledger and register MCP server
     serve            Start MCP server on stdio (or HTTPS with --transport=http)
     status           Show ledger status and statistics
