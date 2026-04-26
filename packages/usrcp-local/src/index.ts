@@ -19,6 +19,17 @@ import {
 import { startHttpTransport, ensureTlsCert, ensureAuthToken } from "./transport.js";
 import { readConfig, updateConfig } from "./config.js";
 import { syncPush, syncPull, syncStatus } from "./sync.js";
+import {
+  addTerminalAdapter,
+  removeTerminalAdapter,
+  listTerminalAdapters,
+  detectInstalledTargets,
+  parseTargets,
+  ALL_TARGETS,
+  type TargetName,
+} from "./adapters/terminal/index.js";
+import { resolveUsrcpBin } from "./adapters/terminal/shared.js";
+import { refreshContextMd } from "./adapters/terminal/context-md.js";
 
 function hasFlag(name: string): boolean {
   return process.argv.some((a) => a === `--${name}`);
@@ -594,6 +605,116 @@ function cmdConfig(args: string[]): void {
   process.exit(1);
 }
 
+async function cmdAdapter(args: string[]): Promise<void> {
+  // usrcp adapter <subcommand> [subcommand-args...]
+  // Subcommands:
+  //   add terminal --targets=<list>|--all
+  //   remove terminal --targets=<list>
+  //   list
+  //   terminal refresh-context
+
+  const sub = args[0];
+
+  if (sub === "list") {
+    const rows = await listTerminalAdapters();
+    console.error("  Terminal adapter status:");
+    for (const { target, status } of rows) {
+      const icon = status === "registered" ? "✓" : status === "not_registered" ? "✗" : "?";
+      console.error(`    ${icon}  ${target.padEnd(14)} ${status}`);
+    }
+    return;
+  }
+
+  if (sub === "terminal" && args[1] === "refresh-context") {
+    // usrcp adapter terminal refresh-context
+    const passphraseArg = getArg("passphrase") ?? process.env.USRCP_PASSPHRASE;
+    const userSlug = getArg("user");
+    const outPath = await refreshContextMd({ passphrase: passphraseArg, userSlug });
+    console.error(`  CONTEXT.md written to ${outPath}`);
+    return;
+  }
+
+  if (sub === "add" && args[1] === "terminal") {
+    const usrcpBin = resolveUsrcpBin();
+    let targets: TargetName[];
+    if (hasFlag("all")) {
+      targets = detectInstalledTargets();
+      if (targets.length === 0) {
+        console.error("  No supported terminal agents detected on this machine.");
+        console.error(`  Specify targets explicitly: usrcp adapter add terminal --targets=<list>`);
+        console.error(`  Known targets: ${ALL_TARGETS.join(", ")}`);
+        return;
+      }
+      console.error(`  Auto-detected: ${targets.join(", ")}`);
+    } else {
+      const raw = getArg("targets");
+      if (!raw) {
+        console.error("  Error: --targets=<list> or --all required");
+        console.error(`  Known targets: ${ALL_TARGETS.join(", ")}`);
+        process.exit(1);
+      }
+      const parsed = parseTargets(raw);
+      if (!parsed) process.exit(1);
+      targets = parsed;
+    }
+
+    const results = await addTerminalAdapter(targets, usrcpBin);
+    let anyFailed = false;
+    for (const r of results) {
+      if (r.ok) {
+        console.error(`  ✓  ${r.target}: registered${r.path ? ` (${r.path})` : ""}`);
+      } else {
+        console.error(`  ✗  ${r.target}: ${r.error}`);
+        anyFailed = true;
+      }
+    }
+    console.error("");
+    console.error("  Restart your terminal session for changes to take effect.");
+    if (anyFailed) process.exit(1);
+    return;
+  }
+
+  if (sub === "remove" && args[1] === "terminal") {
+    const raw = getArg("targets");
+    if (!raw) {
+      console.error("  Error: --targets=<list> required");
+      console.error(`  Known targets: ${ALL_TARGETS.join(", ")}`);
+      process.exit(1);
+    }
+    const parsed = parseTargets(raw);
+    if (!parsed) process.exit(1);
+
+    const results = await removeTerminalAdapter(parsed);
+    let anyFailed = false;
+    for (const r of results) {
+      if (r.ok) {
+        console.error(`  ✓  ${r.target}: unregistered`);
+      } else {
+        console.error(`  ✗  ${r.target}: ${r.error}`);
+        anyFailed = true;
+      }
+    }
+    console.error("");
+    console.error("  Restart your terminal session for changes to take effect.");
+    if (anyFailed) process.exit(1);
+    return;
+  }
+
+  // Unrecognised subcommand — print usage.
+  console.error(`  Usage: usrcp adapter <subcommand> [options]
+
+  Subcommands:
+    add terminal --targets=<list>   Register USRCP with specific agents
+    add terminal --all              Auto-detect installed agents and register
+    remove terminal --targets=<list> Unregister USRCP from specific agents
+    list                            Show registration status for all targets
+    terminal refresh-context        Regenerate ~/.usrcp/CONTEXT.md from ledger
+
+  Targets: ${ALL_TARGETS.join(", ")}
+  `);
+  process.exit(1);
+}
+
 // --- CLI Router ---
 const command = process.argv[2];
 
@@ -634,6 +755,12 @@ switch (command) {
   case "config":
     cmdConfig(process.argv.slice(3));
     break;
+  case "adapter":
+    cmdAdapter(process.argv.slice(3)).catch((err) => {
+      console.error("[usrcp adapter] Error:", err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    });
+    break;
   default:
     if (!command) {
       cmdServe().catch((err) => {
@@ -651,6 +778,7 @@ switch (command) {
     users            List user slugs on this machine
     config <op>      get / set — manage per-user config (e.g., cloud_endpoint)
     sync <op>        push / pull / status — hosted ledger synchronization
+    adapter <op>     add/remove/list terminal MCP registration for CLI agents
 
   Options:
     --user <slug>           User slug (default: "default"; required if >1 user exists)
