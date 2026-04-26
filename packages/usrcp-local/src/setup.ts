@@ -193,44 +193,116 @@ async function ensureLedger(): Promise<void> {
 // Adapter selection step
 // ---------------------------------------------------------------------------
 
-const KNOWN_ADAPTERS = [
-  { name: "Discord", value: "discord" },
-  { name: "Telegram", value: "telegram" },
-  { name: "Slack", value: "slack" },
-  { name: "iMessage (macOS)", value: "imessage" },
-] as const;
+export interface AdapterSpec {
+  name: string;
+  value: string;
+  blurb: string;
+  /** When true, hide on non-Darwin platforms. */
+  requiresMacOS?: boolean;
+}
 
-type KnownAdapterValue = (typeof KNOWN_ADAPTERS)[number]["value"];
+export const KNOWN_ADAPTERS: readonly AdapterSpec[] = [
+  {
+    name: "Discord",
+    value: "discord",
+    blurb: "Free. Requires a Discord account, a server you control, and an Anthropic API key.",
+  },
+  {
+    name: "Telegram",
+    value: "telegram",
+    blurb: "Free. Requires a Telegram account and an Anthropic API key. Mobile-friendly setup via BotFather.",
+  },
+  {
+    name: "Slack",
+    value: "slack",
+    blurb: "⚠️  Requires a PAID Slack workspace tier (Pro, Business+, or Enterprise) — bot APIs are restricted on the free tier. Skip this if your workspace is on the free plan.",
+  },
+  {
+    name: "iMessage (macOS)",
+    value: "imessage",
+    blurb: "macOS only. Requires Full Disk Access for Messages.app + the imsg CLI (brew install steipete/tap/imsg).",
+    requiresMacOS: true,
+  },
+];
 
-async function pickAdapters(): Promise<KnownAdapterValue[]> {
-  const { checkbox } = await getPrompts();
+/**
+ * Filter the registry by current platform — adapters with requiresMacOS are
+ * hidden on non-Darwin hosts.
+ */
+export function visibleAdapters(platform: NodeJS.Platform = process.platform): AdapterSpec[] {
+  return KNOWN_ADAPTERS.filter((a) => !a.requiresMacOS || platform === "darwin");
+}
+
+/**
+ * Per-adapter Y/N prompts with prereq blurbs surfaced before each prompt.
+ * Pure-ish: takes a `confirm` callback so tests can inject a deterministic stub
+ * without mocking @inquirer/prompts through the dynamic-import boundary.
+ */
+export async function selectAdaptersInteractive(
+  adapters: AdapterSpec[],
+  confirm: (opts: { message: string; default?: boolean }) => Promise<boolean>,
+  log: (line: string) => void = console.log,
+): Promise<string[]> {
+  const chosen: string[] = [];
+  for (const adapter of adapters) {
+    log(`  ${adapter.name}`);
+    log(`  ${adapter.blurb}`);
+    const include = await confirm({
+      message: `  Configure ${adapter.name}?`,
+      default: false,
+    });
+    log("");
+    if (include) chosen.push(adapter.value);
+  }
+  return chosen;
+}
+
+async function pickAdapters(): Promise<string[]> {
+  const { confirm } = await getPrompts();
 
   console.log("\nStep 2 — Adapters");
   console.log("──────────────────");
-  console.log("  Which adapters do you want to configure? (Space to select, Enter to confirm)");
+  console.log("  I'll ask about each adapter individually. Skip any you don't want.\n");
 
-  const chosen = await checkbox({
-    message: "  Select adapters:",
-    choices: KNOWN_ADAPTERS.map((a) => ({ name: a.name, value: a.value })),
-    validate: (answer) => answer.length > 0 || "Select at least one adapter.",
-  });
+  const chosen = await selectAdaptersInteractive(visibleAdapters(), confirm);
 
-  return chosen as KnownAdapterValue[];
+  if (chosen.length === 0) {
+    console.log("  No adapters selected. You can run 'usrcp setup' again later to add adapters.");
+    console.log("  Your USRCP ledger is still ready for use via MCP-aware CLIs.\n");
+  }
+
+  return chosen;
 }
 
 // ---------------------------------------------------------------------------
 // Adapter setup step
 // ---------------------------------------------------------------------------
 
-async function runAdapterSetups(adapters: string[]): Promise<void> {
+export async function runAdapterSetups(
+  adapters: string[],
+  setupFn: (adapter: string) => Promise<void> = callAdapterSetup,
+  log: (line: string) => void = console.log,
+  err: (line: string) => void = console.error,
+): Promise<{ succeeded: string[]; failed: { adapter: string; error: string }[] }> {
+  const succeeded: string[] = [];
+  const failed: { adapter: string; error: string }[] = [];
   for (let i = 0; i < adapters.length; i++) {
     const adapter = adapters[i];
     const n = i + 3; // steps 3, 4, … (step 1=ledger, step 2=selection)
     const label = adapter.charAt(0).toUpperCase() + adapter.slice(1);
-    console.log(`\nStep ${n} — ${label} adapter`);
-    console.log("─".repeat(40));
-    await callAdapterSetup(adapter);
+    log(`\nStep ${n} — ${label} adapter`);
+    log("─".repeat(40));
+    try {
+      await setupFn(adapter);
+      succeeded.push(adapter);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      err(`  ⚠️  ${label} setup failed or was cancelled: ${message}`);
+      err(`     You can retry later with: usrcp setup --adapter=${adapter}\n`);
+      failed.push({ adapter, error: message });
+    }
   }
+  return { succeeded, failed };
 }
 
 // ---------------------------------------------------------------------------
@@ -310,8 +382,8 @@ export async function runSetup(opts: SetupOptions = {}): Promise<void> {
   try {
     await ensureLedger();
     const adapters = await pickAdapters();
-    await runAdapterSetups(adapters);
-    printSummary(adapters);
+    const { succeeded } = await runAdapterSetups(adapters);
+    printSummary(succeeded);
   } catch (err) {
     console.error(`\n  Error during setup: ${err instanceof Error ? err.message : String(err)}`);
     console.error("  Run 'usrcp setup' again to retry.");

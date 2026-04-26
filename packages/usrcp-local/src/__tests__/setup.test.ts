@@ -224,3 +224,129 @@ describe("runSetup export", () => {
     expect(typeof mod.runSetup).toBe("function");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Per-adapter Y/N selection (selectAdaptersInteractive)
+// ---------------------------------------------------------------------------
+
+describe("selectAdaptersInteractive", () => {
+  it("returns all adapters when user says yes to all", async () => {
+    const { selectAdaptersInteractive, KNOWN_ADAPTERS } = await import("../setup.js");
+    const confirm = vi.fn().mockResolvedValue(true);
+    const chosen = await selectAdaptersInteractive([...KNOWN_ADAPTERS], confirm, () => {});
+    expect(chosen).toEqual(KNOWN_ADAPTERS.map((a) => a.value));
+    expect(confirm).toHaveBeenCalledTimes(KNOWN_ADAPTERS.length);
+  });
+
+  it("returns only Y'd adapters in mixed Y/N path", async () => {
+    const { selectAdaptersInteractive, KNOWN_ADAPTERS } = await import("../setup.js");
+    // Y for discord, N for telegram, Y for slack, N for imessage
+    const confirm = vi.fn()
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+    const chosen = await selectAdaptersInteractive([...KNOWN_ADAPTERS], confirm, () => {});
+    expect(chosen).toEqual(["discord", "slack"]);
+  });
+
+  it("returns empty array when user declines all", async () => {
+    const { selectAdaptersInteractive, KNOWN_ADAPTERS } = await import("../setup.js");
+    const confirm = vi.fn().mockResolvedValue(false);
+    const chosen = await selectAdaptersInteractive([...KNOWN_ADAPTERS], confirm, () => {});
+    expect(chosen).toEqual([]);
+  });
+
+  it("each prompt defaults to false (explicit opt-in)", async () => {
+    const { selectAdaptersInteractive, KNOWN_ADAPTERS } = await import("../setup.js");
+    const confirm = vi.fn().mockResolvedValue(false);
+    await selectAdaptersInteractive([...KNOWN_ADAPTERS], confirm, () => {});
+    for (const call of confirm.mock.calls) {
+      expect(call[0].default).toBe(false);
+    }
+  });
+
+  it("logs the blurb before each prompt", async () => {
+    const { selectAdaptersInteractive } = await import("../setup.js");
+    const confirm = vi.fn().mockResolvedValue(false);
+    const lines: string[] = [];
+    await selectAdaptersInteractive(
+      [{ name: "Test", value: "test", blurb: "BLURB-MARKER" }],
+      confirm,
+      (line) => lines.push(line),
+    );
+    expect(lines.some((l) => l.includes("BLURB-MARKER"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Platform filter (visibleAdapters)
+// ---------------------------------------------------------------------------
+
+describe("visibleAdapters", () => {
+  it("hides macOS-only adapters on linux", async () => {
+    const { visibleAdapters } = await import("../setup.js");
+    const visible = visibleAdapters("linux");
+    expect(visible.find((a) => a.value === "imessage")).toBeUndefined();
+    expect(visible.find((a) => a.value === "discord")).toBeDefined();
+  });
+
+  it("hides macOS-only adapters on windows", async () => {
+    const { visibleAdapters } = await import("../setup.js");
+    const visible = visibleAdapters("win32");
+    expect(visible.find((a) => a.value === "imessage")).toBeUndefined();
+  });
+
+  it("includes macOS-only adapters on darwin", async () => {
+    const { visibleAdapters } = await import("../setup.js");
+    const visible = visibleAdapters("darwin");
+    expect(visible.find((a) => a.value === "imessage")).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-adapter failure isolation (runAdapterSetups)
+// ---------------------------------------------------------------------------
+
+describe("runAdapterSetups failure isolation", () => {
+  it("continues to remaining adapters when one throws", async () => {
+    const { runAdapterSetups } = await import("../setup.js");
+    const calls: string[] = [];
+    const setupFn = vi.fn(async (adapter: string) => {
+      calls.push(adapter);
+      if (adapter === "slack") throw new Error("simulated slack failure");
+    });
+    const { succeeded, failed } = await runAdapterSetups(
+      ["discord", "slack", "telegram"],
+      setupFn,
+      () => {},
+      () => {},
+    );
+    expect(calls).toEqual(["discord", "slack", "telegram"]);
+    expect(succeeded).toEqual(["discord", "telegram"]);
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toMatchObject({ adapter: "slack" });
+  });
+
+  it("returns all-succeeded when no adapter throws", async () => {
+    const { runAdapterSetups } = await import("../setup.js");
+    const setupFn = vi.fn(async () => {});
+    const { succeeded, failed } = await runAdapterSetups(
+      ["discord", "telegram"],
+      setupFn,
+      () => {},
+      () => {},
+    );
+    expect(succeeded).toEqual(["discord", "telegram"]);
+    expect(failed).toEqual([]);
+  });
+
+  it("returns empty arrays when no adapters given", async () => {
+    const { runAdapterSetups } = await import("../setup.js");
+    const setupFn = vi.fn(async () => {});
+    const { succeeded, failed } = await runAdapterSetups([], setupFn, () => {}, () => {});
+    expect(succeeded).toEqual([]);
+    expect(failed).toEqual([]);
+    expect(setupFn).not.toHaveBeenCalled();
+  });
+});
