@@ -33,7 +33,9 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.91.1",
     "@iarna/toml": "^2.2.5",
+    "@inquirer/prompts": "^8.4.2",
     "@modelcontextprotocol/sdk": "1.29.0",
     "better-sqlite3": "11.10.0",
     "selfsigned": "^5.5.0",

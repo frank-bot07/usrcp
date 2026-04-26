@@ -1,20 +1,14 @@
 /**
- * First-run interactive configuration for the USRCP Discord adapter.
+ * Configuration I/O for the USRCP Discord adapter.
  *
- * On first invocation (or with --reset-config) prompts the user for:
- *   - Discord bot token       (masked input)
- *   - Anthropic API key       (masked input)
- *   - Allowlisted channel IDs (comma-separated)
- *   - User's Discord user ID
+ * Exports:
+ *   getConfigPath()       — path to ~/.usrcp/discord-config.json
+ *   writeDiscordConfig()  — write config at mode 0600
+ *   readPartialConfig()   — read whatever fields are present on disk
+ *   loadConfig()          — read-or-throw (non-interactive)
+ *   loadOrInitConfig()    — legacy interactive flow (kept for back-compat)
  *
- * Persists to ~/.usrcp/discord-config.json with mode 0600. On subsequent
- * runs, reads from disk and skips the prompts. If any field is missing
- * from an existing config, re-prompts only for the missing ones.
- *
- * Masked input uses raw-mode stdin with per-key redisplay of '*' so the
- * secret never appears in terminal scrollback or shell history. Non-TTY
- * callers (CI, pipes) cannot complete first-run setup — they get a
- * clean error and are told to pre-populate the config file.
+ * Interactive setup has moved to ./setup.ts → runDiscordSetup().
  */
 
 import * as fs from "node:fs";
@@ -44,6 +38,7 @@ function readPartialConfig(): Partial<DiscordConfig> {
   }
 }
 
+/** @internal — use writeDiscordConfig externally */
 function writeConfig(cfg: DiscordConfig): void {
   const p = getConfigPath();
   fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });
@@ -205,4 +200,49 @@ export async function loadOrInitConfig(opts: { reset?: boolean } = {}): Promise<
   writeConfig(cfg);
   process.stderr.write(`\n  ✓ Config saved to ${getConfigPath()}\n\n`);
   return cfg;
+}
+
+/**
+ * Public alias for writeConfig — used by setup.ts so it doesn't need to
+ * re-implement the secure write logic.
+ */
+export const writeDiscordConfig: (cfg: DiscordConfig) => void = writeConfig;
+
+/**
+ * Read-or-throw non-interactive loader. Called by the adapter's main() on
+ * every boot. If config is missing or incomplete, exits with a clear message
+ * pointing the user at 'usrcp setup'.
+ */
+export function loadConfig(): DiscordConfig {
+  const p = getConfigPath();
+  if (!fs.existsSync(p)) {
+    console.error(
+      `usrcp-discord: no config found at ${p}.\n` +
+      `Run 'usrcp setup' (or 'usrcp setup --adapter=discord') to configure.`
+    );
+    process.exit(1);
+  }
+  let partial: Partial<DiscordConfig>;
+  try {
+    partial = JSON.parse(fs.readFileSync(p, "utf8")) as Partial<DiscordConfig>;
+  } catch {
+    console.error(
+      `usrcp-discord: failed to parse config at ${p}.\n` +
+      `Run 'usrcp setup --adapter=discord' to re-configure.`
+    );
+    process.exit(1);
+  }
+  const missing: string[] = [];
+  if (!partial.discord_bot_token) missing.push("discord_bot_token");
+  if (!partial.anthropic_api_key) missing.push("anthropic_api_key");
+  if (!partial.allowlisted_channels || partial.allowlisted_channels.length === 0) missing.push("allowlisted_channels");
+  if (!partial.user_id) missing.push("user_id");
+  if (missing.length > 0) {
+    console.error(
+      `usrcp-discord: incomplete config (missing: ${missing.join(", ")}).\n` +
+      `Run 'usrcp setup --adapter=discord' to re-configure.`
+    );
+    process.exit(1);
+  }
+  return partial as DiscordConfig;
 }

@@ -10,9 +10,10 @@
  * user ID) lives in ~/.usrcp/discord-config.json.
  */
 
+import { execSync } from "node:child_process";
 import { Client, GatewayIntentBits, Events, type Message } from "discord.js";
 import { Ledger } from "usrcp-local/dist/ledger/index.js";
-import { loadOrInitConfig } from "./config.js";
+import { loadConfig } from "./config.js";
 import { captureMessage, type CaptureMessage } from "./capture.js";
 import { composeAndReply } from "./reader.js";
 import { AnthropicLlm } from "./llm.js";
@@ -43,7 +44,19 @@ function toCaptureMessage(m: Message): CaptureMessage {
 }
 
 async function main() {
-  const config = await loadOrInitConfig({ reset: hasFlag("reset-config") });
+  // --reset-config delegates to the unified wizard instead of prompting inline.
+  if (hasFlag("reset-config")) {
+    console.error("[usrcp-discord] --reset-config: launching 'usrcp setup --adapter=discord'...");
+    try {
+      execSync("usrcp setup --adapter=discord", { stdio: "inherit" });
+    } catch {
+      // execSync throws on non-zero exit; the wizard already printed the error.
+      process.exit(1);
+    }
+    process.exit(0);
+  }
+
+  const config = loadConfig();
 
   const passphrase = process.env.USRCP_PASSPHRASE;
   const ledger = new Ledger(undefined, passphrase);
