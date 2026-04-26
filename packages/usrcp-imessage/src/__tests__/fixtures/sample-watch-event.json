@@ -1,0 +1,17 @@
+{
+  "_comment": "Expected shape of a single imsg watch --json event (imsg v0.4.0). Field names are UNVERIFIED — derived from handoff doc. Runtime guard in index.ts will log-and-skip if schema differs. Update this fixture when the real schema is confirmed.",
+  "rowid": 12345,
+  "guid": "p:0/ABC123DEF456",
+  "text": "Hello from iMessage",
+  "is_from_me": 1,
+  "handle": "+14155551234",
+  "handle_id": 42,
+  "chat_id": 7,
+  "chat_guid": "iMessage;-;chat7guid@example.com",
+  "chat_style": 45,
+  "chat_display_name": "Alice",
+  "associated_message_type": 0,
+  "service": "iMessage",
+  "date": 768000000,
+  "has_attachments": false
+}
