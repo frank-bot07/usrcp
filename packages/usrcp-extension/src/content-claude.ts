@@ -1,24 +1,14 @@
 /**
  * content-claude.ts — isolated-world content script for claude.ai
  *
- * Responsibilities:
- *   1. Inject page-hook.js into the MAIN world (since we can't declare
- *      `world: "MAIN"` in content_scripts and have the bundled import graph
- *      work cleanly — we inject it via chrome.scripting from here instead,
- *      which also gives us a fallback if the manifest approach is CSP-blocked).
+ * page-hook.js runs in the MAIN world via the manifest's content_scripts
+ * declaration with `"world": "MAIN"`. This isolated-world script is the bridge:
+ * it receives `window.postMessage` events from the page hook and forwards them
+ * to the service worker, and it owns the `/usrcp <query>` slash command.
  *
- *      NOTE: We use the manifest-declared injection approach (web_accessible_resources
- *      + dynamic script tag) for page-hook since MV3's `world: MAIN` in
- *      content_scripts doesn't support module scripts. page-hook.js is a
- *      bundled IIFE injected as a classic script into the MAIN world.
- *
- *   2. Listen for `window.postMessage` events from page-hook (MAIN world)
- *      and forward captured turns to the service worker via
- *      chrome.runtime.sendMessage.
- *
- *   3. Intercept `/usrcp <query>` keydown in the composer, forward the search
- *      to the service worker, and replace the composer content with the
- *      returned context snippets.
+ * Stop condition: if claude.ai's CSP ever rejects the MAIN-world declaration,
+ * the documented fallback is `chrome.scripting.executeScript({ world: "MAIN" })`
+ * from the service worker on `webNavigation.onCommitted`.
  */
 
 import type {
@@ -27,26 +17,6 @@ import type {
   SwSearchMessage,
   SwToContentMessage,
 } from "./shared/types.js";
-
-// ---------------------------------------------------------------------------
-// Inject page-hook into MAIN world
-// ---------------------------------------------------------------------------
-
-function injectPageHook(): void {
-  const src = chrome.runtime.getURL("page-hook.js");
-  const script = document.createElement("script");
-  script.src = src;
-  script.type = "text/javascript";
-  // Remove after load so we don't litter the DOM
-  script.addEventListener("load", () => script.remove());
-  (document.head || document.documentElement).appendChild(script);
-}
-
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", injectPageHook, { once: true });
-} else {
-  injectPageHook();
-}
 
 // ---------------------------------------------------------------------------
 // Forward captured turns from page hook → service worker

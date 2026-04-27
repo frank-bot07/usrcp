@@ -90,10 +90,11 @@ fs.copyFileSync(
 );
 
 // ---------------------------------------------------------------------------
-// Compile setup.ts via tsc for the wizard (invoked separately via npm run lint)
-// The setup module uses Node APIs and must be a Node ESM module, not a browser bundle.
-// Run: tsc --outDir dist --rootDir src src/setup.ts src/config.ts
-// We do this via a child_process here so `npm run build` is a single command.
+// Compile Node-side modules (setup.ts, config.ts) via tsc using
+// tsconfig.build.json. The browser-side entry points (service-worker, content-
+// claude, page-hook) are esbuild-bundled above; tsc must not emit those, or it
+// would clobber the IIFE bundles with non-bundled module output and re-introduce
+// `import` statements that MAIN-world content scripts cannot resolve.
 // ---------------------------------------------------------------------------
 
 import { execFileSync } from "node:child_process";
@@ -102,11 +103,10 @@ const tscBin = path.join(__dirname, "node_modules", ".bin", "tsc");
 try {
   execFileSync(
     tscBin,
-    ["--outDir", "dist", "--noEmit", "false"],
+    ["-p", "tsconfig.build.json"],
     { cwd: __dirname, stdio: "inherit" }
   );
 } catch (err) {
-  // tsc errors are already printed; don't double-print
   process.exit(1);
 }
 

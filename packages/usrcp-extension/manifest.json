@@ -13,12 +13,12 @@
       "matches": ["https://claude.ai/*"],
       "js": ["content-claude.js"],
       "run_at": "document_start"
-    }
-  ],
-  "web_accessible_resources": [
+    },
     {
-      "resources": ["page-hook.js"],
-      "matches": ["https://claude.ai/*"]
+      "matches": ["https://claude.ai/*"],
+      "js": ["page-hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
     }
   ]
 }
