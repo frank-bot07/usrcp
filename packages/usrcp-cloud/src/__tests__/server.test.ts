@@ -283,6 +283,60 @@ describe("POST /v1/state", () => {
   });
 });
 
+describe("ledger_sequence race prevention", () => {
+  it("UNIQUE index rejects a direct duplicate (user_public_key, ledger_sequence) insert", async () => {
+    const { privateKeyPem, publicKeyPem } = makeKeyPair();
+    // Push one event to create the user record and assign sequence=1
+    const r = await signedInject(privateKeyPem, publicKeyPem, "POST", "/v1/events", {
+      events: [{ event_id: "e1", client_timestamp: "2026-04-20T00:00:00Z", domain_pseudonym: "d_x", summary_enc: "enc:a" }],
+    });
+    expect(r.statusCode).toBe(200);
+
+    // Find the stored public key
+    const userRow = await db.query<{ public_key: string }>("SELECT public_key FROM users LIMIT 1");
+    const userKey = userRow.rows[0].public_key;
+
+    // A direct duplicate insert at sequence=1 must fail with a UNIQUE violation
+    await expect(
+      db.query(
+        `INSERT INTO timeline_events
+           (user_public_key, event_id, ledger_sequence, client_timestamp, domain_pseudonym, summary_enc)
+         VALUES ($1, 'e_dup', 1, '2026-04-20T00:00:00Z', 'd_x', 'enc:dup')`,
+        [userKey]
+      )
+    ).rejects.toThrow(/unique|duplicate/i);
+  });
+
+  it("two concurrent pushes produce 5 distinct contiguous ledger sequences", async () => {
+    const { privateKeyPem, publicKeyPem } = makeKeyPair();
+    const [r1, r2] = await Promise.all([
+      signedInject(privateKeyPem, publicKeyPem, "POST", "/v1/events", {
+        events: [
+          { event_id: "e1", client_timestamp: "2026-04-20T00:00:00Z", domain_pseudonym: "d_x", summary_enc: "enc:1" },
+          { event_id: "e2", client_timestamp: "2026-04-20T00:00:00Z", domain_pseudonym: "d_x", summary_enc: "enc:2" },
+          { event_id: "e3", client_timestamp: "2026-04-20T00:00:00Z", domain_pseudonym: "d_x", summary_enc: "enc:3" },
+        ],
+      }),
+      signedInject(privateKeyPem, publicKeyPem, "POST", "/v1/events", {
+        events: [
+          { event_id: "e4", client_timestamp: "2026-04-20T00:00:00Z", domain_pseudonym: "d_x", summary_enc: "enc:4" },
+          { event_id: "e5", client_timestamp: "2026-04-20T00:00:00Z", domain_pseudonym: "d_x", summary_enc: "enc:5" },
+        ],
+      }),
+    ]);
+    expect(r1.statusCode).toBe(200);
+    expect(r2.statusCode).toBe(200);
+
+    const rows = await db.query<{ ledger_sequence: number }>(
+      "SELECT ledger_sequence FROM timeline_events ORDER BY ledger_sequence"
+    );
+    expect(rows.rows).toHaveLength(5);
+    const seqs = rows.rows.map((r) => Number(r.ledger_sequence));
+    expect(new Set(seqs).size).toBe(5);
+    expect(seqs).toEqual([1, 2, 3, 4, 5]);
+  });
+});
+
 describe("ciphertext-only invariant", () => {
   it("server never stores or returns anything that could be plaintext user data", async () => {
     // Every encrypted column stored must arrive as ciphertext. The server

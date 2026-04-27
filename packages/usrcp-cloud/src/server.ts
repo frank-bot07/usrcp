@@ -218,129 +218,8 @@ export function createApp(opts: ServerOptions): FastifyInstance {
     if (!parse.success) {
       return reply.code(400).send({ error: "BAD_BODY", issues: parse.error.issues });
     }
-    const { events } = parse.data;
 
-    // Batch path: one SELECT for all idempotency keys + one SELECT for max
-    // sequence + one multi-row INSERT. Up to 500 events × 2 queries collapses
-    // to 3 DB round-trips.
-    const [maxSeqRow, idempRows] = await Promise.all([
-      db.query(
-        `SELECT COALESCE(MAX(ledger_sequence), 0) AS max_seq
-         FROM timeline_events WHERE user_public_key = $1`,
-        [auth.userPublicKey]
-      ),
-      (() => {
-        const keys = events.map((e) => e.idempotency_key).filter((k): k is string => !!k);
-        if (keys.length === 0) {
-          return Promise.resolve({ rows: [] as { event_id: string; ledger_sequence: number; idempotency_key: string }[] });
-        }
-        return db.query<{ event_id: string; ledger_sequence: number; idempotency_key: string }>(
-          `SELECT event_id, ledger_sequence, idempotency_key
-           FROM timeline_events
-           WHERE user_public_key = $1 AND idempotency_key = ANY($2::text[])`,
-          [auth.userPublicKey, keys]
-        );
-      })(),
-    ]);
-    let nextSeq = Number(maxSeqRow.rows[0]?.max_seq ?? 0);
-    const existingByKey = new Map<string, { event_id: string; ledger_sequence: number }>();
-    for (const row of idempRows.rows) {
-      existingByKey.set(row.idempotency_key, {
-        event_id: row.event_id,
-        ledger_sequence: Number(row.ledger_sequence),
-      });
-    }
-
-    const accepted: { event_id: string; ledger_sequence: number; duplicate: boolean }[] = [];
-    const toInsert: {
-      event_id: string;
-      ledger_sequence: number;
-      client_timestamp: string;
-      domain_pseudonym: string;
-      platform_enc: string | null;
-      summary_enc: string;
-      intent_enc: string | null;
-      outcome_enc: string | null;
-      detail_enc: string | null;
-      artifacts_enc: string | null;
-      tags_enc: string | null;
-      session_id_enc: string | null;
-      parent_event_id_enc: string | null;
-      idempotency_key: string | null;
-    }[] = [];
-
-    for (const ev of events) {
-      if (ev.idempotency_key) {
-        const existing = existingByKey.get(ev.idempotency_key);
-        if (existing) {
-          accepted.push({ ...existing, duplicate: true });
-          continue;
-        }
-      }
-      nextSeq += 1;
-      toInsert.push({
-        event_id: ev.event_id,
-        ledger_sequence: nextSeq,
-        client_timestamp: ev.client_timestamp,
-        domain_pseudonym: ev.domain_pseudonym,
-        platform_enc: ev.platform_enc ?? null,
-        summary_enc: ev.summary_enc,
-        intent_enc: ev.intent_enc ?? null,
-        outcome_enc: ev.outcome_enc ?? null,
-        detail_enc: ev.detail_enc ?? null,
-        artifacts_enc: ev.artifacts_enc ?? null,
-        tags_enc: ev.tags_enc ?? null,
-        session_id_enc: ev.session_id_enc ?? null,
-        parent_event_id_enc: ev.parent_event_id_enc ?? null,
-        idempotency_key: ev.idempotency_key ?? null,
-      });
-      accepted.push({ event_id: ev.event_id, ledger_sequence: nextSeq, duplicate: false });
-    }
-
-    if (toInsert.length > 0) {
-      // Build a single multi-row INSERT. 15 columns per row; placeholders are
-      // 1-indexed ($1..$N). Values array must match the placeholder order.
-      const cols = 15;
-      const valuesSql = toInsert
-        .map((_, i) => {
-          const base = i * cols;
-          return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, ` +
-                 `$${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}, ` +
-                 `$${base + 11}, $${base + 12}, $${base + 13}, $${base + 14}, $${base + 15})`;
-        })
-        .join(", ");
-      const params: any[] = [];
-      for (const r of toInsert) {
-        params.push(
-          auth.userPublicKey,
-          r.event_id,
-          r.ledger_sequence,
-          r.client_timestamp,
-          r.domain_pseudonym,
-          r.platform_enc,
-          r.summary_enc,
-          r.intent_enc,
-          r.outcome_enc,
-          r.detail_enc,
-          r.artifacts_enc,
-          r.tags_enc,
-          r.session_id_enc,
-          r.parent_event_id_enc,
-          r.idempotency_key
-        );
-      }
-      await db.query(
-        `INSERT INTO timeline_events
-           (user_public_key, event_id, ledger_sequence, client_timestamp, domain_pseudonym,
-            platform_enc, summary_enc, intent_enc, outcome_enc, detail_enc, artifacts_enc,
-            tags_enc, session_id_enc, parent_event_id_enc, idempotency_key)
-         VALUES ${valuesSql}
-         ON CONFLICT (user_public_key, event_id) DO NOTHING`,
-        params
-      );
-    }
-
-    return { accepted, cursor: nextSeq };
+    return pushWithRetry(db, auth.userPublicKey, parse.data.events);
   });
 
   // --- POST /v1/state ---
@@ -505,6 +384,142 @@ export function createApp(opts: ServerOptions): FastifyInstance {
   });
 
   return app;
+}
+
+// --- Push helpers ---
+
+type PushedEvent = z.infer<typeof EventSchema>;
+
+type PushResult = {
+  accepted: { event_id: string; ledger_sequence: number; duplicate: boolean }[];
+  cursor: number;
+};
+
+async function pushAtomic(db: Db, userPublicKey: string, events: PushedEvent[]): Promise<PushResult> {
+  return db.transaction(async (client) => {
+    // Lock the user row for the duration of this transaction. Any concurrent
+    // push for the same user blocks here until we COMMIT, eliminating the
+    // TOCTOU window between SELECT MAX(ledger_sequence) and INSERT.
+    await client.query(
+      "SELECT public_key FROM users WHERE public_key = $1 FOR UPDATE",
+      [userPublicKey]
+    );
+
+    const maxSeqResult = await client.query<{ max_seq: string }>(
+      `SELECT COALESCE(MAX(ledger_sequence), 0) AS max_seq
+       FROM timeline_events WHERE user_public_key = $1`,
+      [userPublicKey]
+    );
+    let nextSeq = Number(maxSeqResult.rows[0]?.max_seq ?? 0);
+
+    const existingByKey = new Map<string, { event_id: string; ledger_sequence: number }>();
+    const idempKeys = events.map((e) => e.idempotency_key).filter((k): k is string => !!k);
+    if (idempKeys.length > 0) {
+      const idempResult = await client.query<{ event_id: string; ledger_sequence: number; idempotency_key: string }>(
+        `SELECT event_id, ledger_sequence, idempotency_key
+         FROM timeline_events
+         WHERE user_public_key = $1 AND idempotency_key = ANY($2::text[])`,
+        [userPublicKey, idempKeys]
+      );
+      for (const row of idempResult.rows) {
+        existingByKey.set(row.idempotency_key, {
+          event_id: row.event_id,
+          ledger_sequence: Number(row.ledger_sequence),
+        });
+      }
+    }
+
+    const accepted: PushResult["accepted"] = [];
+    const toInsert: {
+      event_id: string; ledger_sequence: number; client_timestamp: string;
+      domain_pseudonym: string; platform_enc: string | null; summary_enc: string;
+      intent_enc: string | null; outcome_enc: string | null; detail_enc: string | null;
+      artifacts_enc: string | null; tags_enc: string | null; session_id_enc: string | null;
+      parent_event_id_enc: string | null; idempotency_key: string | null;
+    }[] = [];
+
+    for (const ev of events) {
+      if (ev.idempotency_key) {
+        const existing = existingByKey.get(ev.idempotency_key);
+        if (existing) {
+          accepted.push({ ...existing, duplicate: true });
+          continue;
+        }
+      }
+      nextSeq += 1;
+      toInsert.push({
+        event_id: ev.event_id, ledger_sequence: nextSeq,
+        client_timestamp: ev.client_timestamp, domain_pseudonym: ev.domain_pseudonym,
+        platform_enc: ev.platform_enc ?? null, summary_enc: ev.summary_enc,
+        intent_enc: ev.intent_enc ?? null, outcome_enc: ev.outcome_enc ?? null,
+        detail_enc: ev.detail_enc ?? null, artifacts_enc: ev.artifacts_enc ?? null,
+        tags_enc: ev.tags_enc ?? null, session_id_enc: ev.session_id_enc ?? null,
+        parent_event_id_enc: ev.parent_event_id_enc ?? null, idempotency_key: ev.idempotency_key ?? null,
+      });
+      accepted.push({ event_id: ev.event_id, ledger_sequence: nextSeq, duplicate: false });
+    }
+
+    if (toInsert.length > 0) {
+      // Build a single multi-row INSERT. 15 columns per row.
+      const cols = 15;
+      const valuesSql = toInsert
+        .map((_, i) => {
+          const base = i * cols;
+          return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, ` +
+                 `$${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}, ` +
+                 `$${base + 11}, $${base + 12}, $${base + 13}, $${base + 14}, $${base + 15})`;
+        })
+        .join(", ");
+      const params: any[] = [];
+      for (const r of toInsert) {
+        params.push(
+          userPublicKey, r.event_id, r.ledger_sequence, r.client_timestamp, r.domain_pseudonym,
+          r.platform_enc, r.summary_enc, r.intent_enc, r.outcome_enc, r.detail_enc,
+          r.artifacts_enc, r.tags_enc, r.session_id_enc, r.parent_event_id_enc, r.idempotency_key
+        );
+      }
+      await client.query(
+        `INSERT INTO timeline_events
+           (user_public_key, event_id, ledger_sequence, client_timestamp, domain_pseudonym,
+            platform_enc, summary_enc, intent_enc, outcome_enc, detail_enc, artifacts_enc,
+            tags_enc, session_id_enc, parent_event_id_enc, idempotency_key)
+         VALUES ${valuesSql}
+         ON CONFLICT (user_public_key, event_id) DO NOTHING`,
+        params
+      );
+    }
+
+    return { accepted, cursor: nextSeq };
+  });
+}
+
+async function pushWithRetry(
+  db: Db,
+  userPublicKey: string,
+  events: PushedEvent[],
+  retries = 3,
+  backoffMs = 50
+): Promise<PushResult> {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      return await pushAtomic(db, userPublicKey, events);
+    } catch (e) {
+      const msg = (e as Error).message ?? "";
+      // Retry on Postgres deadlock (40P01) or serialization failure (40001).
+      // The UNIQUE INDEX on (user_public_key, ledger_sequence) also causes
+      // 23505 on a race; retry lets the second push re-read MAX and succeed.
+      const isRetryable =
+        msg.includes("40P01") || msg.includes("40001") ||
+        msg.includes("23505") || msg.includes("deadlock") ||
+        msg.includes("unique constraint") || msg.includes("duplicate key");
+      if (isRetryable && attempt < retries - 1) {
+        await new Promise((r) => setTimeout(r, backoffMs * Math.pow(2, attempt)));
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw new Error("unreachable");
 }
 
 // --- Helpers ---

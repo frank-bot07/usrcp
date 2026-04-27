@@ -42,6 +42,8 @@ CREATE TABLE IF NOT EXISTS timeline_events (
   PRIMARY KEY (user_public_key, event_id)
 );
 CREATE INDEX IF NOT EXISTS idx_events_seq ON timeline_events(user_public_key, ledger_sequence);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_events_user_sequence
+  ON timeline_events(user_public_key, ledger_sequence);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_events_idempotency
   ON timeline_events(user_public_key, idempotency_key)
   WHERE idempotency_key IS NOT NULL;
