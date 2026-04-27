@@ -43,7 +43,7 @@ export interface SetupOptions {
 // We inline the minimal types we need to avoid the "resolution-mode" error
 // that TypeScript 5.x emits for `typeof import(esm-pkg)` in CJS modules.
 
-interface CheckboxChoice<T> { name: string; value: T; }
+interface CheckboxChoice<T> { name: string; value: T; checked?: boolean; disabled?: boolean | string; }
 interface SelectChoice<T> { name: string; value: T; }
 
 interface Prompts {
@@ -66,8 +66,19 @@ async function getPrompts(): Promise<Prompts> {
 /**
  * Dynamically resolve and call a package's runXxxSetup() function.
  * Uses __dirname (CJS) to find the packages/ monorepo root at runtime.
+ *
+ * Special case: the `terminal` adapter lives inside usrcp-local rather than
+ * as a separate `packages/usrcp-terminal/` package, so its setup module is
+ * imported directly and given the wizard's prompts object.
  */
 async function callAdapterSetup(adapterName: string): Promise<void> {
+  if (adapterName === "terminal") {
+    const { runTerminalSetup } = await import("./adapters/terminal/index.js");
+    const prompts = await getPrompts();
+    await runTerminalSetup({ checkbox: prompts.checkbox, confirm: prompts.confirm });
+    return;
+  }
+
   // __dirname in dist/ is packages/usrcp-local/dist/
   // We need to go two levels up to reach packages/
   const localPkgDir = path.resolve(__dirname, ".."); // packages/usrcp-local
@@ -202,6 +213,11 @@ export interface AdapterSpec {
 }
 
 export const KNOWN_ADAPTERS: readonly AdapterSpec[] = [
+  {
+    name: "Terminal / CLI agents (Claude Code, Cursor, Codex, etc.)",
+    value: "terminal",
+    blurb: "RECOMMENDED. Wires USRCP into your MCP-aware CLI agents (Claude Code, Cursor, Codex, Copilot CLI, Cline, Continue, Aider) so every terminal session has cross-platform memory. No external accounts or bot tokens required.",
+  },
   {
     name: "Discord",
     value: "discord",

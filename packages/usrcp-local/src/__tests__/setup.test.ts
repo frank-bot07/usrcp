@@ -240,12 +240,12 @@ describe("selectAdaptersInteractive", () => {
 
   it("returns only Y'd adapters in mixed Y/N path", async () => {
     const { selectAdaptersInteractive, KNOWN_ADAPTERS } = await import("../setup.js");
-    // Y for discord, N for telegram, Y for slack, N for imessage
-    const confirm = vi.fn()
-      .mockResolvedValueOnce(true)
-      .mockResolvedValueOnce(false)
-      .mockResolvedValueOnce(true)
-      .mockResolvedValueOnce(false);
+    // Answer Y only for discord and slack; N for everything else.
+    const wantValues = new Set(["discord", "slack"]);
+    const confirm = vi.fn().mockImplementation(async (opts: { message: string }) => {
+      const adapter = KNOWN_ADAPTERS.find((a) => opts.message.includes(a.name));
+      return !!(adapter && wantValues.has(adapter.value));
+    });
     const chosen = await selectAdaptersInteractive([...KNOWN_ADAPTERS], confirm, () => {});
     expect(chosen).toEqual(["discord", "slack"]);
   });
@@ -348,5 +348,138 @@ describe("runAdapterSetups failure isolation", () => {
     expect(succeeded).toEqual([]);
     expect(failed).toEqual([]);
     expect(setupFn).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Terminal adapter as first/recommended in the registry
+// ---------------------------------------------------------------------------
+
+describe("KNOWN_ADAPTERS ordering", () => {
+  it("lists terminal first as the recommended adapter", async () => {
+    const { KNOWN_ADAPTERS } = await import("../setup.js");
+    expect(KNOWN_ADAPTERS[0]?.value).toBe("terminal");
+    expect(KNOWN_ADAPTERS[0]?.blurb.toLowerCase()).toContain("recommended");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Aider cron entry planner (pure function — no shell-out)
+// ---------------------------------------------------------------------------
+
+describe("planAiderCronUpdate", () => {
+  it("returns add when crontab is empty", async () => {
+    const { planAiderCronUpdate } = await import("../adapters/terminal/index.js");
+    const r = planAiderCronUpdate("", "/usr/local/bin/usrcp");
+    expect(r.kind).toBe("add");
+    if (r.kind === "add") {
+      expect(r.merged).toContain("/usr/local/bin/usrcp adapter terminal refresh-context");
+      expect(r.merged.endsWith("\n")).toBe(true);
+    }
+  });
+
+  it("returns add and appends with leading newline if existing crontab lacks one", async () => {
+    const { planAiderCronUpdate } = await import("../adapters/terminal/index.js");
+    const r = planAiderCronUpdate("MAILTO=root", "/bin/usrcp");
+    expect(r.kind).toBe("add");
+    if (r.kind === "add") {
+      expect(r.merged.startsWith("MAILTO=root\n")).toBe(true);
+    }
+  });
+
+  it("returns already_present when our tagged line is already in crontab", async () => {
+    const { planAiderCronUpdate, buildAiderCronLine } = await import("../adapters/terminal/index.js");
+    const existing = `MAILTO=root\n${buildAiderCronLine("/bin/usrcp")}\n`;
+    const r = planAiderCronUpdate(existing, "/bin/usrcp");
+    expect(r.kind).toBe("already_present");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// installAiderCronEntry I/O wiring (with injected CrontabIO)
+// ---------------------------------------------------------------------------
+
+describe("installAiderCronEntry (injected I/O)", () => {
+  it("writes the merged crontab when entry is missing", async () => {
+    const { installAiderCronEntry } = await import("../adapters/terminal/index.js");
+    let written: string | null = null;
+    const result = await installAiderCronEntry("/bin/usrcp", {
+      read: async () => "",
+      write: async (content) => { written = content; },
+    });
+    expect(result).toBe("added");
+    expect(written).toContain("/bin/usrcp adapter terminal refresh-context");
+  });
+
+  it("does not call write when entry already present", async () => {
+    const { installAiderCronEntry, buildAiderCronLine } = await import("../adapters/terminal/index.js");
+    const existing = buildAiderCronLine("/bin/usrcp") + "\n";
+    const writeSpy = vi.fn();
+    const result = await installAiderCronEntry("/bin/usrcp", {
+      read: async () => existing,
+      write: writeSpy,
+    });
+    expect(result).toBe("already_present");
+    expect(writeSpy).not.toHaveBeenCalled();
+  });
+
+  it("returns failed when write throws", async () => {
+    const { installAiderCronEntry } = await import("../adapters/terminal/index.js");
+    const result = await installAiderCronEntry("/bin/usrcp", {
+      read: async () => "",
+      write: async () => { throw new Error("crontab denied"); },
+    });
+    expect(result).toBe("failed");
+  });
+
+  it("treats read failure as empty crontab", async () => {
+    const { installAiderCronEntry } = await import("../adapters/terminal/index.js");
+    let written: string | null = null;
+    const result = await installAiderCronEntry("/bin/usrcp", {
+      read: async () => { throw new Error("no crontab for user"); },
+      write: async (content) => { written = content; },
+    });
+    expect(result).toBe("added");
+    expect(written).toContain("/bin/usrcp adapter terminal refresh-context");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runTerminalSetup behavior
+// ---------------------------------------------------------------------------
+
+describe("runTerminalSetup", () => {
+  it("returns early when user selects no agents", async () => {
+    const { runTerminalSetup } = await import("../adapters/terminal/index.js");
+    const checkbox = vi.fn().mockResolvedValue([]);
+    const confirm = vi.fn();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await runTerminalSetup({ checkbox, confirm });
+    } finally {
+      logSpy.mockRestore();
+    }
+    expect(checkbox).toHaveBeenCalledOnce();
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("does not prompt for cron when aider not selected", async () => {
+    const { runTerminalSetup } = await import("../adapters/terminal/index.js");
+    const checkbox = vi.fn().mockResolvedValue(["claude-code"]);
+    const confirm = vi.fn();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      // We can't easily mock addTerminalAdapter without re-imports, so this
+      // test will let the real registration run against a tmp HOME (set in
+      // beforeEach). The point is that confirm() must not fire for the
+      // aider-cron prompt when aider isn't selected.
+      await runTerminalSetup({ checkbox, confirm });
+    } catch {
+      // If the real claude-code register touches paths we haven't sandboxed,
+      // catch & ignore — the assertion below is what matters.
+    } finally {
+      logSpy.mockRestore();
+    }
+    expect(confirm).not.toHaveBeenCalled();
   });
 });
