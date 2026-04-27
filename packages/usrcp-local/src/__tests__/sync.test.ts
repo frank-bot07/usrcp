@@ -113,6 +113,10 @@ describe("syncPush", () => {
       // No plaintext domain leak — domain is the HMAC pseudonym
       expect(e.domain_pseudonym).toMatch(/^d_[0-9a-f]{12}$/);
     }
+    // domain_maps must be included (one entry for "coding")
+    expect(body.domain_maps).toHaveLength(1);
+    expect(body.domain_maps[0].pseudonym).toMatch(/^d_[0-9a-f]{12}$/);
+    expect(body.domain_maps[0].encrypted_name.startsWith("enc:")).toBe(true);
 
     const cfg = readConfig();
     expect(cfg.last_push_local_seq).toBe(3);
@@ -176,9 +180,11 @@ describe("syncPull", () => {
          FROM timeline_events WHERE event_id = ?`
       )
       .get(event_id) as any;
+    const dmRow = db.prepare("SELECT pseudonym, encrypted_name, version FROM domain_map WHERE pseudonym = ?").get(row.domain) as any;
     // Clear local so pull has something to do
     db.prepare("DELETE FROM timeline_events").run();
     db.prepare("DELETE FROM blind_index").run();
+    db.prepare("DELETE FROM domain_map").run();
     ledger.close();
 
     const cloudRow = {
@@ -201,7 +207,7 @@ describe("syncPull", () => {
     const mockFetch = (async () => {
       calls++;
       return new Response(
-        JSON.stringify({ events: [cloudRow], cursor: 1 }),
+        JSON.stringify({ events: [cloudRow], domain_maps: [dmRow], cursor: 1 }),
         { status: 200, headers: { "content-type": "application/json" } }
       );
     }) as unknown as typeof fetch;
@@ -217,6 +223,61 @@ describe("syncPull", () => {
     expect(second.applied).toBe(0);
 
     expect(calls).toBe(2);
+  });
+
+  it("pull with domain_maps populates domain_map and makes events searchable", async () => {
+    const ledger = initFreshLedger();
+    const { event_id } = ledger.appendEvent(
+      { domain: "coding", summary: "searchable-pull-event", intent: "find me", outcome: "success" },
+      "test"
+    );
+    const rawDb = (ledger as any).db as import("better-sqlite3").Database;
+    const row = rawDb
+      .prepare(
+        `SELECT event_id, timestamp, platform, domain, summary, intent,
+                outcome, detail, artifacts, tags, session_id, parent_event_id
+         FROM timeline_events WHERE event_id = ?`
+      )
+      .get(event_id) as any;
+    const dmRow = rawDb
+      .prepare("SELECT pseudonym, encrypted_name, version FROM domain_map WHERE pseudonym = ?")
+      .get(row.domain) as any;
+    rawDb.prepare("DELETE FROM timeline_events").run();
+    rawDb.prepare("DELETE FROM blind_index").run();
+    rawDb.prepare("DELETE FROM domain_map").run();
+    ledger.close();
+
+    const cloudRow = {
+      event_id: row.event_id,
+      client_timestamp: row.timestamp,
+      ledger_sequence: 1,
+      domain_pseudonym: row.domain,
+      platform_enc: row.platform,
+      summary_enc: row.summary,
+      intent_enc: row.intent,
+      outcome_enc: row.outcome,
+      detail_enc: row.detail,
+      artifacts_enc: row.artifacts,
+      tags_enc: row.tags,
+    };
+
+    updateConfig({ cloud_endpoint: "https://x" });
+    const mockFetch = (async () =>
+      new Response(
+        JSON.stringify({ events: [cloudRow], domain_maps: [dmRow], cursor: 1 }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      )
+    ) as unknown as typeof fetch;
+
+    await syncPull({ fetchImpl: mockFetch });
+
+    // Verify domain_map and search both work
+    const ledger2 = new Ledger();
+    const results = ledger2.searchTimeline("searchable-pull-event");
+    ledger2.close();
+    expect(results).toHaveLength(1);
+    expect(results[0].event_id).toBe(event_id);
+    expect(results[0].summary).toBe("searchable-pull-event");
   });
 
   it("throws on 401", async () => {
