@@ -226,7 +226,20 @@ describe("syncPull", () => {
   });
 
   it("pull with domain_maps populates domain_map and makes events searchable", async () => {
+    // Strict P2 test: applyPulledEvents must populate blind_index for pulled
+    // events. Why the local-only baseline event matters: Ledger.migrate() has
+    // a rebuild-on-empty fallback (`if (blindCount===0 && eventCount>0)
+    // rebuildBlindIndex()`). Without a baseline, deleting all rows leaves
+    // blind_index empty after pull; the next ledger open would then rebuild
+    // blind_index from timeline_events using the (P1-fixed) domain_map —
+    // masking a missing P2 fix. The baseline event's tokens keep blind_index
+    // non-empty, so the rebuild fallback does NOT fire and search depends on
+    // tokens written inline by applyPulledEvents.
     const ledger = initFreshLedger();
+    ledger.appendEvent(
+      { domain: "personal", summary: "local-only-baseline", intent: "stays", outcome: "success" },
+      "test"
+    );
     const { event_id } = ledger.appendEvent(
       { domain: "coding", summary: "searchable-pull-event", intent: "find me", outcome: "success" },
       "test"
@@ -242,9 +255,11 @@ describe("syncPull", () => {
     const dmRow = rawDb
       .prepare("SELECT pseudonym, encrypted_name, version FROM domain_map WHERE pseudonym = ?")
       .get(row.domain) as any;
-    rawDb.prepare("DELETE FROM timeline_events").run();
-    rawDb.prepare("DELETE FROM blind_index").run();
-    rawDb.prepare("DELETE FROM domain_map").run();
+    // Selective cleanup: remove ONLY the "remote" event's rows. The
+    // local-only baseline event survives so blind_index stays non-empty.
+    rawDb.prepare("DELETE FROM timeline_events WHERE event_id = ?").run(event_id);
+    rawDb.prepare("DELETE FROM blind_index WHERE event_id = ?").run(event_id);
+    rawDb.prepare("DELETE FROM domain_map WHERE pseudonym = ?").run(row.domain);
     ledger.close();
 
     const cloudRow = {
@@ -271,8 +286,12 @@ describe("syncPull", () => {
 
     await syncPull({ fetchImpl: mockFetch });
 
-    // Verify domain_map and search both work
     const ledger2 = new Ledger();
+    // Sanity: rebuild fallback did NOT fire (baseline event keeps it non-empty).
+    const blindCount = ((ledger2 as any).db
+      .prepare("SELECT COUNT(*) as c FROM blind_index")
+      .get() as { c: number }).c;
+    expect(blindCount).toBeGreaterThan(0);
     const results = ledger2.searchTimeline("searchable-pull-event");
     ledger2.close();
     expect(results).toHaveLength(1);
