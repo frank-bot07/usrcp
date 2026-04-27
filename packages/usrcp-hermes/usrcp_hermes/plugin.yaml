@@ -1,0 +1,5 @@
+name: usrcp
+version: 0.1.0
+description: "USRCP encrypted cross-platform memory — your context follows you across Hermes, Claude Code, ChatGPT, and Cursor."
+pip_dependencies:
+  - mcp
