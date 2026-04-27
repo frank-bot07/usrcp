@@ -70,7 +70,7 @@ await esbuild.build({
 });
 
 // ---------------------------------------------------------------------------
-// Page hook — IIFE (injected as a classic <script> into the MAIN world)
+// Page hook — IIFE (loaded into the MAIN world via manifest content_scripts)
 // ---------------------------------------------------------------------------
 
 await esbuild.build({
