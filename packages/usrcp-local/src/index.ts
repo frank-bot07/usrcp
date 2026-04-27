@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { createServer } from "./server.js";
+import { createServer, type ServeOptions } from "./server.js";
 import { Ledger } from "./ledger/index.js";
 import { initializeIdentity, getIdentity } from "./crypto.js";
 import {
@@ -489,6 +489,75 @@ function resolveTransport(): "http" | "stdio" {
   process.exit(1);
 }
 
+/**
+ * Parse the per-process scope-enforcement flags:
+ *   --scopes=<csv>      domain allowlist
+ *   --readonly          strip mutating tools
+ *   --no-audit          hide the audit-log tool
+ *   --agent-id=<name>   logged with every call; required when --scopes is set
+ *
+ * Returns an empty options object when no flags are present, which preserves
+ * the pre-flag behavior of `usrcp serve` (full access, all tools).
+ */
+function resolveServeOptions(): ServeOptions {
+  const opts: ServeOptions = {};
+
+  const scopesArg = getArg("scopes");
+  if (scopesArg !== undefined) {
+    const parsed = scopesArg
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    if (parsed.length === 0) {
+      console.error(`  Error: --scopes was given but is empty. Pass a comma-separated domain list, e.g. --scopes=coding,personal.`);
+      process.exit(1);
+    }
+    for (const s of parsed) {
+      if (s.length > 100) {
+        console.error(`  Error: scope "${s.slice(0, 20)}..." exceeds 100 chars.`);
+        process.exit(1);
+      }
+    }
+    opts.scopes = parsed;
+  }
+
+  if (hasFlag("readonly")) opts.readonly = true;
+  if (hasFlag("no-audit")) opts.noAudit = true;
+
+  const agentId = getArg("agent-id");
+  if (agentId !== undefined) {
+    if (agentId.length === 0 || agentId.length > 100) {
+      console.error(`  Error: --agent-id must be 1-100 chars.`);
+      process.exit(1);
+    }
+    if (!/^[a-zA-Z0-9._-]+$/.test(agentId)) {
+      console.error(`  Error: --agent-id may only contain letters, numbers, dot, underscore, dash.`);
+      process.exit(1);
+    }
+    opts.agentId = agentId;
+  }
+
+  // Agents must be identifiable when scope is enforced — otherwise the
+  // per-call audit row carries no useful attribution.
+  if (opts.scopes && !opts.agentId) {
+    console.error(`  Error: --scopes requires --agent-id=<name> for audit attribution.`);
+    process.exit(1);
+  }
+
+  return opts;
+}
+
+/** One-line banner appended to the serve startup messages when any scope flag is set. */
+function formatScopeBanner(o: ServeOptions): string {
+  const flags: string[] = [];
+  if (o.scopes) flags.push(`scopes=[${o.scopes.join(",")}]`);
+  if (o.readonly) flags.push("readonly");
+  if (o.noAudit) flags.push("no-audit");
+  if (!o.agentId && flags.length === 0) return "";
+  const tail = flags.length > 0 ? " " + flags.join(" ") : "";
+  return ` agent=${o.agentId ?? "unidentified"}${tail}`;
+}
+
 async function cmdServe(): Promise<void> {
   // Identity init happens inside Ledger constructor if needed
   migrateLegacyLayout();
@@ -504,7 +573,10 @@ async function cmdServe(): Promise<void> {
   }
 
   const transport = resolveTransport();
-  const { server, shutdown } = createServer(passphrase);
+  const serveOpts = resolveServeOptions();
+  const { server, shutdown } = createServer(passphrase, serveOpts);
+
+  const scopeBanner = formatScopeBanner(serveOpts);
 
   if (transport === "stdio") {
     const stdio = new StdioServerTransport();
@@ -516,7 +588,7 @@ async function cmdServe(): Promise<void> {
     process.on("SIGTERM", handleShutdown);
     process.on("SIGINT", handleShutdown);
     await server.connect(stdio);
-    console.error(`[usrcp] MCP server running on stdio (${passphraseRequired ? "passphrase mode" : "dev mode"})`);
+    console.error(`[usrcp] MCP server running on stdio (${passphraseRequired ? "passphrase mode" : "dev mode"})${scopeBanner}`);
     return;
   }
 
@@ -541,7 +613,7 @@ async function cmdServe(): Promise<void> {
   console.error(`[usrcp] MCP server running on ${handle.url}`);
   console.error(`[usrcp] Bearer token: ${handle.token.slice(0, 8)}... (see ~/.usrcp/users/*/auth.token)`);
   console.error(`[usrcp] TLS cert:     ~/.usrcp/users/*/tls/cert.pem (self-signed, localhost only)`);
-  console.error(`[usrcp] Mode:         ${passphraseRequired ? "passphrase" : "dev"}`);
+  console.error(`[usrcp] Mode:         ${passphraseRequired ? "passphrase" : "dev"}${scopeBanner}`);
 }
 
 async function cmdSync(subcommand: string | undefined): Promise<void> {
@@ -797,6 +869,14 @@ switch (command) {
     --passphrase <value>    Passphrase for encryption key derivation
                             Or set USRCP_PASSPHRASE environment variable
 
+  serve scope-enforcement (per-process; for restricting one agent's access):
+    --scopes=<csv>          Domain allowlist (e.g. coding,personal). Tools that
+                            target other domains are refused with OUT_OF_SCOPE.
+    --readonly              Drop mutating tools (append, update, rotate, set_fact).
+    --no-audit              Hide usrcp_audit_log so the agent can't read history.
+    --agent-id=<name>       Logged with every tool call. Required when --scopes
+                            is set. Default unflagged: full access, no agent ID.
+
   Multi-user:
     usrcp init --user=frank
     usrcp init --user=jess
@@ -805,6 +885,11 @@ switch (command) {
   Passphrase mode:
     usrcp init --passphrase "my secret phrase"
     USRCP_PASSPHRASE="my secret phrase" usrcp serve
+
+  Scoped agent example:
+    usrcp serve --agent-id=cursor-coding --scopes=coding --readonly --no-audit
+    # Generate the matching MCP config snippet:
+    usrcp setup --adapter=mcp-agent
   `);
     }
 }
