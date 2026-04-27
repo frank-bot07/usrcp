@@ -249,6 +249,11 @@ export const KNOWN_ADAPTERS: readonly AdapterSpec[] = [
     requiresMacOS: true,
   },
   {
+    name: "Obsidian (local vault)",
+    value: "obsidian",
+    blurb: "Capture notes from a local Obsidian vault. Watches the vault directory and appends each note edit to the ledger. v0: capture-only, no replies.",
+  },
+  {
     name: "Browser extension (Chrome)",
     value: "extension",
     blurb: "Capture claude.ai conversations and inject ledger context via /usrcp slash command. Chrome only in v0; requires manual extension load (Developer Mode → Load Unpacked).",
