@@ -239,6 +239,11 @@ export const KNOWN_ADAPTERS: readonly AdapterSpec[] = [
     blurb: "macOS only. Requires Full Disk Access for Messages.app + the imsg CLI (brew install steipete/tap/imsg).",
     requiresMacOS: true,
   },
+  {
+    name: "Browser extension (Chrome)",
+    value: "extension",
+    blurb: "Capture claude.ai conversations and inject ledger context via /usrcp slash command. Chrome only in v0; requires manual extension load (Developer Mode → Load Unpacked).",
+  },
 ];
 
 /**
@@ -353,6 +358,11 @@ function printSummary(adapters: string[]): void {
     console.log("  Start the iMessage watcher:");
     console.log("    usrcp-imessage");
     console.log("    # or: USRCP_PASSPHRASE=<pp> usrcp-imessage");
+  }
+  if (adapters.includes("extension")) {
+    console.log("  Browser extension:");
+    console.log("    Manifest installed at ~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.usrcp.bridge.json");
+    console.log("    Load 'packages/usrcp-extension/dist/' in chrome://extensions (Developer Mode → Load Unpacked).");
   }
   console.log("");
   console.log("  Add another adapter later:  usrcp setup --adapter=<name>");

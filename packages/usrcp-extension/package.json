@@ -1,0 +1,46 @@
+{
+  "name": "usrcp-extension",
+  "version": "0.1.0",
+  "description": "Chrome browser extension for capturing claude.ai conversations into the USRCP ledger",
+  "type": "module",
+  "main": "dist/setup.js",
+  "exports": {
+    ".": "./dist/setup.js",
+    "./setup": "./dist/setup.js"
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "dist/manifest.json",
+    "native-host/usrcp-bridge.js",
+    "native-host/manifest-template.json"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "lint": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "keywords": [
+    "usrcp",
+    "chrome",
+    "extension",
+    "adapter",
+    "memory"
+  ],
+  "author": "USRCP Contributors",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "usrcp-local": "file:../usrcp-local"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.40",
+    "@types/node": "22.19.17",
+    "better-sqlite3": "*",
+    "esbuild": "^0.24.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.4"
+  }
+}
