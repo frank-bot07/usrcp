@@ -79,6 +79,13 @@ async function callAdapterSetup(adapterName: string): Promise<void> {
     return;
   }
 
+  if (adapterName === "mcp-agent") {
+    const { runMcpAgentSetup } = await import("./adapters/mcp-agent/setup.js");
+    const prompts = await getPrompts();
+    await runMcpAgentSetup({ input: prompts.input, confirm: prompts.confirm });
+    return;
+  }
+
   // __dirname in dist/ is packages/usrcp-local/dist/
   // We need to go two levels up to reach packages/
   const localPkgDir = path.resolve(__dirname, ".."); // packages/usrcp-local
@@ -210,6 +217,8 @@ export interface AdapterSpec {
   blurb: string;
   /** When true, hide on non-Darwin platforms. */
   requiresMacOS?: boolean;
+  /** When true, hide from the interactive wizard list. Still selectable via `--adapter=<value>`. */
+  hidden?: boolean;
 }
 
 export const KNOWN_ADAPTERS: readonly AdapterSpec[] = [
@@ -244,14 +253,24 @@ export const KNOWN_ADAPTERS: readonly AdapterSpec[] = [
     value: "extension",
     blurb: "Capture claude.ai conversations and inject ledger context via /usrcp slash command. Chrome only in v0; requires manual extension load (Developer Mode → Load Unpacked).",
   },
+  {
+    name: "Scoped MCP agent (per-process restriction)",
+    value: "mcp-agent",
+    blurb: "Generate an MCP config snippet that runs `usrcp serve` with --scopes / --readonly / --no-audit so one agent (e.g. Cursor) can only see a subset of your domains. Use this in addition to (not instead of) the terminal adapter. Run via `usrcp setup --adapter=mcp-agent`.",
+    hidden: true,
+  },
 ];
 
 /**
- * Filter the registry by current platform — adapters with requiresMacOS are
- * hidden on non-Darwin hosts.
+ * Filter the registry for the interactive wizard — drops adapters marked
+ * hidden, and drops macOS-only adapters on non-Darwin hosts.
  */
 export function visibleAdapters(platform: NodeJS.Platform = process.platform): AdapterSpec[] {
-  return KNOWN_ADAPTERS.filter((a) => !a.requiresMacOS || platform === "darwin");
+  return KNOWN_ADAPTERS.filter((a) => {
+    if (a.hidden) return false;
+    if (a.requiresMacOS && platform !== "darwin") return false;
+    return true;
+  });
 }
 
 /**
