@@ -16,6 +16,7 @@
     "dev": "tsc --watch",
     "start": "node dist/index.js serve",
     "lint": "tsc --noEmit",
+    "pretest": "(cd ../usrcp-discord && npm run build) && (cd ../usrcp-telegram && npm run build)",
     "test": "vitest run",
     "test:watch": "vitest"
   },
