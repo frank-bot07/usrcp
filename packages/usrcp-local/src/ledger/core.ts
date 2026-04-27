@@ -427,6 +427,13 @@ export class Ledger {
       }
     }
 
+    // v0.2.2 migration: version column on domain_map for sync conflict resolution
+    try {
+      this.db.exec("ALTER TABLE domain_map ADD COLUMN version INTEGER NOT NULL DEFAULT 1");
+    } catch {
+      // Column already exists
+    }
+
     // v0.2.1 migration: platform-adapter columns on timeline_events.
     //   channel_id / thread_id / external_user_id : encrypted with global key
     //   channel_hash : deterministic HMAC(channel_id) for by-channel lookup

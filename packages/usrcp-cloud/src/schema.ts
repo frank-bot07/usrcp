@@ -104,6 +104,20 @@ CREATE TABLE IF NOT EXISTS schemaless_facts (
   UNIQUE (user_public_key, domain_pseudonym, ns_key_hash)
 );
 
+-- Encrypted domain pseudonym → name mapping, pushed by every device on sync.
+-- The server stores only ciphertext (encrypted_name is opaque). Allows a
+-- fresh device to receive domain_map rows before events so resolveDomain()
+-- returns the real domain name immediately, enabling correct key derivation.
+CREATE TABLE IF NOT EXISTS domain_maps (
+  user_public_key TEXT NOT NULL REFERENCES users(public_key) ON DELETE CASCADE,
+  pseudonym TEXT NOT NULL,
+  encrypted_name TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_public_key, pseudonym)
+);
+CREATE INDEX IF NOT EXISTS idx_domain_maps_user ON domain_maps(user_public_key);
+
 -- Seen-nonces table: replay protection for signed requests. Prune
 -- periodically; nothing here must outlive the signature time window.
 CREATE TABLE IF NOT EXISTS seen_nonces (

@@ -283,6 +283,61 @@ describe("POST /v1/state", () => {
   });
 });
 
+describe("domain_maps sync", () => {
+  it("push with domain_maps stores rows in domain_maps table", async () => {
+    const { privateKeyPem, publicKeyPem } = makeKeyPair();
+    const res = await signedInject(privateKeyPem, publicKeyPem, "POST", "/v1/events", {
+      events: [{ event_id: "e1", client_timestamp: "2026-04-20T00:00:00Z", domain_pseudonym: "d_abc123456789", summary_enc: "enc:s" }],
+      domain_maps: [{ pseudonym: "d_abc123456789", encrypted_name: "enc:coding", version: 1 }],
+    });
+    expect(res.statusCode).toBe(200);
+
+    const rows = await db.query<{ pseudonym: string; encrypted_name: string; version: number }>(
+      "SELECT pseudonym, encrypted_name, version FROM domain_maps"
+    );
+    expect(rows.rows).toHaveLength(1);
+    expect(rows.rows[0].pseudonym).toBe("d_abc123456789");
+    expect(rows.rows[0].encrypted_name).toBe("enc:coding");
+    expect(Number(rows.rows[0].version)).toBe(1);
+  });
+
+  it("GET /v1/state returns domain_maps", async () => {
+    const { privateKeyPem, publicKeyPem } = makeKeyPair();
+    await signedInject(privateKeyPem, publicKeyPem, "POST", "/v1/events", {
+      events: [{ event_id: "e1", client_timestamp: "2026-04-20T00:00:00Z", domain_pseudonym: "d_abc", summary_enc: "enc:s" }],
+      domain_maps: [{ pseudonym: "d_abc", encrypted_name: "enc:health", version: 2 }],
+    });
+
+    const res = await signedInject(privateKeyPem, publicKeyPem, "GET", "/v1/state");
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.domain_maps).toHaveLength(1);
+    expect(body.domain_maps[0].pseudonym).toBe("d_abc");
+    expect(body.domain_maps[0].encrypted_name).toBe("enc:health");
+    expect(Number(body.domain_maps[0].version)).toBe(2);
+  });
+
+  it("lower version does not overwrite a higher stored version", async () => {
+    const { privateKeyPem, publicKeyPem } = makeKeyPair();
+    // Push version 5 first
+    await signedInject(privateKeyPem, publicKeyPem, "POST", "/v1/events", {
+      events: [{ event_id: "e1", client_timestamp: "2026-04-20T00:00:00Z", domain_pseudonym: "d_x", summary_enc: "enc:s" }],
+      domain_maps: [{ pseudonym: "d_x", encrypted_name: "enc:current", version: 5 }],
+    });
+    // Push version 3 — should not overwrite
+    await signedInject(privateKeyPem, publicKeyPem, "POST", "/v1/events", {
+      events: [{ event_id: "e2", client_timestamp: "2026-04-20T00:00:00Z", domain_pseudonym: "d_x", summary_enc: "enc:s2" }],
+      domain_maps: [{ pseudonym: "d_x", encrypted_name: "enc:stale", version: 3 }],
+    });
+
+    const rows = await db.query<{ encrypted_name: string; version: number }>(
+      "SELECT encrypted_name, version FROM domain_maps WHERE pseudonym = 'd_x'"
+    );
+    expect(rows.rows[0].encrypted_name).toBe("enc:current");
+    expect(Number(rows.rows[0].version)).toBe(5);
+  });
+});
+
 describe("ledger_sequence race prevention", () => {
   it("UNIQUE index rejects a direct duplicate (user_public_key, ledger_sequence) insert", async () => {
     const { privateKeyPem, publicKeyPem } = makeKeyPair();

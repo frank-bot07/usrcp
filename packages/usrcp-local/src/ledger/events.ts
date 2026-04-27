@@ -1,6 +1,6 @@
 import { Ledger } from "./core.js";
 import type { AppendEventInput } from "../types.js";
-import { generateULID } from "./helpers.js";
+import { generateULID, safeJsonParse } from "./helpers.js";
 
 declare module "./core.js" {
   interface Ledger {
@@ -30,20 +30,24 @@ declare module "./core.js" {
       idempotency_key: string | null;
     }>;
     getMaxSequence(): number;
-    applyPulledEvents(events: Array<{
-      event_id: string;
-      client_timestamp: string;
-      domain_pseudonym: string;
-      platform_enc?: string | null;
-      summary_enc: string;
-      intent_enc?: string | null;
-      outcome_enc?: string | null;
-      detail_enc?: string | null;
-      artifacts_enc?: string | null;
-      tags_enc?: string | null;
-      session_id_enc?: string | null;
-      parent_event_id_enc?: string | null;
-    }>): number;
+    applyPulledEvents(
+      events: Array<{
+        event_id: string;
+        client_timestamp: string;
+        domain_pseudonym: string;
+        platform_enc?: string | null;
+        summary_enc: string;
+        intent_enc?: string | null;
+        outcome_enc?: string | null;
+        detail_enc?: string | null;
+        artifacts_enc?: string | null;
+        tags_enc?: string | null;
+        session_id_enc?: string | null;
+        parent_event_id_enc?: string | null;
+      }>,
+      domainMaps?: Array<{ pseudonym: string; encrypted_name: string; version: number }>
+    ): number;
+    listDomainMaps(): Array<{ pseudonym: string; encrypted_name: string; version: number }>;
     getStats(): {
       total_events: number;
       total_projects: number;
@@ -344,10 +348,10 @@ Ledger.prototype.getMaxSequence = function (this: Ledger): number {
 };
 
 /**
- * Insert events pulled from the hosted ledger. Each event is assigned
- * the next local sequence. Events already present by event_id are
- * skipped. Blind-index tokens are NOT populated — pulled events are
- * searchable only after the next full rebuild (next ledger open).
+ * Insert events pulled from the hosted ledger. Optionally upserts domain_map
+ * rows BEFORE applying events so resolveDomain() returns the real domain name
+ * immediately, enabling correct domain-key derivation and blind-index population.
+ * Events already present by event_id are skipped.
  * Returns the number of events actually inserted.
  */
 Ledger.prototype.applyPulledEvents = function (
@@ -365,8 +369,16 @@ Ledger.prototype.applyPulledEvents = function (
     tags_enc?: string | null;
     session_id_enc?: string | null;
     parent_event_id_enc?: string | null;
-  }>
+  }>,
+  domainMaps: Array<{ pseudonym: string; encrypted_name: string; version: number }> = []
 ): number {
+  const upsertDomainMap = this.db.prepare(
+    `INSERT INTO domain_map (pseudonym, encrypted_name, version) VALUES (?, ?, ?)
+     ON CONFLICT (pseudonym) DO UPDATE SET
+       encrypted_name = excluded.encrypted_name,
+       version = excluded.version
+     WHERE excluded.version >= domain_map.version`
+  );
   const existsStmt = this.db.prepare(
     "SELECT 1 FROM timeline_events WHERE event_id = ? LIMIT 1"
   );
@@ -377,8 +389,16 @@ Ledger.prototype.applyPulledEvents = function (
        ledger_sequence, idempotency_key)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
+  const insertToken = this.db.prepare(
+    "INSERT OR IGNORE INTO blind_index (event_id, token, domain) VALUES (?, ?, ?)"
+  );
   let applied = 0;
   const txn = this.db.transaction(() => {
+    // 1. Apply domain_map upserts FIRST so resolveDomain works for events below.
+    for (const dm of domainMaps) {
+      upsertDomainMap.run(dm.pseudonym, dm.encrypted_name, dm.version);
+    }
+
     let localSeq = this.getMaxSequence();
     for (const e of events) {
       if (existsStmt.get(e.event_id)) continue;
@@ -400,10 +420,38 @@ Ledger.prototype.applyPulledEvents = function (
         `cloud:${e.event_id}`
       );
       applied += 1;
+
+      // 2. Compute and insert blind-index tokens for this event.
+      // resolveDomain returns the real domain now that domain_maps are upserted.
+      // Mirror rebuildBlindIndex logic; skip silently on decryption failure.
+      try {
+        const realDomain = this.resolveDomain(e.domain_pseudonym);
+        const summary = this.decryptForDomain(e.summary_enc, realDomain);
+        const intent = this.decryptForDomain(e.intent_enc ?? "", realDomain);
+        const tagsDecrypted = this.decryptForDomain(e.tags_enc ?? "[]", realDomain);
+        const tagsArray = safeJsonParse<string[]>(tagsDecrypted, []);
+        const searchableText = [summary, intent, ...tagsArray].join(" ");
+        const tokens = this.getBlindTokens(searchableText, realDomain);
+        for (const token of tokens) {
+          insertToken.run(e.event_id, token, e.domain_pseudonym);
+        }
+      } catch {
+        // Domain unresolvable or ciphertext tampered — skip blind tokens.
+        // The event row is still stored; searchTimeline will miss it until
+        // a manual rebuildBlindIndex (e.g. next key rotation).
+      }
     }
   });
   txn();
   return applied;
+};
+
+Ledger.prototype.listDomainMaps = function (
+  this: Ledger
+): Array<{ pseudonym: string; encrypted_name: string; version: number }> {
+  return this.db
+    .prepare("SELECT pseudonym, encrypted_name, version FROM domain_map")
+    .all() as any[];
 };
 
 Ledger.prototype.getStats = function (this: Ledger): {

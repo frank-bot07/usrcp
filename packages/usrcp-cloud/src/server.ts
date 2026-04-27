@@ -30,8 +30,15 @@ const EventSchema = z.object({
   idempotency_key: z.string().min(1).max(100).nullable().optional(),
 });
 
+const DomainMapItem = z.object({
+  pseudonym: z.string().min(1).max(128),
+  encrypted_name: z.string().min(1).max(8192),
+  version: z.number().int().min(1).default(1),
+});
+
 const AppendEventsBody = z.object({
   events: z.array(EventSchema).min(1).max(500),
+  domain_maps: z.array(DomainMapItem).max(500).optional(),
 });
 
 const IdentityUpdate = z.object({
@@ -153,7 +160,7 @@ export function createApp(opts: ServerOptions): FastifyInstance {
     const since = numberQuery(req.query as any, "since") ?? 0;
     const limit = Math.min(numberQuery(req.query as any, "limit") ?? 500, 500);
 
-    const [events, identity, preferences, domainContexts, projects, facts] = await Promise.all([
+    const [events, identity, preferences, domainContexts, projects, facts, domainMaps] = await Promise.all([
       db.query(
         `SELECT event_id, ledger_sequence, client_timestamp, server_timestamp,
                 domain_pseudonym, platform_enc, summary_enc, intent_enc, outcome_enc,
@@ -187,6 +194,11 @@ export function createApp(opts: ServerOptions): FastifyInstance {
          FROM schemaless_facts WHERE user_public_key = $1`,
         [auth.userPublicKey]
       ),
+      // Always return all domain_maps — tiny payload, enables fresh-device sync.
+      db.query(
+        `SELECT pseudonym, encrypted_name, version FROM domain_maps WHERE user_public_key = $1`,
+        [auth.userPublicKey]
+      ),
     ]);
 
     // Cursor = highest sequence in the returned page. If the page is full,
@@ -203,6 +215,7 @@ export function createApp(opts: ServerOptions): FastifyInstance {
       domain_contexts: domainContexts.rows,
       projects: projects.rows,
       facts: facts.rows,
+      domain_maps: domainMaps.rows,
       cursor,
       has_more: events.rows.length === limit,
     };
@@ -219,7 +232,7 @@ export function createApp(opts: ServerOptions): FastifyInstance {
       return reply.code(400).send({ error: "BAD_BODY", issues: parse.error.issues });
     }
 
-    return pushWithRetry(db, auth.userPublicKey, parse.data.events);
+    return pushWithRetry(db, auth.userPublicKey, parse.data.events, parse.data.domain_maps ?? []);
   });
 
   // --- POST /v1/state ---
@@ -389,13 +402,19 @@ export function createApp(opts: ServerOptions): FastifyInstance {
 // --- Push helpers ---
 
 type PushedEvent = z.infer<typeof EventSchema>;
+type PushedDomainMap = z.infer<typeof DomainMapItem>;
 
 type PushResult = {
   accepted: { event_id: string; ledger_sequence: number; duplicate: boolean }[];
   cursor: number;
 };
 
-async function pushAtomic(db: Db, userPublicKey: string, events: PushedEvent[]): Promise<PushResult> {
+async function pushAtomic(
+  db: Db,
+  userPublicKey: string,
+  events: PushedEvent[],
+  domainMaps: PushedDomainMap[]
+): Promise<PushResult> {
   return db.transaction(async (client) => {
     // Lock the user row for the duration of this transaction. Any concurrent
     // push for the same user blocks here until we COMMIT, eliminating the
@@ -404,6 +423,21 @@ async function pushAtomic(db: Db, userPublicKey: string, events: PushedEvent[]):
       "SELECT public_key FROM users WHERE public_key = $1 FOR UPDATE",
       [userPublicKey]
     );
+
+    // Upsert domain_maps first — pulling device needs them before events.
+    // Only advance version on conflict (last-write-wins by version number).
+    for (const dm of domainMaps) {
+      await client.query(
+        `INSERT INTO domain_maps (user_public_key, pseudonym, encrypted_name, version)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (user_public_key, pseudonym) DO UPDATE SET
+           encrypted_name = EXCLUDED.encrypted_name,
+           version = EXCLUDED.version,
+           updated_at = now()
+         WHERE domain_maps.version <= EXCLUDED.version`,
+        [userPublicKey, dm.pseudonym, dm.encrypted_name, dm.version]
+      );
+    }
 
     const maxSeqResult = await client.query<{ max_seq: string }>(
       `SELECT COALESCE(MAX(ledger_sequence), 0) AS max_seq
@@ -497,12 +531,13 @@ async function pushWithRetry(
   db: Db,
   userPublicKey: string,
   events: PushedEvent[],
+  domainMaps: PushedDomainMap[],
   retries = 3,
   backoffMs = 50
 ): Promise<PushResult> {
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
-      return await pushAtomic(db, userPublicKey, events);
+      return await pushAtomic(db, userPublicKey, events, domainMaps);
     } catch (e) {
       const msg = (e as Error).message ?? "";
       // Retry on Postgres deadlock (40P01) or serialization failure (40001).

@@ -140,6 +140,7 @@ export async function syncPush(opts: SyncOpts = {}): Promise<SyncPushResult> {
         parent_event_id_enc: e.parent_event_id,
         idempotency_key: e.idempotency_key ?? `local:${e.event_id}`,
       })),
+      domain_maps: ledger.listDomainMaps(),
     };
 
     const res = await signedFetch(
@@ -198,9 +199,10 @@ export async function syncPull(opts: SyncOpts = {}): Promise<SyncPullResult> {
       throw new Error(`Pull failed: HTTP ${res.status} ${JSON.stringify(res.json)}`);
     }
     const remoteEvents = (res.json?.events ?? []) as any[];
+    const remoteDomainMaps = (res.json?.domain_maps ?? []) as { pseudonym: string; encrypted_name: string; version: number }[];
     const remoteCursor = Number(res.json?.cursor ?? lastPull);
 
-    const applied = ledger.applyPulledEvents(remoteEvents);
+    const applied = ledger.applyPulledEvents(remoteEvents, remoteDomainMaps);
 
     updateConfig({
       last_pull_remote_cursor: remoteCursor,
