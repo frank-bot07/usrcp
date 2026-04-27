@@ -494,6 +494,171 @@ describe("aider adapter", () => {
   });
 });
 
+// ---- antigravity ----
+
+describe("antigravity adapter", () => {
+  it("register on empty config writes correct shape", async () => {
+    const mod = await import("../adapters/terminal/antigravity.js");
+    await mod.register("/usr/local/bin/usrcp");
+    const config = path.join(tmpHome, ".gemini", "antigravity", "mcp_config.json");
+    expect(fs.existsSync(config)).toBe(true);
+    const doc = readJson(config);
+    expect((doc.mcpServers as Record<string, unknown>).usrcp).toEqual({
+      command: "/usr/local/bin/usrcp",
+      args: ["serve", "--stdio"],
+    });
+  });
+
+  it("register tolerates pre-existing zero-byte mcp_config.json", async () => {
+    // Real Antigravity installs ship the file empty (0 bytes). Plain JSON.parse("") would crash.
+    const configDir = path.join(tmpHome, ".gemini", "antigravity");
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(path.join(configDir, "mcp_config.json"), "");
+    const mod = await import("../adapters/terminal/antigravity.js");
+    await mod.register("/usr/local/bin/usrcp");
+    const doc = readJson(path.join(configDir, "mcp_config.json"));
+    expect((doc.mcpServers as Record<string, unknown>).usrcp).toBeDefined();
+  });
+
+  it("register preserves existing entries", async () => {
+    const configDir = path.join(tmpHome, ".gemini", "antigravity");
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(configDir, "mcp_config.json"),
+      JSON.stringify({ mcpServers: { other: { command: "other" } } }),
+    );
+    const mod = await import("../adapters/terminal/antigravity.js");
+    await mod.register("/usr/local/bin/usrcp");
+    const doc = readJson(path.join(configDir, "mcp_config.json"));
+    expect((doc.mcpServers as Record<string, unknown>).other).toBeDefined();
+    expect((doc.mcpServers as Record<string, unknown>).usrcp).toBeDefined();
+  });
+
+  it("creates backup when prior config existed", async () => {
+    const configDir = path.join(tmpHome, ".gemini", "antigravity");
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(path.join(configDir, "mcp_config.json"), JSON.stringify({ mcpServers: {} }));
+    const mod = await import("../adapters/terminal/antigravity.js");
+    await mod.register("/usr/local/bin/usrcp");
+    expect(backupFiles("antigravity").length).toBeGreaterThan(0);
+  });
+
+  it("does NOT create backup when no prior config", async () => {
+    const mod = await import("../adapters/terminal/antigravity.js");
+    await mod.register("/usr/local/bin/usrcp");
+    expect(backupFiles("antigravity").length).toBe(0);
+  });
+
+  it("unregister removes only usrcp entry", async () => {
+    const mod = await import("../adapters/terminal/antigravity.js");
+    await mod.register("/usr/local/bin/usrcp");
+    const config = path.join(tmpHome, ".gemini", "antigravity", "mcp_config.json");
+    const doc = readJson(config);
+    (doc.mcpServers as Record<string, unknown>).other = { command: "other" };
+    fs.writeFileSync(config, JSON.stringify(doc, null, 2));
+    await mod.unregister();
+    const after = readJson(config);
+    expect((after.mcpServers as Record<string, unknown>).usrcp).toBeUndefined();
+    expect((after.mcpServers as Record<string, unknown>).other).toBeDefined();
+  });
+
+  it("status returns all three states", async () => {
+    const mod = await import("../adapters/terminal/antigravity.js");
+    expect(await mod.status()).toBe("config_missing");
+    const configDir = path.join(tmpHome, ".gemini", "antigravity");
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(path.join(configDir, "mcp_config.json"), JSON.stringify({ mcpServers: {} }));
+    expect(await mod.status()).toBe("not_registered");
+    await mod.register("/usr/local/bin/usrcp");
+    expect(await mod.status()).toBe("registered");
+  });
+
+  it("status returns not_registered for empty file", async () => {
+    const configDir = path.join(tmpHome, ".gemini", "antigravity");
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(path.join(configDir, "mcp_config.json"), "");
+    const mod = await import("../adapters/terminal/antigravity.js");
+    expect(await mod.status()).toBe("not_registered");
+  });
+});
+
+// ---- opencode ----
+
+describe("opencode adapter", () => {
+  it("register on empty config writes correct shape", async () => {
+    const mod = await import("../adapters/terminal/opencode.js");
+    await mod.register("/usr/local/bin/usrcp");
+    const config = path.join(tmpHome, ".config", "opencode", "opencode.json");
+    expect(fs.existsSync(config)).toBe(true);
+    const doc = readJson(config);
+    // OpenCode uses `mcp` (not `mcpServers`), `command` is an array combining bin+args, type="local"
+    expect((doc.mcp as Record<string, unknown>).usrcp).toEqual({
+      type: "local",
+      command: ["/usr/local/bin/usrcp", "serve", "--stdio"],
+      enabled: true,
+    });
+  });
+
+  it("register preserves existing config keys (e.g. model, $schema)", async () => {
+    const configDir = path.join(tmpHome, ".config", "opencode");
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(configDir, "opencode.json"),
+      JSON.stringify({
+        $schema: "https://opencode.ai/config.json",
+        model: "anthropic/claude-sonnet-4-5",
+        mcp: { other: { type: "local", command: ["other"] } },
+      }),
+    );
+    const mod = await import("../adapters/terminal/opencode.js");
+    await mod.register("/usr/local/bin/usrcp");
+    const doc = readJson(path.join(configDir, "opencode.json"));
+    expect(doc.$schema).toBe("https://opencode.ai/config.json");
+    expect(doc.model).toBe("anthropic/claude-sonnet-4-5");
+    expect((doc.mcp as Record<string, unknown>).other).toBeDefined();
+    expect((doc.mcp as Record<string, unknown>).usrcp).toBeDefined();
+  });
+
+  it("creates backup when prior config existed", async () => {
+    const configDir = path.join(tmpHome, ".config", "opencode");
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(path.join(configDir, "opencode.json"), JSON.stringify({ mcp: {} }));
+    const mod = await import("../adapters/terminal/opencode.js");
+    await mod.register("/usr/local/bin/usrcp");
+    expect(backupFiles("opencode").length).toBeGreaterThan(0);
+  });
+
+  it("does NOT create backup when no prior config", async () => {
+    const mod = await import("../adapters/terminal/opencode.js");
+    await mod.register("/usr/local/bin/usrcp");
+    expect(backupFiles("opencode").length).toBe(0);
+  });
+
+  it("unregister removes only usrcp entry", async () => {
+    const mod = await import("../adapters/terminal/opencode.js");
+    await mod.register("/usr/local/bin/usrcp");
+    const config = path.join(tmpHome, ".config", "opencode", "opencode.json");
+    const doc = readJson(config);
+    (doc.mcp as Record<string, unknown>).other = { type: "local", command: ["other"] };
+    fs.writeFileSync(config, JSON.stringify(doc, null, 2));
+    await mod.unregister();
+    const after = readJson(config);
+    expect((after.mcp as Record<string, unknown>).usrcp).toBeUndefined();
+    expect((after.mcp as Record<string, unknown>).other).toBeDefined();
+  });
+
+  it("status returns all three states", async () => {
+    const mod = await import("../adapters/terminal/opencode.js");
+    expect(await mod.status()).toBe("config_missing");
+    const configDir = path.join(tmpHome, ".config", "opencode");
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(path.join(configDir, "opencode.json"), JSON.stringify({ mcp: {} }));
+    expect(await mod.status()).toBe("not_registered");
+    await mod.register("/usr/local/bin/usrcp");
+    expect(await mod.status()).toBe("registered");
+  });
+});
+
 // ---- orchestrator ----
 
 describe("terminal adapter orchestrator", () => {

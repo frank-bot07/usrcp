@@ -28,8 +28,19 @@ import * as copilotCli from "./copilot-cli.js";
 import * as cline from "./cline.js";
 import * as continueDev from "./continue.js";
 import * as aider from "./aider.js";
+import * as antigravity from "./antigravity.js";
+import * as opencode from "./opencode.js";
 
-export type TargetName = "claude-code" | "cursor" | "codex" | "copilot-cli" | "cline" | "continue" | "aider";
+export type TargetName =
+  | "claude-code"
+  | "cursor"
+  | "codex"
+  | "copilot-cli"
+  | "cline"
+  | "continue"
+  | "aider"
+  | "antigravity"
+  | "opencode";
 
 interface TargetModule {
   register(usrcpBin: string): Promise<{ target: string; path: string; ok: boolean; error?: string }>;
@@ -45,6 +56,8 @@ const TARGETS: Record<TargetName, TargetModule> = {
   "cline": cline,
   "continue": continueDev,
   "aider": aider,
+  "antigravity": antigravity,
+  "opencode": opencode,
 };
 
 export const ALL_TARGETS = Object.keys(TARGETS) as TargetName[];
@@ -89,6 +102,12 @@ export function detectInstalledTargets(): TargetName[] {
     }],
     ["continue",    () => hasBinary("continue") || existsSync(join(home, ".continue"))],
     ["aider",       () => hasBinary("aider") || existsSync(join(home, ".aider.conf.yml"))],
+    ["antigravity", () =>
+      existsSync("/Applications/Antigravity.app") ||
+      existsSync(join(home, "Applications", "Antigravity.app")) ||
+      existsSync(join(home, ".gemini", "antigravity"))
+    ],
+    ["opencode",    () => hasBinary("opencode") || existsSync(join(home, ".config", "opencode"))],
   ];
 
   return checks.filter(([, check]) => {
