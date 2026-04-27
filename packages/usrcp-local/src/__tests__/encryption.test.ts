@@ -395,3 +395,35 @@ describe("Key Rotation (encryption module)", () => {
     expect(written.toString()).toBe("test-key-data-32-bytes-exactly!!");
   });
 });
+
+describe("passphrase mode initialization", () => {
+  let tmpHome: string;
+  let origHome: string | undefined;
+
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-scrypt-test-"));
+    origHome = process.env.HOME;
+    process.env.HOME = tmpHome;
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  it("does not throw RangeError on scrypt memory limit with default Node maxmem", () => {
+    // Regression: with N=131072, r=8, p=2 scrypt needs ~256 MB (128*N*r*p).
+    // Node's default maxmem is 32 MB, so without explicit maxmem this throws.
+    expect(() => {
+      const key = initializeMasterKey("test-passphrase-some-words");
+      expect(key).toBeInstanceOf(Buffer);
+      expect(key.length).toBe(32);
+    }).not.toThrow();
+  });
+
+  it("derives the same master key for the same passphrase + salt", () => {
+    const key1 = initializeMasterKey("repeatable-passphrase");
+    const key2 = initializeMasterKey("repeatable-passphrase");
+    expect(key1.equals(key2)).toBe(true);
+  });
+});
