@@ -199,6 +199,7 @@ function deriveFromPassphrase(passphrase: string, salt: Buffer): Buffer {
     N: SCRYPT_N,
     r: SCRYPT_R,
     p: SCRYPT_P,
+    maxmem: 512 * 1024 * 1024,  // 512 MB — 128*N*r*p needs ~256 MB; Node default is 32 MB
   });
 }
 
