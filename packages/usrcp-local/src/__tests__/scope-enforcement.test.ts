@@ -204,6 +204,51 @@ describe("scope enforcement", () => {
     }
   });
 
+  it("usrcp_status returns scoped stats and projects for a scoped caller", async () => {
+    // Seed two domains via an unscoped server.
+    const { server: seedServer, shutdown: seedShutdown } = createServer();
+    await callTool(seedServer, "usrcp_append_event", {
+      domain: "coding",
+      summary: "coding-event",
+      intent: "test",
+      outcome: "success",
+      platform: "test",
+    });
+    await callTool(seedServer, "usrcp_append_event", {
+      domain: "personal",
+      summary: "personal-event",
+      intent: "test",
+      outcome: "success",
+      platform: "test",
+    });
+    await callTool(seedServer, "usrcp_manage_project", {
+      project_id: "personal-project",
+      domain: "personal",
+      name: "personal-project",
+      status: "active",
+      summary: "out-of-scope project",
+    });
+    seedShutdown();
+
+    const { server, shutdown } = createServer(undefined, {
+      scopes: ["coding"],
+      agentId: "test-agent",
+    });
+    try {
+      const result = await callTool(server, "usrcp_status", {});
+      // Scoped envelope must replace the unscoped one — ledger-wide totals
+      // must not reach a scoped caller.
+      expect(result.scoped).toBe(true);
+      expect(result.allowed_domains).toEqual(["coding"]);
+      // Personal-domain project must NOT count toward active_projects.
+      expect(result.active_projects).toBe(0);
+      // Stats must be scope-filtered, not ledger-wide.
+      expect(result.stats).toBeDefined();
+    } finally {
+      shutdown();
+    }
+  });
+
   it("filters multi-domain reads to the scope list when caller did not specify", async () => {
     // Seed the ledger with events in two domains using an unscoped server.
     const { server: seedServer, shutdown: seedShutdown } = createServer();

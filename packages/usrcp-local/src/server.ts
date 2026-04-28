@@ -986,6 +986,38 @@ export function createServer(
       kind: "global-read",
       inputShape: {},
       handler: async () => {
+        // Scope filtering: a scoped agent must not see ledger-wide totals,
+        // domain names, or platform names outside its authorized scopes.
+        if (scopes) {
+          const scopedStats = ledger.getStatsForScopes(scopes);
+          const allowed = new Set(scopes);
+          const scopedActiveProjects = ledger
+            .getProjects()
+            .filter((p) => p.status === "active" && allowed.has(p.domain))
+            .length;
+
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify(
+                  {
+                    usrcp_version: "0.1.0",
+                    user_id: formatUserId(identity?.user_id),
+                    ledger: "local (SQLite)",
+                    scoped: true,
+                    allowed_domains: scopes,
+                    stats: scopedStats,
+                    active_projects: scopedActiveProjects,
+                  },
+                  null,
+                  2
+                ),
+              },
+            ],
+          };
+        }
+
         const stats = ledger.getStats();
         const projects = ledger.getProjects();
 

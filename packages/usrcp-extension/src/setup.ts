@@ -21,6 +21,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as readline from "node:readline";
 import { execSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import {
   type ExtensionConfig,
   getConfigPath,
@@ -107,10 +108,13 @@ export async function runExtensionSetup(): Promise<ExtensionConfig> {
 
   // ── Step 1: Verify the bridge exists ─────────────────────────────────────
 
-  // Resolve relative to this file's location in dist/
-  // __dirname in dist/ = packages/usrcp-extension/dist/
-  // Bridge lives at packages/usrcp-extension/native-host/usrcp-bridge.js
-  const pkgDir = path.resolve(__dirname, "..");
+  // Resolve relative to this file's location in dist/. Package is ESM
+  // ("type": "module"), so __dirname is undefined — derive it from
+  // import.meta.url instead.
+  // dist/setup.js sits at packages/usrcp-extension/dist/setup.js, and the
+  // bridge lives at packages/usrcp-extension/native-host/usrcp-bridge.js.
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  const pkgDir = path.resolve(moduleDir, "..");
   const bridgePath = path.join(pkgDir, "native-host", "usrcp-bridge.js");
 
   if (!fs.existsSync(bridgePath)) {
