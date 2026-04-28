@@ -9,38 +9,41 @@ export interface TelegramAdapterConfig {
 
 export class TelegramAdapter extends EventEmitter implements USRCPAdapter {
   readonly name = 'telegram';
-  private bot: Telegraf;
+  // Constructed lazily in start() once we have the token, since Telegraf
+  // requires a token at construction time and exposes `token` as readonly.
+  private bot: Telegraf | null = null;
   private config: TelegramAdapterConfig;
 
   constructor(config: TelegramAdapterConfig = {}) {
     super();
     this.config = { ignoreBots: true, ...config };
-    this.bot = new Telegraf('');
-    this.setupListeners();
   }
 
-  private setupListeners(): void {
-    this.bot.on('message', (ctx) => {
+  private setupListeners(bot: Telegraf): void {
+    bot.on('message', (ctx) => {
       if (this.config.ignoreBots && ctx.from?.is_bot) return;
-      const message = ctx.message;
+      const message: any = ctx.message;
       let content = '';
       let msgType = 'unknown';
-      if (message.text) {
+      if (typeof message.text === 'string') {
         content = message.text;
         msgType = 'text';
-      } else if (message.caption) {
+      } else if (typeof message.caption === 'string') {
         content = message.caption;
-        msgType = message.type || 'photo'; // e.g., photo, document
+        msgType = message.photo ? 'photo' : message.document ? 'document' : 'caption';
       } else if (message.sticker) {
         content = `[Sticker: ${message.sticker.emoji || 'no-emoji'}]`;
         msgType = 'sticker';
       } else if (message.photo) {
         content = `[Photo]`;
         msgType = 'photo';
-      } // add more as needed
-      else {
-        content = `[${message.type}]`;
-        msgType = message.type;
+      } else {
+        // Fall back to the first known media-type field present on the
+        // discriminated union, otherwise just 'unknown'.
+        const mediaKeys = ['video', 'audio', 'voice', 'document', 'animation'];
+        const found = mediaKeys.find((k) => message[k]);
+        msgType = found || 'unknown';
+        content = `[${msgType}]`;
       }
 
       const event: USRCPEvent = {
@@ -64,13 +67,17 @@ export class TelegramAdapter extends EventEmitter implements USRCPAdapter {
     if (!actualToken) {
       throw new Error('Telegram bot token is required (env: TELEGRAM_BOT_TOKEN or config.token)');
     }
-    this.bot.token = actualToken;
+    this.bot = new Telegraf(actualToken);
+    this.setupListeners(this.bot);
     this.bot.launch();
     console.log('Telegram adapter started');
   }
 
   stop(): void {
-    this.bot.stop();
+    if (this.bot) {
+      this.bot.stop();
+      this.bot = null;
+    }
     this.removeAllListeners();
   }
 

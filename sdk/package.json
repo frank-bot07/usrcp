@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "discord.js": "^14.26.3",
-    "sql.js": "^1.10.1"
+    "sql.js": "^1.10.1",
+    "telegraf": "^4.16.3"
   },
   "devDependencies": {
     "@types/node": "^22.7.4",
@@ -23,9 +24,5 @@
     "sdk"
   ],
   "author": "",
-  "license": "ISC",
-  "peerDependencies": {
-    "@openai/openai": "^4.0.0",
-    "@xai/grok-sdk": "^0.1.0"
-  }
+  "license": "ISC"
 }

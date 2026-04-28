@@ -57,6 +57,12 @@ declare module "./core.js" {
       audit_log_entries: number;
       encryption_enabled: boolean;
     };
+    getStatsForScopes(scopes: string[]): {
+      total_events: number;
+      domains: string[];
+      platforms: string[];
+      encryption_enabled: boolean;
+    };
   }
 }
 
@@ -501,6 +507,57 @@ Ledger.prototype.getStats = function (this: Ledger): {
     platforms: [...platformSet],
     db_size_bytes: dbSize?.size || 0,
     audit_log_entries: auditCount.count,
+    encryption_enabled: true,
+  };
+};
+
+Ledger.prototype.getStatsForScopes = function (
+  this: Ledger,
+  scopes: string[]
+): {
+  total_events: number;
+  domains: string[];
+  platforms: string[];
+  encryption_enabled: boolean;
+} {
+  if (scopes.length === 0) {
+    return { total_events: 0, domains: [], platforms: [], encryption_enabled: true };
+  }
+  const pseudonyms = scopes.map((d) => this.domainPseudonym(d));
+  const placeholders = pseudonyms.map(() => "?").join(", ");
+
+  const eventCount = this.db
+    .prepare(
+      `SELECT COUNT(*) as count FROM timeline_events WHERE domain IN (${placeholders})`
+    )
+    .get(...pseudonyms) as any;
+
+  const presentPseudonyms = this.db
+    .prepare(
+      `SELECT DISTINCT domain FROM timeline_events WHERE domain IN (${placeholders})`
+    )
+    .all(...pseudonyms) as any[];
+  const presentDomains = presentPseudonyms
+    .map((r: any) => this.resolveDomain(r.domain))
+    .filter((d): d is string => typeof d === "string" && scopes.includes(d));
+
+  const platformRows = this.db
+    .prepare(
+      `SELECT DISTINCT platform, domain FROM timeline_events WHERE domain IN (${placeholders})`
+    )
+    .all(...pseudonyms) as any[];
+  const platformSet = new Set<string>();
+  for (const row of platformRows) {
+    const realDomain = this.resolveDomain(row.domain);
+    if (!realDomain || !scopes.includes(realDomain)) continue;
+    const decrypted = this.decryptForDomain(row.platform || "", realDomain);
+    if (decrypted) platformSet.add(decrypted);
+  }
+
+  return {
+    total_events: eventCount.count,
+    domains: presentDomains,
+    platforms: [...platformSet],
     encryption_enabled: true,
   };
 };
