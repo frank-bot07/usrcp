@@ -29,7 +29,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: |
             packages/usrcp-cloud/package-lock.json
@@ -41,6 +41,11 @@ jobs:
             packages/usrcp-obsidian/package-lock.json
             packages/usrcp-slack/package-lock.json
             packages/usrcp-telegram/package-lock.json
+      # Need npm 11+ so optionalDependencies with platform constraints
+      # (e.g. esbuild's @esbuild/openharmony-arm64) get filtered out
+      # rather than failing with EBADPLATFORM on linux-x64.
+      - name: Upgrade npm
+        run: npm install -g npm@latest
       # Several packages run `npm run build` against sibling packages in their
       # pretest hook (most adapters need usrcp-local; usrcp-local needs
       # usrcp-discord and usrcp-telegram). Install deps in every package so
