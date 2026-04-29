@@ -109,6 +109,15 @@ Install any adapter via `usrcp setup --adapter=<value>` (e.g. `usrcp setup --ada
 
 All adapters write under a configurable `domain` (default matches the source name) and use stable, source-side IDs as idempotency keys, so re-polling or re-watching the same window cannot double-write. Capture-only adapters do not reply; bot adapters reply only to explicit `@usrcp` / `/usrcp` mentions and answer using the same ledger the user sees.
 
+### Agent harness integrations
+
+These adapters expose USRCP's tools to a third-party AI agent harness. They don't capture new events on their own — capture from external surfaces (Discord, Slack, iMessage, etc.) still goes through the dedicated capture adapters above. Install the harness first, then run the USRCP setup route.
+
+| Integration | Purpose | Mode | Requirements |
+|-------------|---------|------|--------------|
+| [`usrcp-hermes`](packages/usrcp-hermes) | Memory-provider plugin for [Hermes Agent](https://github.com/hermesagent/hermes-agent). Adds USRCP as a 9th external memory provider; system-prompt context, prefetch, sync_turn capture. | Bidirectional plugin | Hermes installed; `usrcp` CLI on PATH; `mcp` Python package |
+| `openclaw` | Registers `usrcp serve` as an MCP server in your [OpenClaw](https://docs.openclaw.ai) config. OpenClaw agents get all 12 USRCP tools via the same path Claude Code uses. | Read-side (MCP server) | **OpenClaw already installed** — install first at https://docs.openclaw.ai/start/getting-started, then `usrcp setup --adapter=openclaw` |
+
 ### Cross-device sync
 
 [`usrcp-cloud`](packages/usrcp-cloud) is the hosted ledger for syncing the local SQLite store across devices. It only ever sees ciphertext — encryption happens client-side under the user's passphrase before push, and decryption happens client-side after pull. The server cannot read your data.

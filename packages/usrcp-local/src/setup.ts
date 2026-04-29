@@ -86,6 +86,12 @@ async function callAdapterSetup(adapterName: string): Promise<void> {
     return;
   }
 
+  if (adapterName === "openclaw") {
+    const { runOpenclawSetup } = await import("./adapters/openclaw/setup.js");
+    await runOpenclawSetup();
+    return;
+  }
+
   // __dirname in dist/ is packages/usrcp-local/dist/
   // We need to go two levels up to reach packages/
   const localPkgDir = path.resolve(__dirname, ".."); // packages/usrcp-local
@@ -264,6 +270,11 @@ export const KNOWN_ADAPTERS: readonly AdapterSpec[] = [
     blurb: "Capture claude.ai conversations and inject ledger context via /usrcp slash command. Chrome only in v0; requires manual extension load (Developer Mode → Load Unpacked).",
   },
   {
+    name: "OpenClaw (agent harness)",
+    value: "openclaw",
+    blurb: "Requires OpenClaw already installed (https://docs.openclaw.ai/start/getting-started). Registers USRCP as an MCP server in your OpenClaw config so OpenClaw agents can read/write your ledger via the same 6 tools as Claude Code. Read-side only in v0 — capture per channel still goes through the dedicated Discord/Slack/iMessage adapters.",
+  },
+  {
     name: "Scoped MCP agent (per-process restriction)",
     value: "mcp-agent",
     blurb: "Generate an MCP config snippet that runs `usrcp serve` with --scopes / --readonly / --no-audit so one agent (e.g. Cursor) can only see a subset of your domains. Use this in addition to (not instead of) the terminal adapter. Run via `usrcp setup --adapter=mcp-agent`.",
@@ -364,6 +375,9 @@ function printSummary(adapters: string[]): void {
   console.log("\n  ✓ Setup complete\n");
   console.log("  Ledger:   " + usrcpDir + "/users/");
   for (const a of adapters) {
+    // openclaw is read-side only — its setup prints a CLI command rather
+    // than writing ~/.usrcp/openclaw-config.json, so skip the config line.
+    if (a === "openclaw") continue;
     console.log(`  Config:   ~/.usrcp/${a}-config.json`);
   }
   console.log("");
@@ -392,6 +406,11 @@ function printSummary(adapters: string[]): void {
     console.log("  Browser extension:");
     console.log("    Manifest installed at ~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.usrcp.bridge.json");
     console.log("    Load 'packages/usrcp-extension/dist/' in chrome://extensions (Developer Mode → Load Unpacked).");
+  }
+  if (adapters.includes("openclaw")) {
+    console.log("  OpenClaw:");
+    console.log("    Run the printed `openclaw mcp set usrcp '...'` command from a shell where openclaw is on PATH.");
+    console.log("    Then verify with `openclaw mcp list` and start an OpenClaw session.");
   }
   console.log("");
   console.log("  Add another adapter later:  usrcp setup --adapter=<name>");
