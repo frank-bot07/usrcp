@@ -1,0 +1,102 @@
+{
+  "name": "usrcp-vscode",
+  "displayName": "USRCP",
+  "description": "Browse your encrypted USRCP memory ledger from VS Code — facts by domain, recent timeline, status",
+  "version": "0.1.0",
+  "publisher": "usrcp",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/frank-bot07/usrcp.git",
+    "directory": "packages/usrcp-vscode"
+  },
+  "engines": {
+    "vscode": "^1.85.0",
+    "node": ">=20.0.0"
+  },
+  "categories": ["Other"],
+  "keywords": ["usrcp", "ai-memory", "context-protocol", "mcp"],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onView:usrcp.facts",
+    "onCommand:usrcp.refresh",
+    "onCommand:usrcp.status",
+    "onCommand:usrcp.openLedgerDir"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "usrcp",
+          "title": "USRCP",
+          "icon": "resources/usrcp.svg"
+        }
+      ]
+    },
+    "views": {
+      "usrcp": [
+        {
+          "id": "usrcp.facts",
+          "name": "Facts",
+          "contextualTitle": "USRCP Facts"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "usrcp.refresh",
+        "title": "USRCP: Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "usrcp.status",
+        "title": "USRCP: Show Status"
+      },
+      {
+        "command": "usrcp.openLedgerDir",
+        "title": "USRCP: Open Ledger Directory"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "usrcp.refresh",
+          "when": "view == usrcp.facts",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "USRCP",
+      "properties": {
+        "usrcp.binaryPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the `usrcp` binary. If empty, the extension searches PATH and common install locations (/opt/homebrew/bin, /usr/local/bin)."
+        },
+        "usrcp.user": {
+          "type": "string",
+          "default": "",
+          "description": "User slug to load (matches `usrcp users` output). Leave empty to use the default user."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.17",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.2.1",
+    "esbuild": "^0.24.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.4"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0"
+  }
+}
