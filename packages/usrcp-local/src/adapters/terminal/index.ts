@@ -21,6 +21,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 import { resolveUsrcpBin } from "./shared.js";
+import { isPassphraseMode as defaultIsPassphraseMode } from "../../encryption.js";
 import * as claudeCode from "./claude-code.js";
 import * as cursor from "./cursor.js";
 import * as codex from "./codex.js";
@@ -344,8 +345,88 @@ export async function runTerminalSetup(prompts: TerminalSetupPrompts): Promise<v
     }
   }
 
+  printPassphraseModeWarning(targets.filter((t) => results.find((r) => r.target === t && r.ok)));
+
   console.log("");
   console.log("  Restart your terminal session for changes to take effect.");
+}
+
+// ---------------------------------------------------------------------------
+// Passphrase-mode warning
+// ---------------------------------------------------------------------------
+
+// Targets whose process is launched from a shell (and therefore inherits
+// shell environment variables like USRCP_PASSPHRASE).
+const SHELL_LAUNCHED: ReadonlySet<TargetName> = new Set([
+  "claude-code",
+  "codex",
+  "copilot-cli",
+  "aider",
+  "opencode",
+]);
+
+// Targets whose host is a GUI app or IDE (Spotlight/Dock launch; does NOT
+// inherit shell env). These need an env block in their config or a system-
+// level env var (launchctl setenv on macOS).
+const GUI_LAUNCHED: ReadonlySet<TargetName> = new Set([
+  "cursor",
+  "cline",
+  "continue",
+  "antigravity",
+]);
+
+export interface PassphraseWarningDeps {
+  isPassphraseMode?: () => boolean;
+  log?: (line: string) => void;
+}
+
+/**
+ * Print a fix-it block when the user just registered terminal agents while
+ * the ledger is in passphrase mode. Each adapter's register() writes only
+ * `command + args`, so the spawned MCP server has no USRCP_PASSPHRASE and
+ * will fail to decrypt the ledger. This function tells the user how to
+ * close that gap, categorized by launch mechanism.
+ *
+ * No-op when not in passphrase mode, or when no targets were registered.
+ */
+export function printPassphraseModeWarning(
+  registeredTargets: TargetName[],
+  deps: PassphraseWarningDeps = {},
+): void {
+  if (registeredTargets.length === 0) return;
+  const isPp = (deps.isPassphraseMode ?? defaultIsPassphraseMode)();
+  if (!isPp) return;
+
+  const log = deps.log ?? console.log;
+  const shellTargets = registeredTargets.filter((t) => SHELL_LAUNCHED.has(t));
+  const guiTargets = registeredTargets.filter((t) => GUI_LAUNCHED.has(t));
+
+  log("");
+  log("  ⚠️  Passphrase mode detected. The MCP servers you just registered cannot");
+  log("      decrypt your ledger without USRCP_PASSPHRASE in their environment.");
+
+  if (shellTargets.length > 0) {
+    log("");
+    log(`  Shell-launched (${shellTargets.join(", ")}) inherit env from your shell.`);
+    log("  Add to ~/.zshrc or ~/.bashrc:");
+    log('    export USRCP_PASSPHRASE="<your passphrase>"');
+    log("  Then restart the shell.");
+  }
+
+  if (guiTargets.length > 0) {
+    log("");
+    log(`  GUI/IDE-launched (${guiTargets.join(", ")}) do NOT inherit shell env.`);
+    log("  Either edit each agent's config and add an env block under the usrcp entry:");
+    log('    "env": { "USRCP_PASSPHRASE": "<your passphrase>" }');
+    log("  (TOML form for codex: env = { USRCP_PASSPHRASE = \"<your passphrase>\" })");
+    log("  …or set it system-wide on macOS:");
+    log('    launchctl setenv USRCP_PASSPHRASE "<your passphrase>"');
+    log("  (lasts until reboot — set persistently in ~/Library/LaunchAgents/)");
+  }
+
+  log("");
+  log("  Treat any config file you bake the passphrase into as a secret.");
+  log("  Full guide: README → Passphrase mode and terminal agents.");
 }
 
 /**

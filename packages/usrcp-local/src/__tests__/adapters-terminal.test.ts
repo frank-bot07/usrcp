@@ -734,3 +734,84 @@ describe("terminal adapter orchestrator", () => {
     expect(result).toEqual(["claude-code", "cursor"]);
   });
 });
+
+describe("printPassphraseModeWarning", () => {
+  it("dev mode: prints nothing", async () => {
+    const { printPassphraseModeWarning } = await import("../adapters/terminal/index.js");
+    const lines: string[] = [];
+    printPassphraseModeWarning(["claude-code", "cursor"], {
+      isPassphraseMode: () => false,
+      log: (l) => lines.push(l),
+    });
+    expect(lines).toEqual([]);
+  });
+
+  it("passphrase mode but zero registered targets: prints nothing", async () => {
+    const { printPassphraseModeWarning } = await import("../adapters/terminal/index.js");
+    const lines: string[] = [];
+    printPassphraseModeWarning([], {
+      isPassphraseMode: () => true,
+      log: (l) => lines.push(l),
+    });
+    expect(lines).toEqual([]);
+  });
+
+  it("passphrase mode + only shell-launched targets: prints shell section, no GUI section", async () => {
+    const { printPassphraseModeWarning } = await import("../adapters/terminal/index.js");
+    const lines: string[] = [];
+    printPassphraseModeWarning(["codex", "aider", "opencode"], {
+      isPassphraseMode: () => true,
+      log: (l) => lines.push(l),
+    });
+    const out = lines.join("\n");
+    expect(out).toContain("Passphrase mode detected");
+    expect(out).toContain("Shell-launched (codex, aider, opencode)");
+    expect(out).toContain("export USRCP_PASSPHRASE=");
+    // GUI section must NOT appear
+    expect(out).not.toContain("GUI/IDE-launched");
+    expect(out).not.toContain("launchctl setenv");
+  });
+
+  it("passphrase mode + only GUI-launched targets: prints GUI section, no shell section", async () => {
+    const { printPassphraseModeWarning } = await import("../adapters/terminal/index.js");
+    const lines: string[] = [];
+    printPassphraseModeWarning(["cursor", "cline"], {
+      isPassphraseMode: () => true,
+      log: (l) => lines.push(l),
+    });
+    const out = lines.join("\n");
+    expect(out).toContain("GUI/IDE-launched (cursor, cline)");
+    expect(out).toContain("launchctl setenv");
+    expect(out).toContain('"env": { "USRCP_PASSPHRASE":');
+    // Shell section must NOT appear
+    expect(out).not.toContain("Shell-launched");
+    expect(out).not.toContain("export USRCP_PASSPHRASE=");
+  });
+
+  it("passphrase mode + mix: prints both shell and GUI sections", async () => {
+    const { printPassphraseModeWarning } = await import("../adapters/terminal/index.js");
+    const lines: string[] = [];
+    printPassphraseModeWarning(["codex", "cursor"], {
+      isPassphraseMode: () => true,
+      log: (l) => lines.push(l),
+    });
+    const out = lines.join("\n");
+    expect(out).toContain("Shell-launched (codex)");
+    expect(out).toContain("GUI/IDE-launched (cursor)");
+  });
+
+  it("mentions codex's TOML form when GUI section prints", async () => {
+    // Codex is shell-launched, so the TOML form note is in the GUI block as
+    // additional info — exercising the GUI section is enough to verify the
+    // README cross-reference is present.
+    const { printPassphraseModeWarning } = await import("../adapters/terminal/index.js");
+    const lines: string[] = [];
+    printPassphraseModeWarning(["antigravity"], {
+      isPassphraseMode: () => true,
+      log: (l) => lines.push(l),
+    });
+    const out = lines.join("\n");
+    expect(out).toContain("TOML form for codex");
+    expect(out).toContain("README → Passphrase mode and terminal agents");
+  });
+});

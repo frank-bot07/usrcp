@@ -108,6 +108,52 @@ usrcp users                # list available slugs
 
 Each user gets an independent ledger, passphrase, and MCP server entry.
 
+### Passphrase mode and terminal agents
+
+If you initialized USRCP in passphrase mode (`usrcp init` with the default), the MCP server requires `USRCP_PASSPHRASE` in its environment to decrypt the ledger. The terminal-adapter `register()` writes only `command + args` to each agent's config — it never bakes the passphrase in. You have to provide it yourself, and *how* depends on whether the agent is launched from a shell or from a GUI app.
+
+**Shell-launched agents** — `claude-code`, `codex`, `copilot-cli`, `aider`, `opencode`. Add this to `~/.zshrc` or `~/.bashrc` and restart your shell:
+
+```sh
+export USRCP_PASSPHRASE="your secret phrase"
+```
+
+**GUI/IDE-launched agents** — `cursor`, `cline` (VS Code), `continue`, `antigravity`. These do **not** inherit shell environment. Two options:
+
+1. **Per-agent env block.** Edit the agent's config file and add an `env` block under the `usrcp` server entry:
+
+   ```jsonc
+   // ~/.cursor/mcp.json (and similar JSON configs)
+   "mcpServers": {
+     "usrcp": {
+       "command": "/opt/homebrew/bin/usrcp",
+       "args": ["serve", "--stdio"],
+       "env": { "USRCP_PASSPHRASE": "your secret phrase" }
+     }
+   }
+   ```
+
+   For Codex (TOML), the equivalent is:
+
+   ```toml
+   [mcp_servers.usrcp]
+   command = "/opt/homebrew/bin/usrcp"
+   args = ["serve", "--stdio"]
+   env = { USRCP_PASSPHRASE = "your secret phrase" }
+   ```
+
+2. **System-wide env (macOS).** Sets the variable for all GUI apps until reboot:
+
+   ```sh
+   launchctl setenv USRCP_PASSPHRASE "your secret phrase"
+   ```
+
+   For persistence across reboots, install a `LaunchAgent` plist under `~/Library/LaunchAgents/`.
+
+**Treat any config file you bake the passphrase into as a secret** — it sits in plaintext on disk. The system-wide `launchctl` path keeps the passphrase out of static files.
+
+The wizard prints this same guidance after registration, so you can also re-run `usrcp setup` or `usrcp adapter add terminal --targets=<list>` for a reminder.
+
 ## Capture Adapters
 
 Adapters are independent processes that read from a source and append events to the local ledger via the same encrypted-at-rest pipeline as the MCP server. Each adapter handles its own auth, idempotency, and cursor persistence.

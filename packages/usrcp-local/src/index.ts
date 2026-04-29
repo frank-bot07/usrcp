@@ -25,6 +25,7 @@ import {
   listTerminalAdapters,
   detectInstalledTargets,
   parseTargets,
+  printPassphraseModeWarning,
   ALL_TARGETS,
   type TargetName,
 } from "./adapters/terminal/index.js";
@@ -741,6 +742,10 @@ async function cmdAdapter(args: string[]): Promise<void> {
         anyFailed = true;
       }
     }
+    printPassphraseModeWarning(
+      targets.filter((t) => results.find((r) => r.target === t && r.ok)),
+      { log: (l) => console.error(l) },
+    );
     console.error("");
     console.error("  Restart your terminal session for changes to take effect.");
     if (anyFailed) process.exit(1);
