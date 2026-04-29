@@ -10,7 +10,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  node:
+  # Cross-platform packages run on Linux. usrcp-imessage is darwin-only
+  # (`"os": ["darwin"]` in package.json), and npm 11 enforces that on
+  # the package itself, not just on it as a dependency — so we skip it
+  # here and run it on the macos job below.
+  node-linux:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -19,7 +23,6 @@ jobs:
           - usrcp-cloud
           - usrcp-discord
           - usrcp-extension
-          - usrcp-imessage
           - usrcp-linear
           - usrcp-local
           - usrcp-obsidian
@@ -35,7 +38,6 @@ jobs:
             packages/usrcp-cloud/package-lock.json
             packages/usrcp-discord/package-lock.json
             packages/usrcp-extension/package-lock.json
-            packages/usrcp-imessage/package-lock.json
             packages/usrcp-linear/package-lock.json
             packages/usrcp-local/package-lock.json
             packages/usrcp-obsidian/package-lock.json
@@ -46,13 +48,17 @@ jobs:
       # rather than failing with EBADPLATFORM on linux-x64.
       - name: Upgrade npm
         run: npm install -g npm@latest
-      # Several packages run `npm run build` against sibling packages in their
-      # pretest hook (most adapters need usrcp-local; usrcp-local needs
-      # usrcp-discord and usrcp-telegram). Install deps in every package so
-      # those sibling builds resolve their own tsc/types.
-      - name: Install deps in all packages
+      # Several packages run `npm run build` against sibling packages in
+      # their pretest hook (most adapters need usrcp-local; usrcp-local
+      # needs usrcp-discord and usrcp-telegram). Install deps in every
+      # cross-platform package so those sibling builds resolve their tsc.
+      - name: Install deps in all cross-platform packages
         run: |
           for pkg in packages/*/; do
+            name=$(basename "$pkg")
+            if [ "$name" = "usrcp-imessage" ] || [ "$name" = "usrcp-hermes" ]; then
+              continue
+            fi
             if [ -f "$pkg/package.json" ]; then
               echo "::group::npm ci in $pkg"
               (cd "$pkg" && npm ci)
@@ -61,6 +67,28 @@ jobs:
           done
       - name: Test ${{ matrix.package }}
         working-directory: packages/${{ matrix.package }}
+        run: npm test
+
+  node-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: |
+            packages/usrcp-imessage/package-lock.json
+            packages/usrcp-local/package-lock.json
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+      # usrcp-imessage's pretest builds usrcp-local, so install local too.
+      - name: Install deps
+        run: |
+          (cd packages/usrcp-local && npm ci)
+          (cd packages/usrcp-imessage && npm ci)
+      - name: Test usrcp-imessage
+        working-directory: packages/usrcp-imessage
         run: npm test
 
   python:
