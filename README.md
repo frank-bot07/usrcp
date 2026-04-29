@@ -48,14 +48,6 @@ The two are complementary, not competitive. Nothing stops an agent from using bo
 
 ## Quickstart
 
-Once published to npm, one line will do it:
-
-```bash
-npx usrcp init
-```
-
-Until then, from a clone:
-
 ```bash
 cd packages/usrcp-local
 npm install && npm run build && npm link
@@ -71,12 +63,22 @@ usrcp init --dev                                     # dev mode (key on disk)
 USRCP_PASSPHRASE="your secret phrase" usrcp serve
 ```
 
-`init` creates `~/.usrcp/users/<slug>/` with an encrypted SQLite ledger and
-writes the MCP server entry to Claude Desktop's config:
+`init` creates `~/.usrcp/users/<slug>/` with an encrypted SQLite ledger and writes the MCP server entry to Claude Desktop's config:
 
 - macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - Linux: `~/.config/Claude/claude_desktop_config.json`
 - Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+
+### Adding capture adapters
+
+Adapters watch a source (a Slack workspace, an Obsidian vault, your iMessage chat.db, etc.) and append the activity you authored into the same ledger your local MCP server reads from. One wizard installs and configures any adapter:
+
+```bash
+usrcp setup                          # interactive picker
+usrcp setup --adapter=linear         # straight to one adapter
+```
+
+See the [Adapters](#capture-adapters) table below for the full list.
 
 ### Multiple users on one machine
 
@@ -88,6 +90,45 @@ usrcp users                # list available slugs
 ```
 
 Each user gets an independent ledger, passphrase, and MCP server entry.
+
+## Capture Adapters
+
+Adapters are independent processes that read from a source and append events to the local ledger via the same encrypted-at-rest pipeline as the MCP server. Each adapter handles its own auth, idempotency, and cursor persistence.
+
+| Adapter | What it captures | Mode | Requirements |
+|---------|------------------|------|--------------|
+| [`usrcp-imessage`](packages/usrcp-imessage) | Messages you sent in Apple iMessage | Capture + reader | **macOS only.** Full Disk Access for Messages.app; `brew install steipete/tap/imsg` |
+| [`usrcp-slack`](packages/usrcp-slack) | Messages you sent in Slack; `@usrcp` queries from chat | Capture + reader + bot | **Paid Slack tier** (Pro/Business+/Enterprise) — bot APIs are restricted on free; Anthropic API key for `@usrcp` replies |
+| [`usrcp-discord`](packages/usrcp-discord) | Messages you sent in Discord; `@usrcp` queries from chat | Capture + reader + bot | A Discord server you control; Anthropic API key for `@usrcp` replies |
+| [`usrcp-telegram`](packages/usrcp-telegram) | Messages you sent in Telegram; `@usrcp` queries from chat | Capture + reader + bot | A Telegram bot token (BotFather); Anthropic API key for `@usrcp` replies |
+| [`usrcp-obsidian`](packages/usrcp-obsidian) | Notes you create or edit in an Obsidian vault | Capture-only (v0) | A local vault directory |
+| [`usrcp-linear`](packages/usrcp-linear) | Issues + comments you author in Linear | Capture-only (v0) | Linear personal API key |
+| [`usrcp-extension`](packages/usrcp-extension) | Conversations on claude.ai; `/usrcp` slash-command for ledger lookup | Capture + injector | **Chrome only.** Manual unpacked load (Developer Mode → Load Unpacked) |
+
+Install any adapter via `usrcp setup --adapter=<value>` (e.g. `usrcp setup --adapter=linear`), or run `usrcp setup` for an interactive picker.
+
+All adapters write under a configurable `domain` (default matches the source name) and use stable, source-side IDs as idempotency keys, so re-polling or re-watching the same window cannot double-write. Capture-only adapters do not reply; bot adapters reply only to explicit `@usrcp` / `/usrcp` mentions and answer using the same ledger the user sees.
+
+### Cross-device sync
+
+[`usrcp-cloud`](packages/usrcp-cloud) is the hosted ledger for syncing the local SQLite store across devices. It only ever sees ciphertext — encryption happens client-side under the user's passphrase before push, and decryption happens client-side after pull. The server cannot read your data.
+
+## MCP Tools (12)
+
+| Tool | Description |
+|------|-------------|
+| `usrcp_get_state` | Query identity, preferences, projects, timeline |
+| `usrcp_append_event` | Record an interaction event |
+| `usrcp_update_identity` | Update user roles, expertise, communication style (with optional `expected_version` for read-modify-write) |
+| `usrcp_update_preferences` | Update language, timezone, verbosity |
+| `usrcp_update_domain_context` | Store domain-scoped key-value context |
+| `usrcp_set_fact` | Store a free-form schemaless fact under `(domain, namespace, key)` |
+| `usrcp_get_facts` | Read one fact or list all facts in a domain / namespace |
+| `usrcp_search_timeline` | Search via blind index tokens (exact keyword, not semantic) |
+| `usrcp_manage_project` | Create/update tracked projects |
+| `usrcp_audit_log` | View encrypted audit trail |
+| `usrcp_rotate_key` | Rotate master encryption key (re-encrypts all data) |
+| `usrcp_status` | Ledger stats and health (scope-aware: scoped agents see only their domains) |
 
 ## What's Encrypted
 
@@ -108,22 +149,7 @@ Each user gets an independent ledger, passphrase, and MCP server entry.
 
 In passphrase mode, no key file exists on disk. The key is derived via scrypt on startup and zeroed on shutdown.
 
-## MCP Tools (12)
-
-| Tool | Description |
-|------|-------------|
-| `usrcp_get_state` | Query identity, preferences, projects, timeline |
-| `usrcp_append_event` | Record an interaction event |
-| `usrcp_update_identity` | Update user roles, expertise, communication style (with optional `expected_version` for read-modify-write) |
-| `usrcp_update_preferences` | Update language, timezone, verbosity |
-| `usrcp_update_domain_context` | Store domain-scoped key-value context |
-| `usrcp_set_fact` | Store a free-form schemaless fact under `(domain, namespace, key)` |
-| `usrcp_get_facts` | Read one fact or list all facts in a domain / namespace |
-| `usrcp_search_timeline` | Search via blind index tokens (exact keyword, not semantic) |
-| `usrcp_manage_project` | Create/update tracked projects |
-| `usrcp_audit_log` | View encrypted audit trail |
-| `usrcp_rotate_key` | Rotate master encryption key (re-encrypts all data) |
-| `usrcp_status` | Ledger stats and health |
+Each adapter's test suite includes a **ciphertext-at-rest** check: it captures real activity, then opens the SQLite file with raw `better-sqlite3` and asserts no plaintext markers (titles, bodies, URLs, IDs) appear in any encrypted column.
 
 ## Security Architecture
 
@@ -136,37 +162,82 @@ In passphrase mode, no key file exists on disk. The key is derived via scrypt on
 - **Atomic key rotation** — re-encrypts all data in a single transaction
 - **secure_delete pragma** — SQLite zero-fills deleted pages
 - **Master key zeroed** on process shutdown
+- **Scope enforcement** — agents registered with a `--scope` flag see only the domains they're authorized for; `usrcp_status` and timeline queries filter accordingly
+
+Full model in [docs/SECURITY.md](docs/SECURITY.md).
+
+## Editor & CLI Integrations
+
+USRCP works with any MCP-compatible client. The `usrcp init` wizard registers the server entry for editor clients:
+
+| Editor | `--client=` value | Setup doc |
+|--------|-------------------|-----------|
+| Claude Desktop | `claude` (default) | This README |
+| Cursor | `cursor` | [docs/INTEGRATIONS/cursor.md](docs/INTEGRATIONS/cursor.md) |
+| Continue.dev | `continue` | [docs/INTEGRATIONS/continue.md](docs/INTEGRATIONS/continue.md) |
+| Cline (VS Code) | `cline` | [docs/INTEGRATIONS/cline.md](docs/INTEGRATIONS/cline.md) |
+
+Register with multiple clients at once: `usrcp init --client=claude,cursor` or `--client=all`.
+
+For terminal-based MCP-aware CLI agents (Claude Code, Cursor CLI, Codex, Copilot CLI, Cline, Continue, Aider, Antigravity, OpenCode), a single wizard wires them all up:
+
+```bash
+usrcp setup --adapter=terminal
+```
+
+No external accounts or bot tokens required — every terminal session in those agents gets cross-platform memory through the same local ledger.
+
+All clients share the same local ledger per user.
+
+## Other Consumers
+
+- [`usrcp-hermes`](packages/usrcp-hermes) — Python memory-provider plugin for [Hermes Agent](https://github.com/hermesagent/hermes-agent). Adds USRCP as a memory backend so Hermes runs share state with Claude Code, Cursor, etc. Thin wrapper — ledger logic stays in TypeScript.
 
 ## Project Structure
 
 ```
 usrcp/
-├── spec/PROTOCOL.md               # Protocol specification
-├── schemas/                        # JSON schemas (get_state, append_event, handshake)
-├── docs/SECURITY.md                # Security & privacy model
-├── strategy/
-│   ├── GTM.md                      # Go-to-market strategy
-│   └── PITCH.md                    # Investor executive summary
-└── packages/usrcp-local/           # Local MCP server
-    ├── src/
-    │   ├── index.ts                # CLI (init/serve/status + passphrase)
-    │   ├── server.ts               # 10 MCP tools
-    │   ├── ledger.ts               # Encrypted SQLite operations
-    │   ├── encryption.ts           # AES-256-GCM, scrypt, blind index
-    │   ├── crypto.ts               # Ed25519 identity keys
-    │   ├── types.ts                # TypeScript types
-    │   └── __tests__/              # 137 tests
-    └── package.json
+├── spec/
+│   └── PROTOCOL.md                  # Protocol specification
+├── schemas/                          # JSON schemas (get_state, append_event, handshake)
+├── docs/
+│   ├── SECURITY.md                   # Security & privacy model
+│   └── INTEGRATIONS/                 # MCP client integration guides
+├── strategy/                         # GTM, pitch, positioning
+├── packages/
+│   ├── usrcp-local/                  # Local MCP server + encrypted ledger
+│   ├── usrcp-cloud/                  # Hosted ledger for ciphertext-only sync
+│   ├── usrcp-discord/                # Discord capture+reader adapter
+│   ├── usrcp-extension/              # Chrome extension (claude.ai capture)
+│   ├── usrcp-hermes/                 # Hermes Agent memory plugin (Python)
+│   ├── usrcp-imessage/               # iMessage capture+reader (macOS)
+│   ├── usrcp-linear/                 # Linear issues + comments capture
+│   ├── usrcp-obsidian/               # Obsidian vault capture
+│   ├── usrcp-slack/                  # Slack capture+reader
+│   └── usrcp-telegram/               # Telegram capture+reader
+└── sdk/                              # Legacy prototype (Jan-Feb 2026); not the reference impl
 ```
+
+The legacy `sdk/` was a pre-protocol exploration — see [`sdk/README.md`](sdk/README.md) for the historical context. New work should target the `usrcp-local` ledger directly.
 
 ## Tests
 
-```bash
-cd packages/usrcp-local
-npm test        # 211 tests in local + 25 in packages/usrcp-cloud
-```
+| Package | Tests |
+|---------|-------|
+| `usrcp-local` | 338 |
+| `usrcp-obsidian` | 65 |
+| `usrcp-imessage` | 39 |
+| `usrcp-linear` | 38 |
+| `usrcp-cloud` | 30 |
+| `usrcp-extension` | 24 |
+| `usrcp-telegram` | 22 |
+| `usrcp-slack` | 20 |
+| `usrcp-discord` | 14 |
+| **Total** | **590** |
 
-Coverage: ledger CRUD, crypto, MCP server, security boundaries, encryption roundtrip / tamper / domain isolation, audit log, ULID, pruning, multi-user isolation, optimistic concurrency / version conflicts, schemaless facts, HTTPS+bearer transport, sync push/pull, Ed25519 signed-request auth.
+Plus a Python suite in `usrcp-hermes` (`pytest`).
+
+Run a package's suite with `npm test` from inside its directory. Each adapter's `pretest` hook rebuilds `usrcp-local` first so cross-package types stay in sync. Coverage spans: ledger CRUD, crypto roundtrips, tamper detection, domain isolation, audit log, ULID, pruning, multi-user isolation, optimistic concurrency, schemaless facts, scope enforcement, sync push/pull, Ed25519 signed-request auth, and per-adapter capture/idempotency/ciphertext-at-rest checks.
 
 ## Business Model
 
