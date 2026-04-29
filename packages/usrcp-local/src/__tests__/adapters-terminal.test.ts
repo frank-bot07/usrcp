@@ -12,16 +12,28 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 let origHome: string | undefined;
+let origXdgConfig: string | undefined;
 let tmpHome: string;
 
 beforeEach(() => {
   origHome = process.env.HOME;
+  origXdgConfig = process.env.XDG_CONFIG_HOME;
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-terminal-adapter-test-"));
   process.env.HOME = tmpHome;
+  // cline (and any other XDG-aware adapter) reads XDG_CONFIG_HOME first on
+  // Linux. If the runner has it set (GitHub Actions does), the adapter
+  // writes outside tmpHome and the test sees zero files. Pin it under
+  // tmpHome so isolation holds on every platform.
+  process.env.XDG_CONFIG_HOME = path.join(tmpHome, ".config");
 });
 
 afterEach(() => {
   process.env.HOME = origHome;
+  if (origXdgConfig === undefined) {
+    delete process.env.XDG_CONFIG_HOME;
+  } else {
+    process.env.XDG_CONFIG_HOME = origXdgConfig;
+  }
   fs.rmSync(tmpHome, { recursive: true, force: true });
 });
 
