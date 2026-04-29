@@ -48,10 +48,27 @@ The two are complementary, not competitive. Nothing stops an agent from using bo
 
 ## Quickstart
 
-```bash
-cd packages/usrcp-local
-npm install && npm run build && npm link
+### Install
 
+**Homebrew (macOS / Linux)** — recommended for the core CLI:
+
+```bash
+brew install frank-bot07/usrcp/usrcp
+```
+
+This ships the `usrcp` CLI with the inline adapters (`terminal`, `mcp-agent`, `openclaw`). Capture adapters (Discord, Slack, Telegram, iMessage, Obsidian, Linear, Chrome extension) currently require the source-build path below — they'll move under brew in a future release.
+
+**From source** (required for capture adapters today):
+
+```bash
+git clone https://github.com/frank-bot07/usrcp.git
+cd usrcp/packages/usrcp-local
+npm install && npm run build && npm link
+```
+
+### First run
+
+```bash
 # Interactive init — prompts for passphrase by default
 usrcp init
 
