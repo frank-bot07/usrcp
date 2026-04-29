@@ -1,0 +1,74 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - usrcp-cloud
+          - usrcp-discord
+          - usrcp-extension
+          - usrcp-imessage
+          - usrcp-linear
+          - usrcp-local
+          - usrcp-obsidian
+          - usrcp-slack
+          - usrcp-telegram
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: |
+            packages/usrcp-cloud/package-lock.json
+            packages/usrcp-discord/package-lock.json
+            packages/usrcp-extension/package-lock.json
+            packages/usrcp-imessage/package-lock.json
+            packages/usrcp-linear/package-lock.json
+            packages/usrcp-local/package-lock.json
+            packages/usrcp-obsidian/package-lock.json
+            packages/usrcp-slack/package-lock.json
+            packages/usrcp-telegram/package-lock.json
+      # Several packages run `npm run build` against sibling packages in their
+      # pretest hook (most adapters need usrcp-local; usrcp-local needs
+      # usrcp-discord and usrcp-telegram). Install deps in every package so
+      # those sibling builds resolve their own tsc/types.
+      - name: Install deps in all packages
+        run: |
+          for pkg in packages/*/; do
+            if [ -f "$pkg/package.json" ]; then
+              echo "::group::npm ci in $pkg"
+              (cd "$pkg" && npm ci)
+              echo "::endgroup::"
+            fi
+          done
+      - name: Test ${{ matrix.package }}
+        working-directory: packages/${{ matrix.package }}
+        run: npm test
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install hermes (with dev extras)
+        working-directory: packages/usrcp-hermes
+        run: pip install -e '.[dev]'
+      - name: Test usrcp-hermes
+        working-directory: packages/usrcp-hermes
+        run: pytest
