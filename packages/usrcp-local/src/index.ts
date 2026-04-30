@@ -32,6 +32,18 @@ import {
 import { resolveUsrcpBin } from "./adapters/terminal/shared.js";
 import { refreshContextMd } from "./adapters/terminal/context-md.js";
 import { runSetup } from "./setup.js";
+import {
+  takeSnapshot,
+  listSnapshots,
+  pruneSnapshots,
+  shouldTakeLazySnapshot,
+  checkDbIntegrity,
+  restoreSnapshot,
+  summarizeSnapshot,
+  verifySnapshot,
+  DEFAULT_RETENTION,
+} from "./ledger/snapshot.js";
+import { getDefaultDbPath } from "./ledger/helpers.js";
 
 function hasFlag(name: string): boolean {
   return process.argv.some((a) => a === `--${name}`);
@@ -462,6 +474,114 @@ function cmdStatus(): void {
   console.error(`  Platforms:     ${stats.platforms.join(", ") || "(none)"}`);
 }
 
+function cmdSnapshot(): void {
+  migrateLegacyLayout();
+  resolveUserSlug();
+
+  const dbPath = getDefaultDbPath();
+  const snapshotsDir = path.join(getUserDir(), "snapshots");
+
+  if (hasFlag("list")) {
+    const snaps = listSnapshots(snapshotsDir);
+    if (snaps.length === 0) {
+      console.error(`  No snapshots in ${snapshotsDir}`);
+      return;
+    }
+    console.error(`  Snapshots in ${snapshotsDir} (newest first):`);
+    for (const s of snaps) {
+      const kb = (s.sizeBytes / 1024).toFixed(1);
+      console.error(`    ${s.takenAt.toISOString()}  ${kb} KB  ${path.basename(s.path)}`);
+    }
+    return;
+  }
+
+  if (!fs.existsSync(dbPath)) {
+    console.error(`  Error: ledger not found at ${dbPath}. Run: usrcp init`);
+    process.exit(1);
+  }
+
+  try {
+    const meta = takeSnapshot(dbPath, snapshotsDir);
+    const { kept, removed } = pruneSnapshots(snapshotsDir, DEFAULT_RETENTION);
+    console.error(`  Snapshot: ${meta.path} (${(meta.sizeBytes / 1024).toFixed(1)} KB)`);
+    console.error(`  Retained: ${kept.length}; pruned: ${removed.length}.`);
+  } catch (e) {
+    console.error(`  Snapshot failed: ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(1);
+  }
+}
+
+function cmdRestore(): void {
+  migrateLegacyLayout();
+  resolveUserSlug();
+
+  const dbPath = getDefaultDbPath();
+  const snapshotsDir = path.join(getUserDir(), "snapshots");
+
+  if (hasFlag("list")) {
+    const snaps = listSnapshots(snapshotsDir);
+    if (snaps.length === 0) {
+      console.error(`  No snapshots in ${snapshotsDir}`);
+      return;
+    }
+    console.error(`  Available snapshots (newest first):`);
+    for (const s of snaps) {
+      console.error(`    ${s.path}`);
+    }
+    return;
+  }
+
+  const fromArg = getArg("from");
+  if (!fromArg) {
+    console.error(`  Usage: usrcp restore --from=<snapshot-path> [--dry-run]`);
+    console.error(`         usrcp restore --list`);
+    process.exit(1);
+  }
+
+  // Allow either a bare filename (resolved against snapshotsDir) or an
+  // absolute path. Bare filenames are the common case from `--list`.
+  const snapshotPath = path.isAbsolute(fromArg)
+    ? fromArg
+    : path.join(snapshotsDir, fromArg);
+
+  const verifyErr = verifySnapshot(snapshotPath);
+  if (verifyErr) {
+    console.error(`  Error: ${verifyErr}`);
+    process.exit(1);
+  }
+
+  const summary = summarizeSnapshot(snapshotPath);
+
+  if (hasFlag("dry-run")) {
+    console.error(`  Dry run — no changes made.`);
+    console.error(`  Would restore from: ${snapshotPath}`);
+    console.error(`    Events:    ${summary.totalEvents}`);
+    console.error(`    Facts:     ${summary.totalFacts}`);
+    console.error(`    Projects:  ${summary.totalProjects}`);
+    console.error(`    Domains:   ${summary.domains}`);
+    if (summary.identityDisplayName) {
+      console.error(`    Identity:  ${summary.identityDisplayName}`);
+    }
+    if (summary.latestEventAt) {
+      console.error(`    Latest event: ${summary.latestEventAt}`);
+    }
+    return;
+  }
+
+  try {
+    const { preRestorePath } = restoreSnapshot(snapshotPath, dbPath);
+    console.error(`  Restored from: ${snapshotPath}`);
+    console.error(`    Events:    ${summary.totalEvents}`);
+    console.error(`    Facts:     ${summary.totalFacts}`);
+    if (preRestorePath) {
+      console.error(`  Previous ledger saved to: ${preRestorePath}`);
+    }
+  } catch (e) {
+    console.error(`  Restore failed: ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(1);
+  }
+}
+
 const KNOWN_CLIENTS: SupportedClient[] = ["claude", "cursor", "continue", "cline"];
 
 function resolveClients(arg: string): SupportedClient[] {
@@ -571,6 +691,34 @@ async function cmdServe(): Promise<void> {
     console.error("[usrcp] This ledger is passphrase-protected.");
     console.error("[usrcp] Set USRCP_PASSPHRASE env var to unlock.");
     process.exit(1);
+  }
+
+  // Pre-flight: refuse to start on a corrupt DB. Better to surface this to
+  // the user than to begin writing to a damaged ledger.
+  const dbPath = getDefaultDbPath();
+  const snapshotsDir = path.join(getUserDir(), "snapshots");
+  const integrityErr = checkDbIntegrity(dbPath);
+  if (integrityErr) {
+    console.error(`[usrcp] Ledger integrity check failed: ${integrityErr}`);
+    const snaps = listSnapshots(snapshotsDir);
+    if (snaps.length > 0) {
+      console.error(`[usrcp] Latest snapshot: ${snaps[0].path}`);
+      console.error(`[usrcp] Restore with:    usrcp restore --from='${snaps[0].path}'`);
+    } else {
+      console.error("[usrcp] No snapshots available — see ~/.usrcp for backups.");
+    }
+    process.exit(1);
+  }
+
+  // Lazy snapshot: if there's no snapshot in the last 24h, take one before
+  // serving. Belt-and-suspenders for users without a real cron.
+  if (fs.existsSync(dbPath) && shouldTakeLazySnapshot(snapshotsDir, 24 * 3_600_000)) {
+    try {
+      takeSnapshot(dbPath, snapshotsDir);
+      pruneSnapshots(snapshotsDir, DEFAULT_RETENTION);
+    } catch (e) {
+      console.error(`[usrcp] Lazy snapshot skipped: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   const transport = resolveTransport();
@@ -845,6 +993,12 @@ switch (command) {
       process.exit(1);
     });
     break;
+  case "snapshot":
+    cmdSnapshot();
+    break;
+  case "restore":
+    cmdRestore();
+    break;
   default:
     if (!command) {
       cmdServe().catch((err) => {
@@ -864,6 +1018,8 @@ switch (command) {
     config <op>      get / set — manage per-user config (e.g., cloud_endpoint)
     sync <op>        push / pull / status — hosted ledger synchronization
     adapter <op>     add/remove/list terminal MCP registration for CLI agents
+    snapshot         Take an atomic snapshot of the ledger (--list to view existing)
+    restore          Restore from a snapshot (--from=<path> [--dry-run]; --list to view)
 
   Options:
     --user <slug>           User slug (default: "default"; required if >1 user exists)
