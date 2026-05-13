@@ -426,16 +426,39 @@ async function pushAtomic(
 
     // Upsert domain_maps first — pulling device needs them before events.
     // Only advance version on conflict (last-write-wins by version number).
-    for (const dm of domainMaps) {
+    if (domainMaps.length > 0) {
+      // De-duplicate in memory first: keep the highest version for each pseudonym.
+      // This avoids Postgres error: ON CONFLICT DO UPDATE command cannot affect the same row twice.
+      const map = new Map<string, PushedDomainMap>();
+      for (const dm of domainMaps) {
+        const existing = map.get(dm.pseudonym);
+        if (!existing || dm.version >= existing.version) {
+          map.set(dm.pseudonym, dm);
+        }
+      }
+      const deduped = Array.from(map.values());
+
+      const cols = 4;
+      const valuesSql = deduped
+        .map((_, i) => {
+          const base = i * cols;
+          return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4})`;
+        })
+        .join(", ");
+      const params: any[] = [];
+      for (const dm of deduped) {
+        params.push(userPublicKey, dm.pseudonym, dm.encrypted_name, dm.version);
+      }
+
       await client.query(
         `INSERT INTO domain_maps (user_public_key, pseudonym, encrypted_name, version)
-         VALUES ($1, $2, $3, $4)
+         VALUES ${valuesSql}
          ON CONFLICT (user_public_key, pseudonym) DO UPDATE SET
            encrypted_name = EXCLUDED.encrypted_name,
            version = EXCLUDED.version,
            updated_at = now()
          WHERE domain_maps.version <= EXCLUDED.version`,
-        [userPublicKey, dm.pseudonym, dm.encrypted_name, dm.version]
+        params
       );
     }
 
