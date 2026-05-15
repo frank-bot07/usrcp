@@ -82,12 +82,15 @@ jobs:
           cache-dependency-path: |
             packages/usrcp-imessage/package-lock.json
             packages/usrcp-local/package-lock.json
+            packages/usrcp-stream/package-lock.json
       - name: Upgrade npm
         run: npm install -g npm@latest
-      # usrcp-imessage's pretest builds usrcp-local, so install local too.
+      # usrcp-imessage's pretest now builds usrcp-local AND usrcp-stream
+      # (PR #42 wired stream-mode into the adapters). Install all three.
       - name: Install deps
         run: |
           (cd packages/usrcp-local && npm ci)
+          (cd packages/usrcp-stream && npm ci)
           (cd packages/usrcp-imessage && npm ci)
       - name: Test usrcp-imessage
         working-directory: packages/usrcp-imessage
