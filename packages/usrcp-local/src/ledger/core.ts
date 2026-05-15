@@ -67,6 +67,16 @@ export class Ledger {
     }
   }
 
+  /**
+   * Returns the in-memory master key. Used by sibling packages (e.g.
+   * `usrcp-stream`) that share the same passphrase + keyspace and need to
+   * derive their own per-domain keys via `deriveDomainEncryptionKey`. The
+   * returned Buffer is the live key; callers must not mutate it.
+   */
+  getMasterKey(): Buffer {
+    return this.masterKey;
+  }
+
   /** @internal */
   encryptForDomain(plaintext: string, domain: string): string {
     const key = deriveDomainEncryptionKey(this.masterKey, domain);

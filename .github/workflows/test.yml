@@ -27,6 +27,7 @@ jobs:
           - usrcp-local
           - usrcp-obsidian
           - usrcp-slack
+          - usrcp-stream
           - usrcp-telegram
     steps:
       - uses: actions/checkout@v4
@@ -42,6 +43,7 @@ jobs:
             packages/usrcp-local/package-lock.json
             packages/usrcp-obsidian/package-lock.json
             packages/usrcp-slack/package-lock.json
+            packages/usrcp-stream/package-lock.json
             packages/usrcp-telegram/package-lock.json
       # Need npm 11+ so optionalDependencies with platform constraints
       # (e.g. esbuild's @esbuild/openharmony-arm64) get filtered out

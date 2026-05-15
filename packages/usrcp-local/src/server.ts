@@ -1047,7 +1047,52 @@ export function createServer(
 
   registerAll(server, defs, opts, ledger);
 
-  return { server, shutdown, ledger };
+  // Optional sibling: usrcp-stream registers its own MCP tools onto the
+  // same server when the package is installed. Sharing the masterKey
+  // (via ledger.getMasterKey()) means stream's per-domain HKDF keys
+  // ride the same passphrase as the ledger; the user only ever derives
+  // the master key once per process. Failures during stream registration
+  // log and continue; the ledger keeps serving regardless.
+  let streamShutdown: (() => void) | null = null;
+  try {
+    // usrcp-stream is an optional peer, not a declared dependency. If
+    // the package isn't installed, MODULE_NOT_FOUND comes back and we
+    // silently skip. Any *other* error means stream IS present but
+    // failed to register, and we log it loudly so misconfigurations
+    // don't disappear.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-explicit-any
+    const streamMod = require("usrcp-stream/dist/register.js") as any;
+    if (streamMod && typeof streamMod.registerStreamTools === "function") {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { getUserDir } = require("./encryption.js");
+      const reg = streamMod.registerStreamTools(server, {
+        masterKey: ledger.getMasterKey(),
+        ledger,
+        userDir: getUserDir(),
+        serveOptions: opts,
+      });
+      streamShutdown = reg.shutdown;
+    }
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    if (e?.code !== "MODULE_NOT_FOUND" && e?.code !== "ERR_MODULE_NOT_FOUND") {
+      console.error(
+        "[usrcp] usrcp-stream is installed but failed to register:",
+        e
+      );
+    }
+  }
+
+  const wrappedShutdown = () => {
+    if (streamShutdown) {
+      try {
+        streamShutdown();
+      } catch {}
+    }
+    shutdown();
+  };
+
+  return { server, shutdown: wrappedShutdown, ledger };
 }
 
 // ----------------------------------------------------------------------------
