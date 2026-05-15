@@ -69,3 +69,19 @@ USRCP domains, and we need one deterministic hash space for
 The interactive first-run prompt uses masked input (characters echo as
 `*`) for the two secrets so they don't land in shell history or
 terminal scrollback.
+
+## Stream mode (Phase 6)
+
+When `usrcp-stream` is installed alongside this adapter, you can choose where captured messages land via `--mode`:
+
+- `--mode ledger`  — user-only messages, written to the local USRCP ledger. Existing behavior.
+- `--mode stream`  — bot-skipped, allowlisted, **every human's messages** (yours + everyone else's) flow into the encrypted `stream.db`. No ledger writes.
+- `--mode both`    — ledger keeps the user-only filter; stream captures all human messages on allowlisted channels. **Default when `usrcp-stream` is installed.**
+
+If `usrcp-stream` is not installed, the default is `--mode ledger`. Passing `--mode stream` or `--mode both` without the package installed will error at startup with a message instructing you to install it.
+
+```bash
+USRCP_PASSPHRASE=… node dist/index.js --mode both
+```
+
+Stream events on the same `(surface, channel_ref)` within `same_channel_window_ms` are stitched into one thread by the cross-surface stitcher; see `packages/usrcp-stream/README.md` for the keyspace, threat model, and recall surface.

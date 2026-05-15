@@ -25,13 +25,59 @@
 import { execSync } from "node:child_process";
 import { Bot, type Context } from "grammy";
 import { Ledger } from "usrcp-local/dist/ledger/index.js";
+import { getUserDir } from "usrcp-local/dist/encryption.js";
 import { loadConfig } from "./config.js";
 import { captureMessage, type CaptureMessage } from "./capture.js";
+import { captureMessageToStream } from "./stream-capture.js";
 import { composeAndReply } from "./reader.js";
 import { AnthropicLlm } from "./llm.js";
 
 function hasFlag(name: string): boolean {
   return process.argv.includes(`--${name}`);
+}
+
+function getArg(name: string): string | undefined {
+  const args = process.argv;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === `--${name}` && args[i + 1]) return args[i + 1];
+    if (args[i].startsWith(`--${name}=`)) {
+      return args[i].split("=").slice(1).join("=");
+    }
+  }
+  return undefined;
+}
+
+export type CaptureMode = "ledger" | "stream" | "both";
+
+export function streamInstalled(): boolean {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    require.resolve("usrcp-stream/dist/capture-client.js");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function resolveMode(
+  explicit: string | undefined,
+  streamPresent: boolean
+): CaptureMode {
+  if (explicit) {
+    if (explicit !== "ledger" && explicit !== "stream" && explicit !== "both") {
+      throw new Error(
+        `--mode must be one of ledger|stream|both, got '${explicit}'`
+      );
+    }
+    if (!streamPresent && (explicit === "stream" || explicit === "both")) {
+      throw new Error(
+        `--mode '${explicit}' requires usrcp-stream to be installed. ` +
+          `Install it (npm install usrcp-stream from this package) or use --mode ledger.`
+      );
+    }
+    return explicit;
+  }
+  return streamPresent ? "both" : "ledger";
 }
 
 /**
@@ -57,12 +103,17 @@ function toCaptureMessage(ctx: Context): CaptureMessage {
     chatName = chat.username;
   }
 
+  const displayName = [from.first_name, from.last_name]
+    .filter(Boolean)
+    .join(" ") || from.username;
+
   return {
     id: String(msg.message_id),
     content: msg.text ?? "",
-    author: { id: String(from.id), bot: from.is_bot },
+    author: { id: String(from.id), bot: from.is_bot, displayName },
     channel: { id: String(chat.id), name: chatName },
     thread: msg.message_thread_id != null ? { id: String(msg.message_thread_id) } : null,
+    ts_ms: msg.date * 1000,
   };
 }
 
@@ -115,6 +166,28 @@ async function main() {
   const ledger = new Ledger(undefined, passphrase);
   const llm = new AnthropicLlm({ apiKey: config.anthropic_api_key });
 
+  const mode = resolveMode(getArg("mode"), streamInstalled());
+  console.error(
+    `[usrcp-telegram] capture mode: ${mode}` +
+      (mode === "both"
+        ? " (ledger keeps user-only filter; stream captures all humans)"
+        : "")
+  );
+
+  let streamClient: {
+    capture: (event: unknown) => Promise<unknown>;
+    close: () => void;
+  } | null = null;
+  if (mode === "stream" || mode === "both") {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-explicit-any
+    const streamMod = require("usrcp-stream/dist/capture-client.js") as any;
+    streamClient = streamMod.createStreamCaptureClient(
+      ledger.getMasterKey(),
+      getUserDir(),
+      { ledger }
+    );
+  }
+
   const bot = new Bot(config.telegram_bot_token);
   // Must call bot.init() before any handler accesses bot.botInfo.
   await bot.init();
@@ -132,14 +205,30 @@ async function main() {
     try {
       const cm = toCaptureMessage(ctx);
 
-      // Capture: record the user's own message if it matches the filter.
-      const captureOutcome = await captureMessage(ledger, cm, config, llm);
-      if (captureOutcome.captured) {
-        console.error(
-          `[usrcp-telegram] captured message ${cm.id} in chat ${cm.channel.id} ` +
-          `→ event ${captureOutcome.event_id} (seq ${captureOutcome.ledger_sequence}` +
-          `${captureOutcome.duplicate ? ", duplicate" : ""})`
+      if (mode === "ledger" || mode === "both") {
+        const captureOutcome = await captureMessage(ledger, cm, config, llm);
+        if (captureOutcome.captured) {
+          console.error(
+            `[usrcp-telegram] ledger captured message ${cm.id} in chat ${cm.channel.id} ` +
+              `→ event ${captureOutcome.event_id} (seq ${captureOutcome.ledger_sequence}` +
+              `${captureOutcome.duplicate ? ", duplicate" : ""})`
+          );
+        }
+      }
+
+      if (streamClient && (mode === "stream" || mode === "both")) {
+        const streamOutcome = await captureMessageToStream(
+          streamClient as Parameters<typeof captureMessageToStream>[0],
+          cm,
+          config
         );
+        if (streamOutcome.captured) {
+          console.error(
+            `[usrcp-telegram] stream captured message ${cm.id} (${streamOutcome.side}) ` +
+              `→ event ${streamOutcome.event_uuid}` +
+              (streamOutcome.thread_id ? ` (thread ${streamOutcome.thread_id})` : "")
+          );
+        }
       }
 
       // Reply: DM, @-mention, text_mention entity, or reply-to-bot.
@@ -169,6 +258,7 @@ async function main() {
   const shutdown = async (signal: string) => {
     console.error(`[usrcp-telegram] ${signal} received, shutting down.`);
     try { await bot.stop(); } catch { /* ignore */ }
+    try { streamClient?.close(); } catch { /* ignore */ }
     try { ledger.close(); } catch { /* ignore */ }
     process.exit(0);
   };
@@ -180,7 +270,9 @@ async function main() {
   await bot.start();
 }
 
-main().catch((err) => {
-  console.error("[usrcp-telegram] fatal:", err instanceof Error ? err.message : err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error("[usrcp-telegram] fatal:", err instanceof Error ? err.message : err);
+    process.exit(1);
+  });
+}

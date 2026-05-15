@@ -56,6 +56,7 @@ function mkMsg(overrides: Partial<CaptureMessage> & { channel: CaptureMessage["c
     content: "hello from Telegram",
     author: { id: USER_ID, bot: false },
     thread: null,
+    ts_ms: Date.now(),
     ...overrides,
   };
 }

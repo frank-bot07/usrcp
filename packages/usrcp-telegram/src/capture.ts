@@ -34,9 +34,12 @@ import type { TelegramConfig } from "./config.js";
 export interface CaptureMessage {
   id: string;
   content: string;
-  author: { id: string; bot: boolean };
+  author: { id: string; bot: boolean; displayName?: string };
   channel: { id: string; name?: string };
   thread?: { id: string } | null;
+  // Wall-clock ms timestamp from `ctx.message.date * 1000` (Telegram
+  // sends seconds). Required for stream-mode windowing.
+  ts_ms: number;
 }
 
 // Subset of Ledger we need. Duck-typed so tests can pass a fresh Ledger

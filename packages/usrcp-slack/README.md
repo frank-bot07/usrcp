@@ -49,3 +49,21 @@ Each captured message becomes a `timeline_events` row:
 - `thread_id` — optional Slack `thread_ts`
 - `external_user_id` — Slack user ID
 - Message body encrypted under the global key
+
+## Stream mode (Phase 6)
+
+When `usrcp-stream` is installed alongside this adapter, you can choose where captured messages land via `--mode`:
+
+- `--mode ledger`  — user-only messages, written to the local USRCP ledger. Existing behavior.
+- `--mode stream`  — bot-skipped (`bot_id` events excluded), allowlisted, **every human's messages** (yours + everyone else's) flow into the encrypted `stream.db`. No ledger writes.
+- `--mode both`    — ledger keeps the user-only filter; stream captures all human messages on allowlisted channels. **Default when `usrcp-stream` is installed.**
+
+DMs (`channel_type === "im"`) are subject to the same `allowlisted_channels` rule as other channels: add the DM channel ID and both inbound (other party) and outbound (your own) DMs land in stream. Replies to DMs are gated separately by the dedicated DM listener and do not require allowlist membership.
+
+If `usrcp-stream` is not installed, the default is `--mode ledger`. Passing `--mode stream` or `--mode both` without the package installed will error at startup with a message instructing you to install it.
+
+```bash
+USRCP_PASSPHRASE=… node dist/index.js --mode both
+```
+
+Stream events on the same `(surface, channel_ref)` within `same_channel_window_ms` are stitched into one thread by the cross-surface stitcher; see `packages/usrcp-stream/README.md` for the keyspace, threat model, and recall surface.

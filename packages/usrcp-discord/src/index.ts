@@ -13,13 +13,69 @@
 import { execSync } from "node:child_process";
 import { Client, GatewayIntentBits, Events, type Message } from "discord.js";
 import { Ledger } from "usrcp-local/dist/ledger/index.js";
+import { getUserDir } from "usrcp-local/dist/encryption.js";
 import { loadConfig } from "./config.js";
 import { captureMessage, type CaptureMessage } from "./capture.js";
+import { captureMessageToStream } from "./stream-capture.js";
 import { composeAndReply } from "./reader.js";
 import { AnthropicLlm } from "./llm.js";
 
 function hasFlag(name: string): boolean {
   return process.argv.includes(`--${name}`);
+}
+
+function getArg(name: string): string | undefined {
+  const args = process.argv;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === `--${name}` && args[i + 1]) return args[i + 1];
+    if (args[i].startsWith(`--${name}=`)) {
+      return args[i].split("=").slice(1).join("=");
+    }
+  }
+  return undefined;
+}
+
+export type CaptureMode = "ledger" | "stream" | "both";
+
+/**
+ * Detect whether usrcp-stream is resolvable from this package. The Phase 6
+ * default is `--mode=both` when it is, `--mode=ledger` when it isn't.
+ * The check is `require.resolve` only (no actual load), so a fresh
+ * checkout without stream installed remains a zero-cost ledger-only run.
+ */
+export function streamInstalled(): boolean {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    require.resolve("usrcp-stream/dist/capture-client.js");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resolve the effective capture mode. Explicit `--mode=X` wins; otherwise
+ * default to `both` if stream is installed, `ledger` if it isn't.
+ */
+export function resolveMode(
+  explicit: string | undefined,
+  streamPresent: boolean
+): CaptureMode {
+  if (explicit) {
+    if (explicit !== "ledger" && explicit !== "stream" && explicit !== "both") {
+      throw new Error(
+        `--mode must be one of ledger|stream|both, got '${explicit}'`
+      );
+    }
+    if (!streamPresent && (explicit === "stream" || explicit === "both")) {
+      throw new Error(
+        `--mode '${explicit}' requires usrcp-stream to be installed. ` +
+          `Install it (npm install usrcp-stream from this package) or use --mode ledger.`
+      );
+    }
+    return explicit;
+  }
+  return streamPresent ? "both" : "ledger";
 }
 
 /**
@@ -31,7 +87,11 @@ function toCaptureMessage(m: Message): CaptureMessage {
   return {
     id: m.id,
     content: m.content,
-    author: { id: m.author.id, bot: m.author.bot },
+    author: {
+      id: m.author.id,
+      bot: m.author.bot,
+      displayName: m.author.globalName ?? m.author.username,
+    },
     channel: {
       id: m.channelId,
       // Text channels have .name; DMs/threads may not.
@@ -40,6 +100,7 @@ function toCaptureMessage(m: Message): CaptureMessage {
     guild: m.guild ? { id: m.guild.id, name: m.guild.name } : null,
     // thread on a Message is either a ThreadChannel or null
     thread: m.thread ? { id: m.thread.id } : null,
+    ts_ms: m.createdTimestamp,
   };
 }
 
@@ -62,7 +123,32 @@ async function main() {
   const ledger = new Ledger(undefined, passphrase);
   const llm = new AnthropicLlm({ apiKey: config.anthropic_api_key });
 
-  const client = new Client({
+  const mode = resolveMode(getArg("mode"), streamInstalled());
+  console.error(
+    `[usrcp-discord] capture mode: ${mode}` +
+      (mode === "both"
+        ? " (ledger keeps user-only filter; stream captures all humans)"
+        : "")
+  );
+
+  // Construct the stream client only when the mode requires it. Lazy
+  // require dodges the import when --mode=ledger so users without
+  // usrcp-stream installed see no module-load failure.
+  let streamClient: {
+    capture: (event: unknown) => Promise<unknown>;
+    close: () => void;
+  } | null = null;
+  if (mode === "stream" || mode === "both") {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-explicit-any
+    const streamMod = require("usrcp-stream/dist/capture-client.js") as any;
+    streamClient = streamMod.createStreamCaptureClient(
+      ledger.getMasterKey(),
+      getUserDir(),
+      { ledger }
+    );
+  }
+
+  const discordClient = new Client({
     intents: [
       GatewayIntentBits.Guilds,
       GatewayIntentBits.GuildMessages,
@@ -71,28 +157,46 @@ async function main() {
     ],
   });
 
-  client.once(Events.ClientReady, (c) => {
+  discordClient.once(Events.ClientReady, (c) => {
     console.error(`[usrcp-discord] Logged in as ${c.user.tag}`);
     console.error(`[usrcp-discord] Listening on channels: ${config.allowlisted_channels.join(", ")}`);
     console.error(`[usrcp-discord] Capturing messages from user: ${config.user_id}`);
   });
 
-  client.on(Events.MessageCreate, async (msg) => {
+  discordClient.on(Events.MessageCreate, async (msg) => {
     try {
       const cm = toCaptureMessage(msg);
 
-      // Capture: record the user's own message if it matches the filter.
-      const captureOutcome = await captureMessage(ledger, cm, config, llm);
-      if (captureOutcome.captured) {
-        console.error(
-          `[usrcp-discord] captured message ${cm.id} in channel ${cm.channel.id} ` +
-          `→ event ${captureOutcome.event_id} (seq ${captureOutcome.ledger_sequence}` +
-          `${captureOutcome.duplicate ? ", duplicate" : ""})`
+      // Ledger path (existing behavior, user-only filtered).
+      if (mode === "ledger" || mode === "both") {
+        const captureOutcome = await captureMessage(ledger, cm, config, llm);
+        if (captureOutcome.captured) {
+          console.error(
+            `[usrcp-discord] ledger captured message ${cm.id} in channel ${cm.channel.id} ` +
+              `→ event ${captureOutcome.event_id} (seq ${captureOutcome.ledger_sequence}` +
+              `${captureOutcome.duplicate ? ", duplicate" : ""})`
+          );
+        }
+      }
+
+      // Stream path (bidirectional: bots/empty/allowlist filters only).
+      if (streamClient && (mode === "stream" || mode === "both")) {
+        const streamOutcome = await captureMessageToStream(
+          streamClient as Parameters<typeof captureMessageToStream>[0],
+          cm,
+          config
         );
+        if (streamOutcome.captured) {
+          console.error(
+            `[usrcp-discord] stream captured message ${cm.id} (${streamOutcome.side}) ` +
+              `→ event ${streamOutcome.event_uuid}` +
+              (streamOutcome.thread_id ? ` (thread ${streamOutcome.thread_id})` : "")
+          );
+        }
       }
 
       // Reply: if the bot is @-mentioned, compose and post a context-aware reply.
-      if (client.user && msg.mentions.has(client.user) && !msg.author.bot) {
+      if (discordClient.user && msg.mentions.has(discordClient.user) && !msg.author.bot) {
         const replyOutcome = await composeAndReply(
           ledger,
           cm,
@@ -115,17 +219,20 @@ async function main() {
 
   const shutdown = async (signal: string) => {
     console.error(`[usrcp-discord] ${signal} received, shutting down.`);
-    try { await client.destroy(); } catch { /* ignore */ }
+    try { await discordClient.destroy(); } catch { /* ignore */ }
+    try { streamClient?.close(); } catch { /* ignore */ }
     try { ledger.close(); } catch { /* ignore */ }
     process.exit(0);
   };
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
 
-  await client.login(config.discord_bot_token);
+  await discordClient.login(config.discord_bot_token);
 }
 
-main().catch((err) => {
-  console.error("[usrcp-discord] fatal:", err instanceof Error ? err.message : err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error("[usrcp-discord] fatal:", err instanceof Error ? err.message : err);
+    process.exit(1);
+  });
+}
