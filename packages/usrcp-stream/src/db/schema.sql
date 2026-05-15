@@ -1,0 +1,1 @@
+-- Placeholder. Real schema lands in Phase 2.
