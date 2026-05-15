@@ -1,0 +1,46 @@
+{
+  "name": "usrcp-claude-code",
+  "version": "0.0.1",
+  "description": "USRCP capture adapter for Claude Code CLI - tails ~/.claude/projects/<dir>/*.jsonl session transcripts into usrcp-stream",
+  "main": "dist/index.js",
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts"
+  ],
+  "bin": {
+    "usrcp-claude-code": "dist/index.js"
+  },
+  "scripts": {
+    "prebuild": "(cd ../usrcp-local && npm run build) && (cd ../usrcp-stream && npm run build)",
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "lint": "tsc --noEmit",
+    "pretest": "(cd ../usrcp-local && npm run build) && (cd ../usrcp-stream && npm run build)",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "usrcp",
+    "claude-code",
+    "adapter",
+    "memory",
+    "stream"
+  ],
+  "author": "USRCP Contributors",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "usrcp-local": "file:../usrcp-local",
+    "usrcp-stream": "file:../usrcp-stream"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/node": "22.19.17",
+    "better-sqlite3": "*",
+    "typescript": "5.9.3",
+    "vitest": "4.1.4"
+  }
+}

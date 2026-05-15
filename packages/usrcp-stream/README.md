@@ -77,16 +77,16 @@ The API key is stored inside the encrypted `stream-config.toml`, never on the co
 
 ## Capture surface coverage
 
-The four existing adapter packages can write into stream via `--mode stream` or `--mode both` (see each package's `README.md`):
-
-| Surface | Package | Default when stream installed |
+| Surface | Package | Notes |
 |---|---|---|
-| Discord | `usrcp-discord` | `--mode both` |
-| Telegram | `usrcp-telegram` | `--mode both` |
-| iMessage | `usrcp-imessage` | `--mode both` |
-| Slack | `usrcp-slack` | `--mode both` |
-
-The build prompt also called for capture adapters for `claude-desktop`, `cursor`, and `vscode`. These are **deferred to a separate PR**: Claude Desktop's session data lives in IndexedDB / Local Storage with no plaintext transcripts, Cursor's `History/*/entries.json` is undocumented CRDT-on-text (not turn boundaries), and `usrcp-vscode` is read-only with no event-emit hook. Real capture for any of those is reverse-engineering work that doesn't fit "minimal adapter."
+| Discord | `usrcp-discord` | `--mode both` default; ledger user-only, stream both sides |
+| Telegram | `usrcp-telegram` | `--mode both` default |
+| iMessage | `usrcp-imessage` | `--mode both` default; no bot filter (iMessage has none) |
+| Slack | `usrcp-slack` | `--mode both` default; DMs respect channel allowlist |
+| Claude Code CLI | `usrcp-claude-code` | Stream-only (no ledger destination for turn content); per-project allowlist; tails `~/.claude/projects/<dir>/*.jsonl` |
+| Claude Desktop (GUI) | - | Deferred. Transcripts in LevelDB binary blobs under `IndexedDB/`; plaintext JSON is metadata only. Real capture needs LevelDB extraction + reverse-engineering Anthropic's schema. |
+| Cursor | - | Deferred indefinitely. Chats live in `state.vscdb` (SQLite, undocumented schema); brittle, low value on observed machines. |
+| VS Code | - | Deferred. `usrcp-vscode` is read-only; needs an event-emit hook in the extension before capture is possible. |
 
 ## Configuration
 
