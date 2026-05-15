@@ -1,34 +1,19 @@
 #!/usr/bin/env node
 
-import * as fs from "node:fs";
-import * as path from "node:path";
-import * as TOML from "@iarna/toml";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   initializeMasterKey,
   getUserDir,
-  safeWriteFile,
-  encrypt,
-  decrypt,
-  isEncrypted,
-  deriveDomainEncryptionKey,
 } from "usrcp-local/dist/encryption.js";
 import { createStreamServer } from "./server.js";
 import { openStreamDb, closeStreamDb } from "./db/index.js";
-import { OllamaEmbedder, pingOllama } from "./embeddings/ollama.js";
-
-interface StreamConfig {
-  embedding: {
-    provider: "ollama" | "openai" | "voyage";
-    model?: string;
-    host?: string;
-    vendor_consent?: boolean;
-  };
-}
-
-function configPath(): string {
-  return path.join(getUserDir(), "stream-config.toml");
-}
+import { pingOllama } from "./embeddings/ollama.js";
+import {
+  loadConfig,
+  saveConfig,
+  configPath,
+  type StreamConfig,
+} from "./config-io.js";
 
 function hasFlag(name: string): boolean {
   return process.argv.some((a) => a === `--${name}`);
@@ -58,22 +43,6 @@ function getPassphrase(): string | undefined {
     return fromArg;
   }
   return undefined;
-}
-
-function loadConfig(masterKey: Buffer): StreamConfig | null {
-  const p = configPath();
-  if (!fs.existsSync(p)) return null;
-  const raw = fs.readFileSync(p, "utf-8");
-  const key = deriveDomainEncryptionKey(masterKey, "stream-config");
-  const plaintext = isEncrypted(raw.trim()) ? decrypt(raw.trim(), key) : raw;
-  return TOML.parse(plaintext) as unknown as StreamConfig;
-}
-
-function saveConfig(masterKey: Buffer, config: StreamConfig): void {
-  const tomlText = TOML.stringify(config as unknown as TOML.JsonMap);
-  const key = deriveDomainEncryptionKey(masterKey, "stream-config");
-  const ciphertext = encrypt(tomlText, key);
-  safeWriteFile(configPath(), Buffer.from(ciphertext, "utf-8"), 0o600);
 }
 
 async function cmdInit(): Promise<number> {
@@ -125,13 +94,13 @@ async function cmdInit(): Promise<number> {
       default: false,
     });
     if (!consent) {
-      console.error("[usrcp-stream] aborted — no consent for vendor provider.");
+      console.error("[usrcp-stream] aborted - no consent for vendor provider.");
       return 1;
     }
     config.embedding.vendor_consent = true;
     const apiKey = await password({ message: `${provider} API key:` });
     if (!apiKey) {
-      console.error("[usrcp-stream] aborted — no API key supplied.");
+      console.error("[usrcp-stream] aborted - no API key supplied.");
       return 1;
     }
     // The API key is stored INSIDE the encrypted config file (everything
@@ -141,8 +110,9 @@ async function cmdInit(): Promise<number> {
 
   const passphrase = getPassphrase();
   const masterKey = initializeMasterKey(passphrase);
-  saveConfig(masterKey, config);
-  console.error(`[usrcp-stream] config written to ${configPath()}`);
+  const userDir = getUserDir();
+  saveConfig(masterKey, userDir, config);
+  console.error(`[usrcp-stream] config written to ${configPath(userDir)}`);
   return 0;
 }
 
@@ -153,7 +123,7 @@ async function cmdServe(): Promise<number> {
   const noAudit = hasFlag("no-audit");
   const agentId = getArg("agent-id");
 
-  const { server, shutdown } = await createStreamServer(passphrase, {
+  const { server, shutdown } = createStreamServer(passphrase, {
     scopes,
     readonly,
     noAudit,
@@ -198,9 +168,9 @@ async function cmdStatus(): Promise<number> {
 
   let config: StreamConfig | null = null;
   try {
-    config = loadConfig(masterKey);
+    config = loadConfig(masterKey, userDir);
   } catch {
-    // ignored — partial config or first run
+    // ignored - partial config or first run
   }
 
   const out = {

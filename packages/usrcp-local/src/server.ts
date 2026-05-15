@@ -1050,12 +1050,12 @@ export function createServer(
   // Optional sibling: usrcp-stream registers its own MCP tools onto the
   // same server when the package is installed. Sharing the masterKey
   // (via ledger.getMasterKey()) means stream's per-domain HKDF keys
-  // ride the same passphrase as the ledger — the user only ever derives
+  // ride the same passphrase as the ledger; the user only ever derives
   // the master key once per process. Failures during stream registration
   // log and continue; the ledger keeps serving regardless.
   let streamShutdown: (() => void) | null = null;
   try {
-    // usrcp-stream is an optional peer — not a declared dependency. If
+    // usrcp-stream is an optional peer, not a declared dependency. If
     // the package isn't installed, MODULE_NOT_FOUND comes back and we
     // silently skip. Any *other* error means stream IS present but
     // failed to register, and we log it loudly so misconfigurations

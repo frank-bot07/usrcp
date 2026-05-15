@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { StreamHandle } from "../db/index.js";
 import type { EmbeddingProvider } from "../embeddings/provider.js";
 import type { Stitcher } from "../stitch/thread.js";
+import type { EntityResolver } from "../stitch/entity.js";
 import { captureEvent } from "../capture/ingest.js";
 import {
   MAX_STRING_SHORT,
@@ -14,7 +15,8 @@ import { okResponse, errorResponse, type StreamToolDef } from "./types.js";
 export function streamCapture(
   handle: StreamHandle,
   embedder: EmbeddingProvider | null,
-  stitcher: Stitcher | null
+  stitcher: Stitcher | null,
+  entityResolver: EntityResolver | null = null
 ): StreamToolDef {
   return {
     name: "stream_capture",
@@ -55,6 +57,7 @@ export function streamCapture(
           {
             handle,
             embedder,
+            entityResolver,
             stitch: stitcher ? (i) => stitcher.stitch(i) : undefined,
           },
           params

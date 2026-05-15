@@ -50,7 +50,7 @@ describe("vector-search", () => {
     const embedder = new OllamaEmbedder();
 
     // 9 events: 3 about React performance, 3 about Postgres indexing,
-    // 3 about pet care. The query is a paraphrase of one cluster — the
+    // 3 about pet care. The query is a paraphrase of one cluster - the
     // top-3 hits should be that cluster.
     const reactCluster = [
       "React rerenders are killing my list view performance",

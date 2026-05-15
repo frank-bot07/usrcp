@@ -70,7 +70,7 @@ describe("cross-surface stitching", () => {
       .prepare("SELECT thread_id, member_count, surfaces FROM threads WHERE thread_id = ?")
       .get(e1.thread_id!) as { thread_id: string; member_count: number; surfaces: string };
     expect(threadRow.member_count).toBe(2);
-    // We don't decrypt-assert surfaces here — already exercised in
+    // We don't decrypt-assert surfaces here - already exercised in
     // encrypted-rows.test.ts. The member_count is the load-bearing check.
   });
 
@@ -100,7 +100,7 @@ describe("cross-surface stitching", () => {
         channel_ref: { guild: "g2", channel: "c9" },
         side: "inbound",
         author_ref: { id: "u9" },
-        content: "totally unrelated topic — banana bread recipe",
+        content: "totally unrelated topic - banana bread recipe",
         content_kind: "text",
         ts_ms: baseTs + 8 * 60 * 60 * 1000,
         entity_refs: ["p_baking"],
@@ -134,7 +134,7 @@ describe("cross-surface stitching", () => {
       }
     );
 
-    // 30h later — outside both the 24h entity window and recency tau.
+    // 30h later - outside both the 24h entity window and recency tau.
     const e2 = await captureEvent(
       { handle, embedder: null, stitch: stitchAdapter },
       {

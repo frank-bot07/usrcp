@@ -49,10 +49,10 @@ usrcp-stream reuses the cryptographic primitives in `usrcp-local/src/encryption.
 
 ### What is encrypted on disk
 
-- Event content, channel references, author references, entity references — every TEXT column derived from user input goes through `encryptForColumn` with HKDF domain `stream-events`.
-- Thread surfaces, entity references, and summaries — HKDF domain `stream-threads`.
-- Active-surface channel references — HKDF domain `stream-surface`.
-- The stream config TOML file — HKDF domain `stream-config`.
+- Event content, channel references, author references, entity references - every TEXT column derived from user input goes through `encryptForColumn` with HKDF domain `stream-events`.
+- Thread surfaces, entity references, and summaries - HKDF domain `stream-threads`.
+- Active-surface channel references - HKDF domain `stream-surface`.
+- The stream config TOML file - HKDF domain `stream-config`.
 
 ### What is NOT encrypted on disk
 
@@ -67,11 +67,11 @@ usrcp-stream reuses the cryptographic primitives in `usrcp-local/src/encryption.
 
 The default embedding provider is Ollama running on `localhost:11434`. No plaintext ever leaves the machine in this configuration.
 
-Opt-in providers (OpenAI, Voyage AI) require:
+Opt-in providers (OpenAI, Voyage AI) require ALL of:
 
-1. An explicit `--embedding-provider <vendor>` flag at init, AND
-2. A confirmation prompt that names the vendor and warns "plaintext leaves your machine. Continue?", AND
-3. A literal `vendorConsent: true` field in the provider constructor.
+1. The provider must be selected at init (either interactively from the embedding-provider menu, or non-interactively via `--embedding-provider <vendor>`).
+2. A confirmation prompt that names the vendor and warns "plaintext leaves your machine. Continue?". Default answer is no.
+3. A literal `vendorConsent: true` field in the provider constructor (the init flow injects this only after the prompt is cleared).
 
 The API key is stored inside the encrypted `stream-config.toml`, never on the command line and never in environment variables that might end up in `/proc`.
 
@@ -90,6 +90,6 @@ Overrides go in `stream-config.toml` and are merged at runtime.
 
 ## What stream is not
 
-Stream is not a chat backup. It is an in-memory-of-the-agent context layer. The decryption keys live in the process that runs `serve`; there is no central server. There is no cloud sync in v0.1 (this is intentional; cross-device sync will use the Hermes pairing flow when that lands).
+Stream is not a chat backup. It is an in-memory-of-the-agent context layer. The decryption keys live in the process that runs `serve`; there is no central server, and v0.1 ships local-only.
 
 Stream is not a substitute for `usrcp-local`'s blind-index search. They are complementary: structured state for "what is the user's timezone" lives in the ledger; conversational recall for "what did the user say about the retry bug last week" lives in stream.

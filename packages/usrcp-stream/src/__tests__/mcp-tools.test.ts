@@ -23,7 +23,7 @@ class FakeEmbedder implements EmbeddingProvider {
 
 // Internal harness: pull the registered tool's handler off the McpServer
 // instance. The SDK exposes registered tools via _registeredTools (an
-// implementation detail) — calling it directly avoids spinning up a
+// implementation detail) - calling it directly avoids spinning up a
 // stdio transport for unit tests.
 type AnyServer = McpServer & {
   _registeredTools: Record<string, { handler: (args: unknown) => Promise<unknown> }>;
@@ -61,7 +61,7 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-describe("mcp-tools — surface shape", () => {
+describe("mcp-tools - surface shape", () => {
   it("registers all six stream_* tools", () => {
     const tools = Object.keys((server as AnyServer)._registeredTools);
     const streamTools = tools.filter((t) => t.startsWith("stream_"));

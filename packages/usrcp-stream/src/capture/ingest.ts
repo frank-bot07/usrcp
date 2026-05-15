@@ -11,21 +11,28 @@ import {
   insertVector,
   vectorTableName,
 } from "../vector/index.js";
+import type { EntityResolver } from "../stitch/entity.js";
 import {
   CaptureEventSchema,
   type CaptureEvent,
   type CapturedEvent,
+  type ChannelRef,
 } from "./types.js";
 
 export interface IngestContext {
   handle: StreamHandle;
   embedder: EmbeddingProvider | null;
-  // Stitcher is wired in Phase 4; for now ingest always writes thread_id=null
-  // so capture can be exercised independently. The stitcher will read the
-  // freshly inserted row by event_uuid and update the thread_id column.
+  // Best-effort entity resolver. When the caller does not supply
+  // entity_refs on the event, ingest calls resolver.resolve(content) and
+  // attaches whatever matches. Failure is non-fatal; capture proceeds
+  // with empty entity_refs. (Codex P1-4)
+  entityResolver?: EntityResolver | null;
+  // Stitcher hook: when present, ingest passes the captured event's
+  // metadata to the stitcher and persists the returned thread_id.
   stitch?: (input: {
     event_uuid: string;
     surface: string;
+    channel_ref: ChannelRef;
     ts_ms: number;
     entity_refs: string[] | undefined;
     embedding: Float32Array | null;
@@ -40,6 +47,24 @@ export async function captureEvent(
   const event_uuid = crypto.randomUUID();
   const ingested_at = Date.now();
   const { handle } = ctx;
+
+  // Best-effort entity resolution (Codex P1-4). Only fires when the
+  // caller did not supply entity_refs. Empty result keeps entity_refs
+  // undefined (no encrypted column written).
+  let effectiveEntityRefs = parsed.entity_refs;
+  if (
+    (!effectiveEntityRefs || effectiveEntityRefs.length === 0) &&
+    ctx.entityResolver
+  ) {
+    try {
+      const resolved = await ctx.entityResolver.resolve(parsed.content);
+      if (resolved.length > 0) {
+        effectiveEntityRefs = resolved;
+      }
+    } catch {
+      // Best-effort. Continue with no entity refs.
+    }
+  }
 
   let embedding_id: number | null = null;
   let embedding: Float32Array | null = null;
@@ -89,8 +114,8 @@ export async function captureEvent(
       encryptForColumn(handle.masterKey, "events", parsed.content),
       parsed.content_kind,
       parsed.ts_ms,
-      parsed.entity_refs
-        ? encryptJsonForColumn(handle.masterKey, "events", parsed.entity_refs)
+      effectiveEntityRefs
+        ? encryptJsonForColumn(handle.masterKey, "events", effectiveEntityRefs)
         : null,
       embedding_id,
       ingested_at
@@ -123,8 +148,9 @@ export async function captureEvent(
     thread_id = ctx.stitch({
       event_uuid,
       surface: parsed.surface,
+      channel_ref: parsed.channel_ref,
       ts_ms: parsed.ts_ms,
-      entity_refs: parsed.entity_refs,
+      entity_refs: effectiveEntityRefs,
       embedding,
     });
     if (thread_id) {

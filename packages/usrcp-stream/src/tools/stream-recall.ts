@@ -11,16 +11,24 @@ import { okResponse, errorResponse, type StreamToolDef } from "./types.js";
 
 const MAX_SEARCH_QUERY = 1000;
 
+export interface StreamRecallOptions {
+  // When set by registerStreamTools, restricts recall results to events
+  // on these surfaces. Acts as a server-side scope wall on multi-domain
+  // reads where the caller didn't volunteer a surface filter.
+  allowedScopes?: string[];
+}
+
 export function streamRecall(
   handle: StreamHandle,
-  embedder: EmbeddingProvider | null
+  embedder: EmbeddingProvider | null,
+  options: StreamRecallOptions = {}
 ): StreamToolDef {
   return {
     name: "stream_recall",
     description:
       "Semantically recall captured events across surfaces. Returns the top-K events " +
       "ranked by cosine similarity to the query string, with decrypted snippets. Use " +
-      "this when you need 'what did the user say about X recently' — the keyword/blind " +
+      "this when you need 'what did the user say about X recently' - the keyword/blind " +
       "index in usrcp_search_timeline does NOT do semantic recall.",
     kind: "multi-domain-read",
     scopeOf: (p) => (p.surface ? [String(p.surface)] : "all"),
@@ -46,6 +54,15 @@ export function streamRecall(
         const hits = vectorSearch(handle, queryVec, {
           dims: embedder.dims,
           surface: params.surface,
+          // Scope wall: when the caller did not pin a surface AND the
+          // server is scoped, only consider events on the allowed
+          // surfaces. params.surface taking precedence is fine because
+          // the registerStreamTools wrapper has already rejected
+          // out-of-scope params.surface values.
+          surfaces:
+            !params.surface && options.allowedScopes && options.allowedScopes.length > 0
+              ? options.allowedScopes
+              : undefined,
           since_ms: params.since_ms,
           until_ms: params.until_ms,
           limit: params.limit ?? 10,

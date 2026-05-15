@@ -3,12 +3,18 @@ import type { StreamHandle } from "../db/index.js";
 import {
   encryptJsonForColumn,
   decryptJsonFromColumn,
+  encryptForColumn,
+  decryptFromColumn,
 } from "../db/encrypted-row.js";
 import { DEFAULT_STITCH, type StitchConfig } from "../config.js";
+import type { ChannelRef } from "../capture/types.js";
 
 export interface StitchInput {
   event_uuid: string;
   surface: string;
+  // Codex P1-1: channel_ref is now part of stitch input so same-channel
+  // continuation can be a candidate AND a score signal.
+  channel_ref: ChannelRef;
   ts_ms: number;
   entity_refs: string[] | undefined;
   embedding: Float32Array | null;
@@ -24,9 +30,26 @@ interface ThreadRow {
   last_ts_ms: number;
   surfaces: string;
   entity_refs: string | null;
-  topic_centroid: Buffer | null;
+  // Codex P1-2: topic_centroid is now encrypted TEXT, not raw float32
+  // BLOB. The stitcher decrypts on read and re-encrypts on update; the
+  // encrypted form is a base64-packed Float32Array inside an enc:-prefixed
+  // string under HKDF domain stream-threads.
+  topic_centroid: string | null;
   topic_dims: number | null;
   member_count: number;
+  // Codex P1-1: encrypted JSON array of canonical-form channel keys for
+  // same-channel continuation candidacy.
+  recent_channels: string | null;
+}
+
+// Stable canonical form for ChannelRef equality. We sort keys so that
+// {guild,channel} and {channel,guild} compare equal. Values must be
+// JSON-stringifiable (the zod schema already enforces this).
+function channelKey(ref: ChannelRef): string {
+  const sortedKeys = Object.keys(ref).sort();
+  const ordered: Record<string, unknown> = {};
+  for (const k of sortedKeys) ordered[k] = ref[k];
+  return JSON.stringify(ordered);
 }
 
 export function makeStitcher(
@@ -43,38 +66,59 @@ export function makeStitcher(
     return handle.db
       .prepare(
         `SELECT thread_id, first_ts_ms, last_ts_ms, surfaces, entity_refs,
-                topic_centroid, topic_dims, member_count
+                topic_centroid, topic_dims, member_count, recent_channels
          FROM threads
          WHERE last_ts_ms >= ?`
       )
       .all(earliest) as ThreadRow[];
   }
 
+  function sameChannelMatch(input: StitchInput, row: ThreadRow): boolean {
+    const dt = Math.abs(input.ts_ms - row.last_ts_ms);
+    if (dt > config.same_channel_window_ms) return false;
+    if (!row.recent_channels) return false;
+    try {
+      const channels = decryptJsonFromColumn<string[]>(
+        handle.masterKey,
+        "threads",
+        row.recent_channels
+      );
+      return channels.includes(channelKey(input.channel_ref));
+    } catch {
+      return false;
+    }
+  }
+
+  function entityOverlapMatch(input: StitchInput, row: ThreadRow): boolean {
+    if (!input.entity_refs || input.entity_refs.length === 0) return false;
+    if (!row.entity_refs) return false;
+    const dt = Math.abs(input.ts_ms - row.last_ts_ms);
+    if (dt > config.entity_window_ms) return false;
+    const threadEntities = decryptJsonFromColumn<string[]>(
+      handle.masterKey,
+      "threads",
+      row.entity_refs
+    );
+    return input.entity_refs.some((e) => threadEntities.includes(e));
+  }
+
   function score(input: StitchInput, row: ThreadRow): number {
     const dt = Math.abs(input.ts_ms - row.last_ts_ms);
 
-    // Entity overlap: only counted when both sides have entity refs AND
-    // the gap is within the entity window. Anywhere else, the term is 0.
+    // Entity component: 1 if entity_refs overlap within entity_window OR
+    // if the event is on a channel this thread has been on within
+    // same_channel_window_ms. The same-channel signal piggybacks on the
+    // entity weight because the build prompt's scoring formula has no
+    // dedicated same-channel term; a channel match is a strong
+    // "same-conversation" signal in practice (Codex P1-1).
     let entityComponent = 0;
-    if (
-      input.entity_refs &&
-      input.entity_refs.length > 0 &&
-      row.entity_refs &&
-      dt <= config.entity_window_ms
-    ) {
-      const threadEntities = decryptJsonFromColumn<string[]>(
-        handle.masterKey,
-        "threads",
-        row.entity_refs
-      );
-      if (input.entity_refs.some((e) => threadEntities.includes(e))) {
-        entityComponent = 1;
-      }
+    if (entityOverlapMatch(input, row)) {
+      entityComponent = 1;
+    } else if (sameChannelMatch(input, row)) {
+      entityComponent = 1;
     }
 
-    // Topic similarity: cosine between this event's embedding and the
-    // thread's running centroid, gated by topic_window_ms and the
-    // configured cosine threshold. Below threshold = 0.
+    // Topic similarity.
     let topicComponent = 0;
     if (
       input.embedding &&
@@ -82,14 +126,17 @@ export function makeStitcher(
       row.topic_dims === input.embedding.length &&
       dt <= config.topic_window_ms
     ) {
-      const centroid = bufferToFloat32(row.topic_centroid);
-      const cos = cosine(input.embedding, centroid);
-      if (cos >= config.topic_threshold) {
-        topicComponent = cos;
+      try {
+        const centroid = decryptCentroid(handle.masterKey, row.topic_centroid);
+        const cos = cosine(input.embedding, centroid);
+        if (cos >= config.topic_threshold) {
+          topicComponent = cos;
+        }
+      } catch {
+        // Corrupt or wrong-key centroid: skip the topic signal.
       }
     }
 
-    // Recency decays exponentially with tau. Always present.
     const recencyComponent = Math.exp(-dt / config.recency_tau_ms);
 
     return (
@@ -100,14 +147,14 @@ export function makeStitcher(
   }
 
   function attach(input: StitchInput, row: ThreadRow): void {
-    let newCentroid: Buffer | null = row.topic_centroid;
+    let newCentroid: string | null = row.topic_centroid;
     let newDims: number | null = row.topic_dims;
     if (input.embedding) {
       const old = row.topic_centroid
-        ? bufferToFloat32(row.topic_centroid)
+        ? decryptCentroidOrNull(handle.masterKey, row.topic_centroid)
         : null;
       const merged = mergeCentroid(old, row.member_count, input.embedding);
-      newCentroid = bufferOfFloat32(merged);
+      newCentroid = encryptCentroid(handle.masterKey, merged);
       newDims = merged.length;
     }
 
@@ -132,15 +179,33 @@ export function makeStitcher(
       }
     }
 
+    let channels: string[] = [];
+    if (row.recent_channels) {
+      try {
+        channels = decryptJsonFromColumn<string[]>(
+          handle.masterKey,
+          "threads",
+          row.recent_channels
+        );
+      } catch {
+        channels = [];
+      }
+    }
+    const newKey = channelKey(input.channel_ref);
+    if (!channels.includes(newKey)) channels.push(newKey);
+    // Bound size to keep recent_channels stable; oldest evicted first.
+    while (channels.length > 32) channels.shift();
+
     handle.db
       .prepare(
         `UPDATE threads SET
-           last_ts_ms     = ?,
-           surfaces       = ?,
-           entity_refs    = ?,
-           topic_centroid = ?,
-           topic_dims     = ?,
-           member_count   = member_count + 1
+           last_ts_ms      = ?,
+           surfaces        = ?,
+           entity_refs     = ?,
+           topic_centroid  = ?,
+           topic_dims      = ?,
+           member_count    = member_count + 1,
+           recent_channels = ?
          WHERE thread_id = ?`
       )
       .run(
@@ -151,6 +216,7 @@ export function makeStitcher(
           : null,
         newCentroid,
         newDims,
+        encryptJsonForColumn(handle.masterKey, "threads", channels),
         row.thread_id
       );
   }
@@ -159,13 +225,14 @@ export function makeStitcher(
     const threadId = `t_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
     const surfaces = [input.surface];
     const entityRefs = input.entity_refs ?? [];
+    const channels = [channelKey(input.channel_ref)];
 
     handle.db
       .prepare(
         `INSERT INTO threads
          (thread_id, first_ts_ms, last_ts_ms, surfaces, entity_refs,
-          topic_centroid, topic_dims, member_count)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 1)`
+          topic_centroid, topic_dims, member_count, recent_channels)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`
       )
       .run(
         threadId,
@@ -175,8 +242,11 @@ export function makeStitcher(
         entityRefs.length > 0
           ? encryptJsonForColumn(handle.masterKey, "threads", entityRefs)
           : null,
-        input.embedding ? bufferOfFloat32(input.embedding) : null,
-        input.embedding ? input.embedding.length : null
+        input.embedding
+          ? encryptCentroid(handle.masterKey, input.embedding)
+          : null,
+        input.embedding ? input.embedding.length : null,
+        encryptJsonForColumn(handle.masterKey, "threads", channels)
       );
     return threadId;
   }
@@ -200,14 +270,32 @@ export function makeStitcher(
   };
 }
 
-function bufferToFloat32(buf: Buffer): Float32Array {
+// Encrypted centroid format: a base64-packed Float32Array buffer
+// encrypted via encryptForColumn with HKDF domain stream-threads. The
+// result is a TEXT enc:-prefixed string indistinguishable on disk from
+// any other encrypted thread column.
+function encryptCentroid(masterKey: Buffer, vec: Float32Array): string {
+  const bytes = Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
+  return encryptForColumn(masterKey, "threads", bytes.toString("base64"));
+}
+
+function decryptCentroid(masterKey: Buffer, ciphertext: string): Float32Array {
+  const b64 = decryptFromColumn(masterKey, "threads", ciphertext);
+  const buf = Buffer.from(b64, "base64");
   return new Float32Array(
     buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
   );
 }
 
-function bufferOfFloat32(vec: Float32Array): Buffer {
-  return Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
+function decryptCentroidOrNull(
+  masterKey: Buffer,
+  ciphertext: string
+): Float32Array | null {
+  try {
+    return decryptCentroid(masterKey, ciphertext);
+  } catch {
+    return null;
+  }
 }
 
 function cosine(a: Float32Array, b: Float32Array): number {

@@ -3,8 +3,11 @@ import type { Ledger } from "usrcp-local/dist/ledger/index.js";
 import { openStreamDb, closeStreamDb, type StreamHandle } from "./db/index.js";
 import { loadVectorExtension } from "./vector/index.js";
 import { makeStitcher } from "./stitch/thread.js";
+import { makeLedgerEntityResolver } from "./stitch/entity.js";
+import type { EntityResolver } from "./stitch/entity.js";
 import type { EmbeddingProvider } from "./embeddings/provider.js";
 import type { PrewarmEvent } from "./surface/prewarm.js";
+import { loadEmbedderFromUserDir } from "./config-io.js";
 import { streamCapture } from "./tools/stream-capture.js";
 import { streamRecall } from "./tools/stream-recall.js";
 import { streamThread } from "./tools/stream-thread.js";
@@ -24,6 +27,13 @@ export interface RegisterStreamOptions {
   masterKey: Buffer;
   userDir: string;
   ledger?: Ledger | null;
+  // Embedder resolution:
+  //   undefined / property absent: load from saved stream-config.toml.
+  //                                If that fails or returns null, no
+  //                                embedder is wired and recall returns
+  //                                no hits.
+  //   null:                        explicitly disabled (e.g. tests).
+  //   EmbeddingProvider:           use this instance verbatim.
   embedder?: EmbeddingProvider | null;
   serveOptions?: StreamServeOptions;
   prewarmSummarizer?: (
@@ -51,21 +61,38 @@ export function registerStreamTools(
     );
   }
   const stitcher = makeStitcher(handle);
-  const embedder = options.embedder ?? null;
+  // Three-state embedder: explicit value wins; explicit null means off;
+  // absent / undefined means "load from saved config" (Codex P1-3).
+  const embedder: EmbeddingProvider | null =
+    "embedder" in options
+      ? (options.embedder ?? null)
+      : loadEmbedderFromUserDir(options.masterKey, options.userDir);
   const ledger = options.ledger ?? null;
-
-  const defs: StreamToolDef[] = [
-    streamCapture(handle, embedder, stitcher),
-    streamRecall(handle, embedder),
-    streamThread(handle),
-    streamActiveSurface(handle),
-    streamPrewarm(handle, { summarizer: options.prewarmSummarizer }),
-    streamStatus(handle, embedder),
-  ];
+  // When a Ledger is wired (unified-serve mode), construct the
+  // best-effort entity resolver so capture can backfill entity_refs from
+  // active projects (Codex P1-4). Standalone mode (no ledger) keeps the
+  // resolver null - capture proceeds with explicit entity_refs only.
+  const entityResolver: EntityResolver | null = ledger
+    ? makeLedgerEntityResolver(ledger)
+    : null;
 
   const serveOpts = options.serveOptions ?? {};
   const scopes =
     serveOpts.scopes && serveOpts.scopes.length > 0 ? serveOpts.scopes : undefined;
+
+  // Scope-wall injection: multi-domain-read tools receive the allowed
+  // surface list so their handlers can post-filter rows. The wrapper
+  // below only blocks explicit out-of-scope params; without these
+  // injections, an unparameterized recall or thread fetch leaks every
+  // surface's events.
+  const defs: StreamToolDef[] = [
+    streamCapture(handle, embedder, stitcher, entityResolver),
+    streamRecall(handle, embedder, { allowedScopes: scopes }),
+    streamThread(handle, { allowedScopes: scopes }),
+    streamActiveSurface(handle),
+    streamPrewarm(handle, { summarizer: options.prewarmSummarizer }),
+    streamStatus(handle, embedder),
+  ];
   const scopedMode =
     scopes !== undefined ||
     serveOpts.readonly === true ||

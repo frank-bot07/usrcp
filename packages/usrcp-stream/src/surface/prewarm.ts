@@ -68,7 +68,7 @@ export async function prewarm(
       .all(...params) as typeof rawRows;
   }
 
-  // Fallback: no thread linkage yet — pull anything recent from other surfaces.
+  // Fallback: no thread linkage yet - pull anything recent from other surfaces.
   if (rawRows.length === 0) {
     rawRows = handle.db
       .prepare(

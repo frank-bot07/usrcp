@@ -73,7 +73,7 @@ describe("active-surface presence", () => {
         author_ref: { id: "u1" },
         content: "old activity",
         content_kind: "text",
-        ts_ms: now - 60 * 60 * 1000, // 60 min ago — outside default 10-min window
+        ts_ms: now - 60 * 60 * 1000, // 60 min ago - outside default 10-min window
       }
     );
 

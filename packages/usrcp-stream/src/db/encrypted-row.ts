@@ -29,7 +29,7 @@ const TABLE_DOMAINS = {
 export type EncryptedTable = keyof typeof TABLE_DOMAINS;
 
 // Per-masterKey per-table derived-key cache. HKDF is cheap (~µs) but we
-// run it on every column read/write — caching shaves it to one derivation
+// run it on every column read/write - caching shaves it to one derivation
 // per table per process. Lifetime ties to the master key buffer; rotation
 // hands us a new buffer and the old cache becomes unreachable.
 const keyCache = new WeakMap<Buffer, Map<EncryptedTable, Buffer>>();

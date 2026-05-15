@@ -29,11 +29,21 @@ interface ThreadRow {
   entity_refs: string | null;
 }
 
-export function streamThread(handle: StreamHandle): StreamToolDef {
+export interface StreamThreadOptions {
+  // Surface allowlist for scope enforcement. When set, only events on
+  // these surfaces are returned, and the thread's `surfaces` summary is
+  // narrowed to the allowed intersection.
+  allowedScopes?: string[];
+}
+
+export function streamThread(
+  handle: StreamHandle,
+  options: StreamThreadOptions = {}
+): StreamToolDef {
   return {
     name: "stream_thread",
     description:
-      "Fetch all events in a logical thread. A thread spans surfaces — events from " +
+      "Fetch all events in a logical thread. A thread spans surfaces. Events from " +
       "Discord, iMessage, and Cursor that share entity references or topic similarity " +
       "within their respective windows are stitched into one thread_id at capture time.",
     kind: "multi-domain-read",
@@ -46,16 +56,26 @@ export function streamThread(handle: StreamHandle): StreamToolDef {
     handler: async (params) => {
       const limit = params.limit ?? 100;
       const beforeClause = params.before_ms ? "AND ts_ms < ?" : "";
+      // Scope wall: when allowedScopes is set, narrow the event set at
+      // SQL level. The wrapper's scopeOf returns "all" so without this
+      // the handler would happily decrypt every event in the thread.
+      const surfaceClause =
+        options.allowedScopes && options.allowedScopes.length > 0
+          ? `AND surface IN (${options.allowedScopes.map(() => "?").join(",")})`
+          : "";
       const sql = `
         SELECT event_uuid, surface, channel_ref, side, author_ref, content,
                content_kind, ts_ms
         FROM events
-        WHERE thread_id = ? ${beforeClause}
+        WHERE thread_id = ? ${beforeClause} ${surfaceClause}
         ORDER BY ts_ms ASC
         LIMIT ?
       `;
       const sqlParams: unknown[] = [params.thread_id];
       if (params.before_ms) sqlParams.push(params.before_ms);
+      if (options.allowedScopes && options.allowedScopes.length > 0) {
+        sqlParams.push(...options.allowedScopes);
+      }
       sqlParams.push(limit);
 
       const eventRows = handle.db.prepare(sql).all(...sqlParams) as EventRow[];
@@ -73,11 +93,17 @@ export function streamThread(handle: StreamHandle): StreamToolDef {
         });
       }
 
-      const surfaces = decryptJsonFromColumn<string[]>(
+      const allSurfaces = decryptJsonFromColumn<string[]>(
         handle.masterKey,
         "threads",
         threadRow.surfaces
       );
+      // When scoped, narrow the returned surfaces list to the intersection
+      // so the caller can't infer which other surfaces this thread touched.
+      const surfaces =
+        options.allowedScopes && options.allowedScopes.length > 0
+          ? allSurfaces.filter((s) => options.allowedScopes!.includes(s))
+          : allSurfaces;
       const entityRefs = threadRow.entity_refs
         ? decryptJsonFromColumn<string[]>(
             handle.masterKey,

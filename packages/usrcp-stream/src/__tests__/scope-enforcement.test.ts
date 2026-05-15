@@ -129,6 +129,103 @@ describe("scope enforcement (Model A)", () => {
     expect(active.status).toBe("ok");
   });
 
+  it("REGRESSION (Codex P0-1): scoped stream_recall without surface filter does not leak out-of-scope events", async () => {
+    // Seed both surfaces from an UNSCOPED server so capture isn't blocked.
+    const seed = new McpServer({ name: "seed", version: "0" });
+    const seedReg = registerStreamTools(seed, {
+      masterKey,
+      userDir: tmpDir,
+      embedder: new FakeEmbedder(),
+    });
+    await callTool(seed, "stream_capture", {
+      surface: "discord",
+      channel_ref: { g: "g1" },
+      side: "inbound",
+      author_ref: { id: "u1" },
+      content: "PUBLIC_DISCORD",
+      content_kind: "text",
+      ts_ms: 1000,
+    });
+    await callTool(seed, "stream_capture", {
+      surface: "telegram",
+      channel_ref: { c: "c1" },
+      side: "inbound",
+      author_ref: { id: "u1" },
+      content: "SECRET_SCOPE_LEAK",
+      content_kind: "text",
+      ts_ms: 2000,
+    });
+    seedReg.shutdown();
+
+    // Reopen with scope=discord and recall WITHOUT params.surface.
+    server = new McpServer({ name: "t", version: "0.0.0" });
+    registration = registerStreamTools(server, {
+      masterKey,
+      userDir: tmpDir,
+      embedder: new FakeEmbedder(),
+      serveOptions: { scopes: ["discord"], agentId: "a1" },
+    });
+    const res = parseResponse(
+      await callTool(server, "stream_recall", { query: "SECRET", limit: 50, min_score: -2 })
+    );
+    expect(res.status).toBe("ok");
+    expect(res.hits.length).toBeGreaterThan(0);
+    for (const h of res.hits) {
+      expect(h.surface).toBe("discord");
+      expect(h.snippet_decrypted).not.toContain("SECRET_SCOPE_LEAK");
+    }
+  });
+
+  it("REGRESSION (Codex P0-1): scoped stream_thread filters events to allowed surfaces", async () => {
+    // Seed a thread that spans discord+telegram by sharing entity_refs.
+    const seed = new McpServer({ name: "seed", version: "0" });
+    const seedReg = registerStreamTools(seed, {
+      masterKey,
+      userDir: tmpDir,
+      embedder: new FakeEmbedder(),
+    });
+    const cap1 = parseResponse(await callTool(seed, "stream_capture", {
+      surface: "discord",
+      channel_ref: { g: "1" },
+      side: "inbound",
+      author_ref: { id: "u1" },
+      content: "discord event",
+      content_kind: "text",
+      ts_ms: 1000,
+      entity_refs: ["p_x"],
+    }));
+    const cap2 = parseResponse(await callTool(seed, "stream_capture", {
+      surface: "telegram",
+      channel_ref: { c: "1" },
+      side: "inbound",
+      author_ref: { id: "u1" },
+      content: "SECRET_THREAD_LEAK",
+      content_kind: "text",
+      ts_ms: 1000 + 60 * 60 * 1000,
+      entity_refs: ["p_x"],
+    }));
+    expect(cap2.thread_id).toBe(cap1.thread_id);
+    seedReg.shutdown();
+
+    server = new McpServer({ name: "t", version: "0.0.0" });
+    registration = registerStreamTools(server, {
+      masterKey,
+      userDir: tmpDir,
+      embedder: new FakeEmbedder(),
+      serveOptions: { scopes: ["discord"], agentId: "a1" },
+    });
+    const res = parseResponse(
+      await callTool(server, "stream_thread", { thread_id: cap1.thread_id })
+    );
+    expect(res.status).toBe("ok");
+    // Only the discord event must be returned.
+    expect(res.events).toHaveLength(1);
+    expect(res.events[0].surface).toBe("discord");
+    expect(res.events[0].content).not.toContain("SECRET_THREAD_LEAK");
+    // The surfaces summary is narrowed to the intersection.
+    expect(res.surfaces).toEqual(["discord"]);
+  });
+
   it("readonly mode strips stream_capture from the registered tool list", () => {
     server = new McpServer({ name: "t", version: "0.0.0" });
     registration = registerStreamTools(server, {

@@ -3,7 +3,7 @@ import type Database from "better-sqlite3";
 
 // Loads the platform-specific sqlite-vec extension into the given DB
 // handle. Throws with a clear message if the native binding isn't
-// available — surfacing the build/install issue at first use rather than
+// available - surfacing the build/install issue at first use rather than
 // silently degrading semantic recall.
 export function loadVectorExtension(db: Database.Database): void {
   try {
@@ -17,7 +17,7 @@ export function loadVectorExtension(db: Database.Database): void {
 }
 
 // vec0 virtual tables must be created with a fixed dim. We split by dims
-// so a user who switches embedding models doesn't have to nuke the DB —
+// so a user who switches embedding models doesn't have to nuke the DB -
 // new model = new vec_<dims> table, existing rows keep working.
 export function ensureVectorTable(db: Database.Database, dims: number): string {
   const tableName = vectorTableName(dims);

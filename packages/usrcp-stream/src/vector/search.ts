@@ -7,7 +7,12 @@ import { vectorTableName } from "./index.js";
 import type { ChannelRef } from "../capture/types.js";
 
 export interface VectorSearchOptions {
+  // Single-surface filter (caller-supplied params.surface). Mutually
+  // exclusive with `surfaces`; if both are present, surface wins.
   surface?: string;
+  // Surface allowlist (scope-enforcement injection). When non-empty,
+  // results are restricted to events whose surface is in this set.
+  surfaces?: string[];
   since_ms?: number;
   until_ms?: number;
   limit?: number;
@@ -59,12 +64,16 @@ export function vectorSearch(
   // a cosine similarity in [-1, 1].
   //
   // sqlite-vec's KNN constraint must be the only WHERE clause on the
-  // virtual table — auxiliary filters go in the outer SELECT.
+  // virtual table - auxiliary filters go in the outer SELECT.
   const filters: string[] = [];
   const filterParams: unknown[] = [];
   if (options.surface) {
     filters.push("e.surface = ?");
     filterParams.push(options.surface);
+  } else if (options.surfaces && options.surfaces.length > 0) {
+    const placeholders = options.surfaces.map(() => "?").join(",");
+    filters.push(`e.surface IN (${placeholders})`);
+    filterParams.push(...options.surfaces);
   }
   if (options.since_ms !== undefined) {
     filters.push("e.ts_ms >= ?");
@@ -91,7 +100,7 @@ export function vectorSearch(
   `;
 
   // If no captures with this dim have happened yet, the vec table won't
-  // exist. Return no hits instead of throwing — recall on an empty
+  // exist. Return no hits instead of throwing - recall on an empty
   // stream is a valid state.
   const tableExists = handle.db
     .prepare(
