@@ -48,9 +48,19 @@ Codex review (`tasks/usrcp-stream-codex-review.md`) returned 3 P0 + 5 P1 + 3 P2 
 | P1-2 topic_centroid stored as raw float32 | `topic_centroid` is now TEXT, encrypted via HKDF domain `stream-threads`. Stitcher encrypts on create, decrypts/merges/re-encrypts on attach. On-disk grep test in `encrypted-centroid.test.ts` confirms the raw float32 bytes do not appear in the SQLite file. |
 | P1-3 serve ignores stream-config.toml | New `src/config-io.ts` extracts load/save/embedderFromConfig as sync helpers. `registerStreamTools` uses an `"embedder" in options` check: explicit value or null wins; otherwise it auto-loads from `${userDir}/stream-config.toml`. Tests in `config-aware-serve.test.ts` cover roundtrip, wrong-key throw, vendor-consent gate, and the wired status field. |
 | P1-4 entity extraction missing | Ingest takes an optional `entityResolver`. When the caller omits `entity_refs`, the resolver is queried (best-effort). `registerStreamTools` wires `makeLedgerEntityResolver` when a `Ledger` is present. Tests in `entity-resolution.test.ts` backfill from active projects, refuse to override caller-supplied refs, and confirm standalone mode (no ledger) is untouched. |
-| P2-1 em dashes | Stripped from all stream sources, README, package.json, the two usrcp-local lines I authored, and this tasks doc. |
+| P2-1 em dashes | Stripped from all stream sources, README, package.json, the two usrcp-local lines I authored, and this tasks doc. **Scope**: only lines authored in this branch. Pre-existing em dashes in `packages/usrcp-local/src/server.ts` and `packages/usrcp-local/src/ledger/core.ts` are outside the diff and are intentionally left alone; a branch-wide sweep is a separate PR. (Codex round-2 P2.) |
 | P2-2 vendor-flag claim in README | Reworded: providers can be selected via the interactive menu or `--embedding-provider <vendor>`; the confirmation prompt is required in both paths. |
 | P2-3 forward refs to cloud sync / Hermes pairing | Removed from README. |
+
+## Codex round-2 response
+
+Codex round 2 returned 1 P0 + 1 P1 + 1 P2. All addressed in commit following this section:
+
+| Finding | Resolution |
+|---|---|
+| P0-1 stream_thread leaks thread-level metadata when all events are out-of-scope | Rewrote handler so scoped + zero-in-scope-events short-circuits to `status:"not_found"` BEFORE loading or decrypting the thread row. When some events are in-scope, surfaces/entity_refs/first_ts/last_ts are derived from the in-scope events themselves (not from the thread row). Each event now carries its own decrypted `entity_refs` through this path. Two regression tests in `scope-enforcement.test.ts`: (a) telegram-only thread queried from discord-scoped server -> not_found, no metadata, no SECRET_PROJECT_ID in JSON; (b) mixed-scope thread returns only in-scope event AND derives entity_refs from it (SECRETIVE_ENTITY visible only on the telegram event is NOT exposed). |
+| P1-1 same-channel key omitted surface | `channelKey` now takes `(surface, ref)` and prefixes the surface into the canonical string. Two events with identical channel_ref shapes on different surfaces no longer match the same-channel gate. New regression test in `stitch-same-channel.test.ts`. |
+| P2 pre-existing em dashes in usrcp-local | Acknowledged: the cleanup scope is "lines authored in this branch". Pre-existing em dashes in `usrcp-local/src/server.ts` and `usrcp-local/src/ledger/core.ts` predate this PR and stay untouched. A branch-wide sweep is a follow-up PR. |
 
 ## Acceptance criteria
 

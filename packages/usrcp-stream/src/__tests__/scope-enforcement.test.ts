@@ -226,6 +226,115 @@ describe("scope enforcement (Model A)", () => {
     expect(res.surfaces).toEqual(["discord"]);
   });
 
+  it("REGRESSION (Codex round-2 P0-1): scoped stream_thread on a wholly out-of-scope thread returns not_found with no metadata", async () => {
+    // Seed a telegram-only thread whose entity_refs would be sensitive.
+    const seed = new McpServer({ name: "seed", version: "0" });
+    const seedReg = registerStreamTools(seed, {
+      masterKey,
+      userDir: tmpDir,
+      embedder: new FakeEmbedder(),
+    });
+    const c1 = parseResponse(
+      await callTool(seed, "stream_capture", {
+        surface: "telegram",
+        channel_ref: { c: "1" },
+        side: "inbound",
+        author_ref: { id: "u1" },
+        content: "first",
+        content_kind: "text",
+        ts_ms: 1000,
+        entity_refs: ["SECRET_PROJECT_ID"],
+      })
+    );
+    await callTool(seed, "stream_capture", {
+      surface: "telegram",
+      channel_ref: { c: "1" },
+      side: "inbound",
+      author_ref: { id: "u1" },
+      content: "second",
+      content_kind: "text",
+      ts_ms: 1000 + 5 * 60 * 1000,
+      entity_refs: ["SECRET_PROJECT_ID"],
+    });
+    seedReg.shutdown();
+
+    // Discord-scoped server fetches the thread.
+    server = new McpServer({ name: "t", version: "0.0.0" });
+    registration = registerStreamTools(server, {
+      masterKey,
+      userDir: tmpDir,
+      embedder: new FakeEmbedder(),
+      serveOptions: { scopes: ["discord"], agentId: "a1" },
+    });
+    const res = parseResponse(
+      await callTool(server, "stream_thread", { thread_id: c1.thread_id })
+    );
+    // Must NOT expose any thread-level metadata when no events are in-scope.
+    expect(res.status).toBe("not_found");
+    expect(res.events).toEqual([]);
+    expect(res.entity_refs).toBeUndefined();
+    expect(res.surfaces).toBeUndefined();
+    expect(res.first_ts_ms).toBeUndefined();
+    expect(res.last_ts_ms).toBeUndefined();
+    // Sanity: the full JSON body does not contain the leaked entity name anywhere.
+    expect(JSON.stringify(res)).not.toContain("SECRET_PROJECT_ID");
+  });
+
+  it("REGRESSION (Codex round-2 P0-1): mixed-scope thread returns only in-scope events AND derives metadata from them", async () => {
+    // Thread that spans discord (in scope) + telegram (out of scope) with
+    // entity_refs only present on the telegram events. The response from
+    // a discord-scoped server should NOT expose the telegram-side
+    // entity_refs as thread metadata.
+    const seed = new McpServer({ name: "seed", version: "0" });
+    const seedReg = registerStreamTools(seed, {
+      masterKey,
+      userDir: tmpDir,
+      embedder: new FakeEmbedder(),
+    });
+    const c1 = parseResponse(
+      await callTool(seed, "stream_capture", {
+        surface: "discord",
+        channel_ref: { g: "1" },
+        side: "inbound",
+        author_ref: { id: "u1" },
+        content: "public discord event",
+        content_kind: "text",
+        ts_ms: 1000,
+        entity_refs: ["p_shared"],
+      })
+    );
+    await callTool(seed, "stream_capture", {
+      surface: "telegram",
+      channel_ref: { c: "1" },
+      side: "inbound",
+      author_ref: { id: "u1" },
+      content: "telegram event with SECRETIVE_ENTITY",
+      content_kind: "text",
+      ts_ms: 1000 + 60 * 60 * 1000,
+      entity_refs: ["p_shared", "SECRETIVE_ENTITY"],
+    });
+    seedReg.shutdown();
+
+    server = new McpServer({ name: "t", version: "0.0.0" });
+    registration = registerStreamTools(server, {
+      masterKey,
+      userDir: tmpDir,
+      embedder: new FakeEmbedder(),
+      serveOptions: { scopes: ["discord"], agentId: "a1" },
+    });
+    const res = parseResponse(
+      await callTool(server, "stream_thread", { thread_id: c1.thread_id })
+    );
+    expect(res.status).toBe("ok");
+    expect(res.events).toHaveLength(1);
+    expect(res.events[0].surface).toBe("discord");
+    expect(res.surfaces).toEqual(["discord"]);
+    // entity_refs are derived from the in-scope event only, so SECRETIVE_ENTITY
+    // (which only appears on the telegram event) MUST NOT be returned.
+    expect(res.entity_refs).toEqual(["p_shared"]);
+    expect(JSON.stringify(res)).not.toContain("SECRETIVE_ENTITY");
+  });
+
   it("readonly mode strips stream_capture from the registered tool list", () => {
     server = new McpServer({ name: "t", version: "0.0.0" });
     registration = registerStreamTools(server, {

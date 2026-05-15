@@ -124,6 +124,29 @@ describe("same-channel continuation stitch", () => {
     expect(e2.thread_id).not.toBe(e1.thread_id);
   });
 
+  it("REGRESSION (Codex round-2 P1-1): same channel_ref on DIFFERENT surfaces does NOT link via the same-channel gate", async () => {
+    const stitcher = makeStitcher(handle);
+    const capture = captureWith(stitcher);
+
+    const base = 1_700_000_000_000;
+    const e1 = await capture({
+      surface: "discord",
+      channel_ref: { id: "same-id" },
+      ts_ms: base,
+      content: "first",
+    });
+    // Same channel_ref shape on a DIFFERENT surface, 5 min later, no
+    // entities, no embeddings. The build spec requires same (surface,
+    // channel_ref) - both fields - so this must NOT link.
+    const e2 = await capture({
+      surface: "telegram",
+      channel_ref: { id: "same-id" },
+      ts_ms: base + 5 * 60 * 1000,
+      content: "second",
+    });
+    expect(e2.thread_id).not.toBe(e1.thread_id);
+  });
+
   it("channel_ref key ordering does not affect match (canonical form)", async () => {
     const stitcher = makeStitcher(handle);
     const capture = captureWith(stitcher);
