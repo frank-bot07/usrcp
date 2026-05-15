@@ -68,6 +68,12 @@ export function resolveMode(
         `--mode must be one of ledger|stream|both, got '${explicit}'`
       );
     }
+    if (!streamPresent && (explicit === "stream" || explicit === "both")) {
+      throw new Error(
+        `--mode '${explicit}' requires usrcp-stream to be installed. ` +
+          `Install it (npm install usrcp-stream from this package) or use --mode ledger.`
+      );
+    }
     return explicit;
   }
   return streamPresent ? "both" : "ledger";

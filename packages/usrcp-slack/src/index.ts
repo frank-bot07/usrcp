@@ -68,6 +68,12 @@ export function resolveMode(
         `--mode must be one of ledger|stream|both, got '${explicit}'`
       );
     }
+    if (!streamPresent && (explicit === "stream" || explicit === "both")) {
+      throw new Error(
+        `--mode '${explicit}' requires usrcp-stream to be installed. ` +
+          `Install it (npm install usrcp-stream from this package) or use --mode ledger.`
+      );
+    }
     return explicit;
   }
   return streamPresent ? "both" : "ledger";
@@ -156,8 +162,13 @@ async function main() {
     // Skip bot-attributed events even within GenericMessageEvent.
     if (typeof gme.bot_id === "string" && gme.bot_id.length > 0) return;
 
-    // DMs are handled by the DM listener below; skip here to avoid double capture.
-    if (gme.channel_type === "im") return;
+    // Note: we used to early-return on channel_type === "im" to "let
+    // the DM listener handle it," but that DM listener only does
+    // reply, not capture. The result was that DMs added to
+    // allowlisted_channels were silently never captured anywhere
+    // (Codex round-1 P1 against #42). The reply listener below is
+    // still its own app.message handler; both fire for the same
+    // message but do different work.
 
     // Skip channels outside the allowlist (both ledger and stream paths
     // respect the same channel allowlist).

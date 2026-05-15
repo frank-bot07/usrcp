@@ -144,16 +144,25 @@ describe("iMessage stream-capture filtering", () => {
 });
 
 describe("resolveMode dispatch (iMessage)", () => {
-  it("explicit --mode wins", () => {
+  it("explicit --mode wins when stream is installed", () => {
     expect(resolveMode("ledger", true)).toBe("ledger");
-    expect(resolveMode("stream", false)).toBe("stream");
-    expect(resolveMode("both", false)).toBe("both");
+    expect(resolveMode("stream", true)).toBe("stream");
+    expect(resolveMode("both", true)).toBe("both");
   });
   it("no flag + stream installed -> both", () => {
     expect(resolveMode(undefined, true)).toBe("both");
   });
   it("no flag + stream missing -> ledger", () => {
     expect(resolveMode(undefined, false)).toBe("ledger");
+  });
+  it("--mode ledger always works", () => {
+    expect(resolveMode("ledger", false)).toBe("ledger");
+  });
+  it("--mode stream throws when usrcp-stream not installed", () => {
+    expect(() => resolveMode("stream", false)).toThrow(/usrcp-stream to be installed/);
+  });
+  it("--mode both throws when usrcp-stream not installed", () => {
+    expect(() => resolveMode("both", false)).toThrow(/usrcp-stream to be installed/);
   });
   it("invalid --mode throws", () => {
     expect(() => resolveMode("garbage", true)).toThrow();

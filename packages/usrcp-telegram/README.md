@@ -62,7 +62,7 @@ When `usrcp-stream` is installed alongside this adapter, you can choose where ca
 - `--mode stream`  — bot-skipped, allowlisted, **every human's messages** (yours + everyone else's) flow into the encrypted `stream.db`. No ledger writes.
 - `--mode both`    — ledger keeps the user-only filter; stream captures all human messages on allowlisted chats. **Default when `usrcp-stream` is installed.**
 
-If `usrcp-stream` is not installed, the default is `--mode ledger` and the stream flag is unrecognized.
+If `usrcp-stream` is not installed, the default is `--mode ledger`. Passing `--mode stream` or `--mode both` without the package installed will error at startup with a message instructing you to install it.
 
 ```bash
 USRCP_PASSPHRASE=… node dist/index.js --mode both

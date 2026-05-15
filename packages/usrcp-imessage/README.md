@@ -56,7 +56,7 @@ When `usrcp-stream` is installed alongside this adapter, you can choose where ca
 - `--mode stream`  — allowlisted, **both sides** (is_from_me=1 outbound + incoming inbound) flow into the encrypted `stream.db`. No ledger writes. iMessage has no notion of "bot," so no bot filter applies.
 - `--mode both`    — ledger keeps the is_from_me filter; stream captures both sides on allowlisted chats. **Default when `usrcp-stream` is installed.**
 
-If `usrcp-stream` is not installed, the default is `--mode ledger` and the stream flag is unrecognized.
+If `usrcp-stream` is not installed, the default is `--mode ledger`. Passing `--mode stream` or `--mode both` without the package installed will error at startup with a message instructing you to install it.
 
 ```bash
 USRCP_PASSPHRASE=… node dist/index.js --mode both

@@ -135,6 +135,36 @@ describe("Slack stream-capture filtering", () => {
     if (!r.captured) expect(r.reason).toBe("empty_content");
   });
 
+  it("REGRESSION (Codex PR42 P1): allowlisted DM channels get stream-captured", async () => {
+    // The previous handler short-circuited on channel_type === "im" so
+    // even DMs explicitly added to the allowlist were silently dropped
+    // by the stream path. After the fix, the same allowlist check
+    // applies to DMs and group channels alike.
+    const dmChannelId = "D_USER_ID";
+    const dmConfig: SlackConfig = {
+      ...config,
+      allowlisted_channels: [CHANNEL_A, dmChannelId],
+    };
+    // Inbound DM from another human to the bot user.
+    const inboundDm = mkMsg({
+      content: "hey, are you around?",
+      author: { id: OTHER_USER_ID, bot: false, displayName: "Alice" },
+      channel: { id: dmChannelId },
+    });
+    const inboundResult = await captureMessageToStream(streamClient, inboundDm, dmConfig);
+    expect(inboundResult.captured).toBe(true);
+    if (inboundResult.captured) expect(inboundResult.side).toBe("inbound");
+
+    // Outbound DM from the bot user.
+    const outboundDm = mkMsg({
+      content: "back now",
+      channel: { id: dmChannelId },
+    });
+    const outboundResult = await captureMessageToStream(streamClient, outboundDm, dmConfig);
+    expect(outboundResult.captured).toBe(true);
+    if (outboundResult.captured) expect(outboundResult.side).toBe("outbound");
+  });
+
   it("ledger user-only, stream both sides", async () => {
     const inbound = mkMsg({
       content: "alice",
@@ -159,16 +189,25 @@ describe("Slack stream-capture filtering", () => {
 });
 
 describe("resolveMode dispatch (Slack)", () => {
-  it("explicit --mode wins", () => {
+  it("explicit --mode wins when stream is installed", () => {
     expect(resolveMode("ledger", true)).toBe("ledger");
-    expect(resolveMode("stream", false)).toBe("stream");
-    expect(resolveMode("both", false)).toBe("both");
+    expect(resolveMode("stream", true)).toBe("stream");
+    expect(resolveMode("both", true)).toBe("both");
   });
   it("no flag + stream installed -> both", () => {
     expect(resolveMode(undefined, true)).toBe("both");
   });
   it("no flag + stream missing -> ledger", () => {
     expect(resolveMode(undefined, false)).toBe("ledger");
+  });
+  it("--mode ledger always works", () => {
+    expect(resolveMode("ledger", false)).toBe("ledger");
+  });
+  it("--mode stream throws when usrcp-stream not installed", () => {
+    expect(() => resolveMode("stream", false)).toThrow(/usrcp-stream to be installed/);
+  });
+  it("--mode both throws when usrcp-stream not installed", () => {
+    expect(() => resolveMode("both", false)).toThrow(/usrcp-stream to be installed/);
   });
   it("invalid --mode throws", () => {
     expect(() => resolveMode("garbage", true)).toThrow();
