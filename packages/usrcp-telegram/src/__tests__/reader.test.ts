@@ -53,6 +53,7 @@ function mkMsg(ch: { id: string; name?: string }, content: string, overrides: Pa
     author: { id: USER_ID, bot: false },
     channel: ch,
     thread: null,
+    ts_ms: Date.now(),
     ...overrides,
   };
 }

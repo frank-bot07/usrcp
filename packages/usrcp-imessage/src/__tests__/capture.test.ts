@@ -54,6 +54,7 @@ function mkMsg(overrides: Partial<CaptureMessage> & { chat: CaptureMessage["chat
     id: `guid-${msgCounter}-${Math.random().toString(36).slice(2, 8)}`,
     content: "hello from iMessage",
     author: { id: USER_HANDLE, isUser: true },
+    ts_ms: Date.now(),
     ...overrides,
   };
 }

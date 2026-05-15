@@ -47,3 +47,19 @@ Each iMessage becomes a `timeline_events` row with:
 - `channel_id` — the iMessage `chat_identifier`
 - `external_user_id` — sender's handle
 - All free-text fields (summary, detail) encrypted under the global key
+
+## Stream mode (Phase 6)
+
+When `usrcp-stream` is installed alongside this adapter, you can choose where captured messages land via `--mode`:
+
+- `--mode ledger`  — user-sent messages only (is_from_me=1), written to the local USRCP ledger. Existing behavior.
+- `--mode stream`  — allowlisted, **both sides** (is_from_me=1 outbound + incoming inbound) flow into the encrypted `stream.db`. No ledger writes. iMessage has no notion of "bot," so no bot filter applies.
+- `--mode both`    — ledger keeps the is_from_me filter; stream captures both sides on allowlisted chats. **Default when `usrcp-stream` is installed.**
+
+If `usrcp-stream` is not installed, the default is `--mode ledger` and the stream flag is unrecognized.
+
+```bash
+USRCP_PASSPHRASE=… node dist/index.js --mode both
+```
+
+Stream events on the same `(surface, channel_ref)` within `same_channel_window_ms` are stitched into one thread by the cross-surface stitcher; see `packages/usrcp-stream/README.md` for the keyspace, threat model, and recall surface.

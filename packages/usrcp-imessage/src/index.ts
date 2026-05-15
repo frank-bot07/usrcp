@@ -22,8 +22,10 @@ import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { execSync } from "node:child_process";
 import { Ledger } from "usrcp-local/dist/ledger/index.js";
+import { getUserDir } from "usrcp-local/dist/encryption.js";
 import { loadConfig, saveLastRowid, flushLastRowid } from "./config.js";
 import { captureMessage, type CaptureMessage } from "./capture.js";
+import { captureMessageToStream } from "./stream-capture.js";
 import { composeAndReply } from "./reader.js";
 import { AnthropicLlm } from "./llm.js";
 
@@ -31,6 +33,44 @@ const execFileP = promisify(execFile);
 
 function hasFlag(name: string): boolean {
   return process.argv.includes(`--${name}`);
+}
+
+function getArg(name: string): string | undefined {
+  const args = process.argv;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === `--${name}` && args[i + 1]) return args[i + 1];
+    if (args[i].startsWith(`--${name}=`)) {
+      return args[i].split("=").slice(1).join("=");
+    }
+  }
+  return undefined;
+}
+
+export type CaptureMode = "ledger" | "stream" | "both";
+
+export function streamInstalled(): boolean {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    require.resolve("usrcp-stream/dist/capture-client.js");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function resolveMode(
+  explicit: string | undefined,
+  streamPresent: boolean
+): CaptureMode {
+  if (explicit) {
+    if (explicit !== "ledger" && explicit !== "stream" && explicit !== "both") {
+      throw new Error(
+        `--mode must be one of ledger|stream|both, got '${explicit}'`
+      );
+    }
+    return explicit;
+  }
+  return streamPresent ? "both" : "ledger";
 }
 
 /**
@@ -81,6 +121,28 @@ async function main() {
   const passphrase = process.env.USRCP_PASSPHRASE;
   const ledger = new Ledger(undefined, passphrase);
   const llm = new AnthropicLlm({ apiKey: config.anthropic_api_key });
+
+  const mode = resolveMode(getArg("mode"), streamInstalled());
+  console.error(
+    `[usrcp-imessage] capture mode: ${mode}` +
+      (mode === "both"
+        ? " (ledger keeps user-only filter; stream captures both sides)"
+        : "")
+  );
+
+  let streamClient: {
+    capture: (event: unknown) => Promise<unknown>;
+    close: () => void;
+  } | null = null;
+  if (mode === "stream" || mode === "both") {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-explicit-any
+    const streamMod = require("usrcp-stream/dist/capture-client.js") as any;
+    streamClient = streamMod.createStreamCaptureClient(
+      ledger.getMasterKey(),
+      getUserDir(),
+      { ledger }
+    );
+  }
 
   // Build imsg watch args
   const args = ["watch", "--json", "--debounce", "250ms"];
@@ -141,6 +203,16 @@ async function main() {
       const chatStyle = typeof obj["chat_style"] === "number" ? obj["chat_style"] as number : undefined;
       const chatId = obj["chat_id"] !== undefined ? String(obj["chat_id"]) : obj["chat_guid"] as string;
 
+      // imsg's `date` field, when present, is Apple's nanoseconds-since-2001
+      // epoch (the chat.db storage format). Convert to Unix ms. Fallback
+      // to Date.now() when absent or non-numeric.
+      const appleEpochNs = obj["date"];
+      let tsMs = Date.now();
+      if (typeof appleEpochNs === "number" && Number.isFinite(appleEpochNs)) {
+        // 978307200000 = Unix ms at 2001-01-01T00:00:00Z (Apple's epoch).
+        tsMs = Math.floor(appleEpochNs / 1_000_000) + 978307200000;
+      }
+
       const cm: CaptureMessage = {
         id: String(obj["guid"]),
         content: typeof obj["text"] === "string" ? obj["text"] as string : "",
@@ -149,6 +221,10 @@ async function main() {
             ? config.user_handle
             : (typeof obj["handle"] === "string" ? obj["handle"] as string : "unknown"),
           isUser: isFromMe,
+          displayName:
+            typeof obj["sender_display_name"] === "string"
+              ? (obj["sender_display_name"] as string)
+              : undefined,
         },
         chat: {
           id: chatId,
@@ -159,20 +235,45 @@ async function main() {
             ? obj["chat_display_name"] as string
             : undefined,
         },
+        ts_ms: tsMs,
       };
 
-      // Capture user-sent messages in allowlisted chats
-      if (cm.author.isUser && config.allowlisted_chats.includes(cm.chat.id)) {
+      // Ledger path (existing behavior: user-only, allowlisted).
+      if (
+        (mode === "ledger" || mode === "both") &&
+        cm.author.isUser &&
+        config.allowlisted_chats.includes(cm.chat.id)
+      ) {
         captureMessage(ledger, cm, config, llm).then((outcome) => {
           if (outcome.captured) {
             console.error(
-              `[usrcp-imessage] captured guid=${cm.id} chat=${cm.chat.id} ` +
-              `→ event ${outcome.event_id} (seq ${outcome.ledger_sequence}` +
-              `${outcome.duplicate ? ", duplicate" : ""})`
+              `[usrcp-imessage] ledger captured guid=${cm.id} chat=${cm.chat.id} ` +
+                `→ event ${outcome.event_id} (seq ${outcome.ledger_sequence}` +
+                `${outcome.duplicate ? ", duplicate" : ""})`
             );
           }
         }).catch((err: unknown) => {
           console.error("[usrcp-imessage] capture error:", err instanceof Error ? err.message : err);
+        });
+      }
+
+      // Stream path: both sides on allowlisted chats; no bot filter
+      // (iMessage has none).
+      if (streamClient && (mode === "stream" || mode === "both")) {
+        captureMessageToStream(
+          streamClient as Parameters<typeof captureMessageToStream>[0],
+          cm,
+          config
+        ).then((outcome) => {
+          if (outcome.captured) {
+            console.error(
+              `[usrcp-imessage] stream captured guid=${cm.id} (${outcome.side}) ` +
+                `→ event ${outcome.event_uuid}` +
+                (outcome.thread_id ? ` (thread ${outcome.thread_id})` : "")
+            );
+          }
+        }).catch((err: unknown) => {
+          console.error("[usrcp-imessage] stream error:", err instanceof Error ? err.message : err);
         });
       }
 
@@ -205,6 +306,7 @@ async function main() {
   proc.on("exit", (code) => {
     flushLastRowid();
     console.error(`[usrcp-imessage] imsg watch exited with code ${code}`);
+    try { streamClient?.close(); } catch { /* ignore */ }
     ledger.close();
     process.exit(code ?? 1);
   });
@@ -213,6 +315,7 @@ async function main() {
     console.error(`[usrcp-imessage] ${signal} received, shutting down.`);
     flushLastRowid();
     try { proc.kill("SIGTERM"); } catch { /* ignore */ }
+    try { streamClient?.close(); } catch { /* ignore */ }
     try { ledger.close(); } catch { /* ignore */ }
     process.exit(0);
   };
@@ -221,7 +324,12 @@ async function main() {
   process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
 
-main().catch((err: unknown) => {
-  console.error("[usrcp-imessage] fatal:", err instanceof Error ? err.message : err);
-  process.exit(1);
-});
+// Only run main() when this file is the entry point (`node dist/index.js`).
+// Tests import named exports (resolveMode etc.); they must not trigger
+// the side-effect bot startup.
+if (require.main === module) {
+  main().catch((err: unknown) => {
+    console.error("[usrcp-imessage] fatal:", err instanceof Error ? err.message : err);
+    process.exit(1);
+  });
+}

@@ -24,13 +24,53 @@ import { execSync } from "node:child_process";
 import { App, LogLevel } from "@slack/bolt";
 import type { GenericMessageEvent } from "@slack/types";
 import { Ledger } from "usrcp-local/dist/ledger/index.js";
+import { getUserDir } from "usrcp-local/dist/encryption.js";
 import { loadConfig } from "./config.js";
 import { captureMessage, type CaptureMessage } from "./capture.js";
+import { captureMessageToStream } from "./stream-capture.js";
 import { composeAndReply } from "./reader.js";
 import { AnthropicLlm } from "./llm.js";
 
 function hasFlag(name: string): boolean {
   return process.argv.includes(`--${name}`);
+}
+
+function getArg(name: string): string | undefined {
+  const args = process.argv;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === `--${name}` && args[i + 1]) return args[i + 1];
+    if (args[i].startsWith(`--${name}=`)) {
+      return args[i].split("=").slice(1).join("=");
+    }
+  }
+  return undefined;
+}
+
+export type CaptureMode = "ledger" | "stream" | "both";
+
+export function streamInstalled(): boolean {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    require.resolve("usrcp-stream/dist/capture-client.js");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function resolveMode(
+  explicit: string | undefined,
+  streamPresent: boolean
+): CaptureMode {
+  if (explicit) {
+    if (explicit !== "ledger" && explicit !== "stream" && explicit !== "both") {
+      throw new Error(
+        `--mode must be one of ledger|stream|both, got '${explicit}'`
+      );
+    }
+    return explicit;
+  }
+  return streamPresent ? "both" : "ledger";
 }
 
 /**
@@ -51,6 +91,8 @@ function toCaptureMessage(event: GenericMessageEvent, channelName?: string): Cap
     channel: { id: event.channel, name: channelName },
     thread: event.thread_ts ? { id: event.thread_ts } : null,
     team_id: event.team,
+    // Slack's ts is "seconds.microseconds" as a string; * 1000 -> ms.
+    ts_ms: Math.floor(Number(event.ts) * 1000),
   };
 }
 
@@ -71,6 +113,28 @@ async function main() {
   const passphrase = process.env.USRCP_PASSPHRASE;
   const ledger = new Ledger(undefined, passphrase);
   const llm = new AnthropicLlm({ apiKey: config.anthropic_api_key });
+
+  const mode = resolveMode(getArg("mode"), streamInstalled());
+  console.error(
+    `[usrcp-slack] capture mode: ${mode}` +
+      (mode === "both"
+        ? " (ledger keeps user-only filter; stream captures all humans)"
+        : "")
+  );
+
+  let streamClient: {
+    capture: (event: unknown) => Promise<unknown>;
+    close: () => void;
+  } | null = null;
+  if (mode === "stream" || mode === "both") {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-explicit-any
+    const streamMod = require("usrcp-stream/dist/capture-client.js") as any;
+    streamClient = streamMod.createStreamCaptureClient(
+      ledger.getMasterKey(),
+      getUserDir(),
+      { ledger }
+    );
+  }
 
   const app = new App({
     token: config.slack_bot_token,
@@ -95,34 +159,58 @@ async function main() {
     // DMs are handled by the DM listener below; skip here to avoid double capture.
     if (gme.channel_type === "im") return;
 
-    // Skip if not from our user.
-    if (gme.user !== config.user_id) return;
-
-    // Skip if channel not allowlisted.
+    // Skip channels outside the allowlist (both ledger and stream paths
+    // respect the same channel allowlist).
     if (!config.allowlisted_channels.includes(gme.channel)) return;
 
-    // Resolve channel name for tags (best-effort; don't block capture on failure).
+    // Resolve channel name for tags (best-effort; don't block on failure).
     let channelName: string | undefined;
     try {
       const info = await client.conversations.info({ channel: gme.channel });
       channelName = (info.channel as { name?: string } | undefined)?.name;
     } catch {
-      // ignore — name is cosmetic
+      // ignore - name is cosmetic
     }
 
     const cm = toCaptureMessage(gme, channelName);
 
-    try {
-      const captureOutcome = await captureMessage(ledger, cm, config, llm);
-      if (captureOutcome.captured) {
-        console.error(
-          `[usrcp-slack] captured ts=${cm.id} channel=${cm.channel.id} ` +
-          `→ event ${captureOutcome.event_id} (seq ${captureOutcome.ledger_sequence}` +
-          `${captureOutcome.duplicate ? ", duplicate" : ""})`
-        );
+    // Ledger path: user-only filter (existing behavior).
+    if (
+      (mode === "ledger" || mode === "both") &&
+      gme.user === config.user_id
+    ) {
+      try {
+        const captureOutcome = await captureMessage(ledger, cm, config, llm);
+        if (captureOutcome.captured) {
+          console.error(
+            `[usrcp-slack] ledger captured ts=${cm.id} channel=${cm.channel.id} ` +
+              `→ event ${captureOutcome.event_id} (seq ${captureOutcome.ledger_sequence}` +
+              `${captureOutcome.duplicate ? ", duplicate" : ""})`
+          );
+        }
+      } catch (err) {
+        console.error("[usrcp-slack] capture error:", err instanceof Error ? err.message : err);
       }
-    } catch (err) {
-      console.error("[usrcp-slack] capture error:", err instanceof Error ? err.message : err);
+    }
+
+    // Stream path: both sides on allowlisted channels (bot already filtered above).
+    if (streamClient && (mode === "stream" || mode === "both")) {
+      try {
+        const streamOutcome = await captureMessageToStream(
+          streamClient as Parameters<typeof captureMessageToStream>[0],
+          cm,
+          config
+        );
+        if (streamOutcome.captured) {
+          console.error(
+            `[usrcp-slack] stream captured ts=${cm.id} (${streamOutcome.side}) ` +
+              `→ event ${streamOutcome.event_uuid}` +
+              (streamOutcome.thread_id ? ` (thread ${streamOutcome.thread_id})` : "")
+          );
+        }
+      } catch (err) {
+        console.error("[usrcp-slack] stream error:", err instanceof Error ? err.message : err);
+      }
     }
   });
 
@@ -138,6 +226,7 @@ async function main() {
       channel: { id: event.channel },
       thread: event.thread_ts ? { id: event.thread_ts } : null,
       team_id: event.team,
+      ts_ms: Math.floor(Number(event.ts) * 1000),
     };
 
     try {
@@ -180,6 +269,7 @@ async function main() {
       channel: { id: gme.channel },
       thread: gme.thread_ts ? { id: gme.thread_ts } : null,
       team_id: gme.team,
+      ts_ms: Math.floor(Number(gme.ts) * 1000),
     };
 
     // For DMs, temporarily add the DM channel to the allowlist for the reply check.
@@ -211,6 +301,7 @@ async function main() {
   const shutdown = async (signal: string) => {
     console.error(`[usrcp-slack] ${signal} received, shutting down.`);
     try { await app.stop(); } catch { /* ignore */ }
+    try { streamClient?.close(); } catch { /* ignore */ }
     try { ledger.close(); } catch { /* ignore */ }
     process.exit(0);
   };
@@ -223,7 +314,9 @@ async function main() {
   console.error(`[usrcp-slack] Capturing messages from user: ${config.user_id}`);
 }
 
-main().catch((err) => {
-  console.error("[usrcp-slack] fatal:", err instanceof Error ? err.message : err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error("[usrcp-slack] fatal:", err instanceof Error ? err.message : err);
+    process.exit(1);
+  });
+}

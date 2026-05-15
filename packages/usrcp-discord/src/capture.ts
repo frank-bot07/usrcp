@@ -23,10 +23,14 @@ import type { DiscordConfig } from "./config.js";
 export interface CaptureMessage {
   id: string;
   content: string;
-  author: { id: string; bot: boolean };
+  author: { id: string; bot: boolean; displayName?: string };
   channel: { id: string; name?: string };
   guild?: { id: string; name?: string } | null;
   thread?: { id: string } | null;
+  // Wall-clock timestamp of the message (ms since epoch). Required for
+  // stream-mode capture so the cross-surface stitcher can window
+  // properly. Populated by index.ts from discord.js m.createdTimestamp.
+  ts_ms: number;
 }
 
 // Subset of Ledger we need. Duck-typed so tests can pass a fresh Ledger

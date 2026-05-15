@@ -49,6 +49,7 @@ function mkMsg(ch: { id: string; name?: string }, content: string, overrides: Pa
     channel: ch,
     thread: null,
     team_id: TEAM_ID,
+    ts_ms: Date.now(),
     ...overrides,
   };
 }

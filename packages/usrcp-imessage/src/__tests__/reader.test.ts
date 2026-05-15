@@ -58,6 +58,7 @@ function mkMsg(
     content,
     author: { id: "+19995551234", isUser: false },
     chat: { id: chatId, guid: chatGuid, isGroup: false },
+    ts_ms: Date.now(),
     ...overrides,
   };
 }

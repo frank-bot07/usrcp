@@ -75,6 +75,19 @@ Opt-in providers (OpenAI, Voyage AI) require ALL of:
 
 The API key is stored inside the encrypted `stream-config.toml`, never on the command line and never in environment variables that might end up in `/proc`.
 
+## Capture surface coverage
+
+The four existing adapter packages can write into stream via `--mode stream` or `--mode both` (see each package's `README.md`):
+
+| Surface | Package | Default when stream installed |
+|---|---|---|
+| Discord | `usrcp-discord` | `--mode both` |
+| Telegram | `usrcp-telegram` | `--mode both` |
+| iMessage | `usrcp-imessage` | `--mode both` |
+| Slack | `usrcp-slack` | `--mode both` |
+
+The build prompt also called for capture adapters for `claude-desktop`, `cursor`, and `vscode`. These are **deferred to a separate PR**: Claude Desktop's session data lives in IndexedDB / Local Storage with no plaintext transcripts, Cursor's `History/*/entries.json` is undocumented CRDT-on-text (not turn boundaries), and `usrcp-vscode` is read-only with no event-emit hook. Real capture for any of those is reverse-engineering work that doesn't fit "minimal adapter."
+
 ## Configuration
 
 Defaults match the build prompt §7 and §8 thresholds:

@@ -53,3 +53,19 @@ Each captured message becomes a `timeline_events` row:
 - `thread_id` — optional `message_thread_id` for forum topics
 - `external_user_id` — Telegram user ID
 - Message body encrypted under the global key
+
+## Stream mode (Phase 6)
+
+When `usrcp-stream` is installed alongside this adapter, you can choose where captured messages land via `--mode`:
+
+- `--mode ledger`  — user-only messages, written to the local USRCP ledger. Existing behavior.
+- `--mode stream`  — bot-skipped, allowlisted, **every human's messages** (yours + everyone else's) flow into the encrypted `stream.db`. No ledger writes.
+- `--mode both`    — ledger keeps the user-only filter; stream captures all human messages on allowlisted chats. **Default when `usrcp-stream` is installed.**
+
+If `usrcp-stream` is not installed, the default is `--mode ledger` and the stream flag is unrecognized.
+
+```bash
+USRCP_PASSPHRASE=… node dist/index.js --mode both
+```
+
+Stream events on the same `(surface, channel_ref)` within `same_channel_window_ms` are stitched into one thread by the cross-surface stitcher; see `packages/usrcp-stream/README.md` for the keyspace, threat model, and recall surface.

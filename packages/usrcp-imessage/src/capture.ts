@@ -18,13 +18,14 @@ import type { ImessageConfig } from "./config.js";
  * can pass plain objects without spawning a real imsg process.
  */
 export interface CaptureMessage {
-  /** Message GUID — stable across imsg sessions. */
+  /** Message GUID - stable across imsg sessions. */
   id: string;
   content: string;
   author: {
     id: string;
     /** true if is_from_me=1 (user's own message), false for incoming. */
     isUser: boolean;
+    displayName?: string;
   };
   chat: {
     id: string;     // ROWID as string (stable per chat.db install)
@@ -32,6 +33,12 @@ export interface CaptureMessage {
     isGroup: boolean;
     displayName?: string;
   };
+  /**
+   * Wall-clock ms timestamp. Populated from imsg's `date` field when
+   * present; falls back to `Date.now()` at the index.ts boundary. Required
+   * for stream-mode windowing.
+   */
+  ts_ms: number;
 }
 
 // Subset of Ledger we need. Duck-typed so tests can pass a fresh Ledger

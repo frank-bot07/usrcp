@@ -64,6 +64,7 @@ function mkMsg(overrides: Partial<CaptureMessage> & { channel: CaptureMessage["c
     author: { id: USER_ID, bot: false },
     guild: { id: "guild_1", name: "test-guild" },
     thread: null,
+    ts_ms: Date.now(),
     ...overrides,
   };
 }

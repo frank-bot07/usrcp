@@ -21,14 +21,20 @@ import type { SlackConfig } from "./config.js";
  * can pass plain objects without a Bolt runtime dependency.
  */
 export interface CaptureMessage {
-  /** Slack ts — unique within channel, used as idempotency key. */
+  /** Slack ts - unique within channel, used as idempotency key. */
   id: string;
   content: string;
-  author: { id: string; bot: boolean };
+  author: { id: string; bot: boolean; displayName?: string };
   channel: { id: string; name?: string };
   thread?: { id: string } | null;
   /** team_id for cross-workspace idempotency key qualification. */
   team_id?: string;
+  /**
+   * Wall-clock ms timestamp from `Number(event.ts) * 1000` (Slack sends
+   * "seconds.microseconds" as a string). Required for stream-mode
+   * windowing.
+   */
+  ts_ms: number;
 }
 
 // Subset of Ledger we need. Duck-typed so tests can pass a fresh Ledger
