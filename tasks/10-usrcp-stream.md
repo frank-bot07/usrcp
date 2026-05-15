@@ -62,6 +62,14 @@ Codex round 2 returned 1 P0 + 1 P1 + 1 P2. All addressed in commit following thi
 | P1-1 same-channel key omitted surface | `channelKey` now takes `(surface, ref)` and prefixes the surface into the canonical string. Two events with identical channel_ref shapes on different surfaces no longer match the same-channel gate. New regression test in `stitch-same-channel.test.ts`. |
 | P2 pre-existing em dashes in usrcp-local | Acknowledged: the cleanup scope is "lines authored in this branch". Pre-existing em dashes in `usrcp-local/src/server.ts` and `usrcp-local/src/ledger/core.ts` predate this PR and stay untouched. A branch-wide sweep is a follow-up PR. |
 
+## Codex round-3 response
+
+Codex round 3 (`tasks/usrcp-stream-codex-review-round-3.md`) returned **APPROVE WITH CHANGES** with one P1:
+
+| Finding | Resolution |
+|---|---|
+| P1 literal NUL byte in `channelKey` source | The round-2 fix introduced a U+0000 separator between `${surface}` and the channel JSON, which made the TypeScript file flag as binary in `git diff` and broke grep/patch tooling. Replaced with the escape sequence ` `. Runtime behavior is identical; source is now plain ASCII. Verified via `git diff --text` and `python3 -c "open(...).read().count(b'\x00')" == 0`. |
+
 ## Acceptance criteria
 
-See build prompt §13. Branch is mergeable when those pass and Codex has signed off in writing (`tasks/usrcp-stream-codex-review.md`).
+See build prompt §13. Branch is mergeable when those pass and Codex has signed off in writing (`tasks/usrcp-stream-codex-review.md`, `-round-2.md`, `-round-3.md`).
