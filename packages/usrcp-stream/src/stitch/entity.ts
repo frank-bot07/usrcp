@@ -17,12 +17,15 @@ export function makeLedgerEntityResolver(ledger: Ledger): EntityResolver {
         const lc = content.toLowerCase();
         const hits = new Set<string>();
         for (const p of projects) {
-          const aliases: string[] = [p.name, ...((p as { aliases?: string[] }).aliases ?? [])];
+          const aliases: string[] = [
+            p.name,
+            ...((p as { aliases?: string[] }).aliases ?? []),
+          ];
           for (const alias of aliases) {
             if (!alias) continue;
             if (alias.length < 3) continue;
             if (lc.includes(alias.toLowerCase())) {
-              hits.add(p.id);
+              hits.add(p.project_id);
               break;
             }
           }

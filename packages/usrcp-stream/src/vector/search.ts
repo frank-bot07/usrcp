@@ -90,6 +90,16 @@ export function vectorSearch(
     ORDER BY v.distance ASC
   `;
 
+  // If no captures with this dim have happened yet, the vec table won't
+  // exist. Return no hits instead of throwing — recall on an empty
+  // stream is a valid state.
+  const tableExists = handle.db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name=?"
+    )
+    .get(vecTable) as { name: string } | undefined;
+  if (!tableExists) return [];
+
   const rows = handle.db
     .prepare(sql)
     .all(queryBuf, limit * KNN_OVERSCAN, ...filterParams) as RawRow[];
