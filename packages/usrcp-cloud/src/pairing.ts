@@ -1,11 +1,15 @@
 /**
- * Multi-device pairing endpoints.
+ * Multi-device pairing endpoints (v2).
  *
  * The server stores client-encrypted bundles under a short-TTL row keyed
- * by the 8-digit pairing code. The server never sees the bundle plaintext
- * (which contains the user's identity files) and never derives the
- * scrypt key from the code. See tasks/11-multi-device-pairing.md for the
- * threat model.
+ * by the 8-digit pairing code. In v2 the decryption key is derived
+ * client-side via HKDF-SHA256(IKM=secret, salt=code) where the 16-byte
+ * `secret` travels device-to-device out of band and never reaches this
+ * server. The route handlers below therefore see only the lookup code
+ * and opaque ciphertext; the bundle plaintext (user identity files) is
+ * cryptographically out of reach for the cloud, not just by convention.
+ * See tasks/12-pair-tier-2.md for the threat model and the retired v1
+ * design context in tasks/11-multi-device-pairing.md.
  */
 
 import type { FastifyInstance } from "fastify";

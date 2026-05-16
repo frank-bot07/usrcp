@@ -1,18 +1,28 @@
 /**
- * Multi-device pairing.
+ * Multi-device pairing (v2 = code + out-of-band secret).
  *
- * Device A: `pairInit` - bundles the local identity (salt, verify, identity.json,
- * encrypted private.pem), encrypts it under scrypt(code, FIXED_PAIRING_SALT),
- * and POSTs the ciphertext to /v1/pairing/init. Returns the 8-digit code.
+ * Device A: `pairInit` generates two values - an 8-digit `code` and a
+ * 16-byte random `secret`. It bundles the local identity (master.salt,
+ * master.verify, identity.json, encrypted private.pem), encrypts the
+ * bundle under HKDF(IKM=secret, salt=code, info="usrcp-pairing-v2"),
+ * and POSTs the ciphertext to /v1/pairing/init with ONLY the code as
+ * the lookup key. The secret never leaves the device through the cloud
+ * path - it travels device-to-device via the printed pairing string,
+ * a QR code, or any other out-of-band channel.
  *
- * Device B: `pairJoin` - GETs the ciphertext, decrypts with scrypt(code,
- * FIXED_PAIRING_SALT), writes the four key files atomically into the target
- * userDir/keys/, and validates the passphrase by calling initializeMasterKey
- * + getDecryptedPrivateKeyPem. On any failure the partial writes are rolled
- * back so the userDir is left empty.
+ * Device B: `pairJoin` takes the full pairing string (code + secret),
+ * GETs the ciphertext by code, derives the same key from secret+code,
+ * decrypts, writes the key files atomically into userDir/keys/, and
+ * validates the passphrase end-to-end. On any failure the partial
+ * writes are rolled back to the pre-existing content (or unlinked when
+ * no prior file existed).
  *
- * The server never sees the bundle plaintext. See tasks/11-multi-device-pairing.md
- * for the threat model.
+ * This supersedes the v1 design (8-digit code = scrypt input) where
+ * the cloud held the decryption material during the TTL. In v2 the
+ * cloud sees `(code, ciphertext)` only; the key requires the secret
+ * which the cloud never sees. tasks/12-pair-tier-2.md has the design
+ * write-up; the v1 model is retained as historical context in
+ * tasks/11-multi-device-pairing.md.
  */
 
 import * as crypto from "node:crypto";
@@ -21,7 +31,7 @@ import * as path from "node:path";
 import {
   encrypt,
   decrypt,
-  deriveFromPairingCode,
+  deriveFromPairingSecret,
   safeWriteFile,
   initializeMasterKey,
   setUserSlug,
@@ -30,8 +40,9 @@ import {
 } from "./encryption.js";
 import { getDecryptedPrivateKeyPem, type LedgerIdentity } from "./crypto.js";
 
-const PAIRING_BUNDLE_SCHEMA_V = 1;
+const PAIRING_BUNDLE_SCHEMA_V = 2;
 const MIN_BUNDLE_LEN = 16;
+const PAIRING_SECRET_BYTES = 16;
 
 export class InvalidPairingCode extends Error {
   constructor(message = "Invalid pairing code or bundle decryption failed.") {
@@ -175,6 +186,53 @@ function randomEightDigit(): string {
   return String(n);
 }
 
+// Pairing-string format:
+//   <8 digit code>-<32 hex chars of the 16-byte secret>
+// Displayed to the user as five 8-char groups separated by hyphens:
+//   1234-5678-aabbccdd-eeff0011-22334455-66778899
+// Lowercase hex (Buffer.toString("hex") default). The parser is
+// permissive about whitespace, hyphens, and case.
+const PAIRING_STRING_RE = /^[0-9]{8}[0-9a-f]{32}$/;
+const PAIRING_STRING_SEPS = /[\s-]/g;
+
+export function formatPairingString(code: string, secret: Buffer): string {
+  if (!/^[0-9]{8}$/.test(code)) {
+    throw new Error("formatPairingString: code must be exactly 8 digits.");
+  }
+  if (secret.length !== PAIRING_SECRET_BYTES) {
+    throw new Error(
+      `formatPairingString: secret must be ${PAIRING_SECRET_BYTES} bytes.`
+    );
+  }
+  const hex = secret.toString("hex");
+  // 1234-5678 then 4 groups of 8 hex chars
+  return [
+    code.slice(0, 4),
+    code.slice(4),
+    hex.slice(0, 8),
+    hex.slice(8, 16),
+    hex.slice(16, 24),
+    hex.slice(24, 32),
+  ].join("-");
+}
+
+export interface ParsedPairingString {
+  code: string;
+  secret: Buffer;
+}
+
+export function parsePairingString(input: string): ParsedPairingString {
+  const normalized = input.replace(PAIRING_STRING_SEPS, "").toLowerCase();
+  if (!PAIRING_STRING_RE.test(normalized)) {
+    throw new InvalidPairingCode(
+      "Pairing string must be 8 digits followed by 32 hex characters (40 chars total, ignoring spaces and hyphens)."
+    );
+  }
+  const code = normalized.slice(0, 8);
+  const secret = Buffer.from(normalized.slice(8), "hex");
+  return { code, secret };
+}
+
 // --- pairInit ---
 
 export interface PairInitOpts {
@@ -186,10 +244,15 @@ export interface PairInitOpts {
   fetchImpl?: typeof fetch;
 }
 
-export async function pairInit(opts: PairInitOpts): Promise<{
+export interface PairInitResult {
+  /** 8-digit lookup code that was sent to the server (no secret). */
   code: string;
+  /** Full pairing string (code + secret) to share with device B. */
+  pairingString: string;
   expires_at: string;
-}> {
+}
+
+export async function pairInit(opts: PairInitOpts): Promise<PairInitResult> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const bundle = readBundleSources(opts.userDir);
   const bundleJson = JSON.stringify(bundle);
@@ -198,36 +261,55 @@ export async function pairInit(opts: PairInitOpts): Promise<{
   // The server's 409 CODE_COLLISION is the only retryable error here.
   for (let attempt = 0; attempt < 3; attempt++) {
     const code = randomEightDigit();
-    const key = deriveFromPairingCode(code);
-    let encryptedBundle: string;
+    // The secret stays with the printed pairing string; the cloud only
+    // ever sees `code` and `encrypted_bundle`. Brand-new randomness per
+    // attempt so a 409 retry doesn't reuse a leaked secret.
+    const secret = crypto.randomBytes(PAIRING_SECRET_BYTES);
+    let result: PairInitResult | undefined;
     try {
-      encryptedBundle = encrypt(bundleJson, key);
+      const key = deriveFromPairingSecret(code, secret);
+      let encryptedBundle: string;
+      try {
+        encryptedBundle = encrypt(bundleJson, key);
+      } finally {
+        zeroBuffer(key);
+      }
+
+      const body: Record<string, unknown> = { code, encrypted_bundle: encryptedBundle };
+      if (opts.ttlSeconds !== undefined) body.ttl_seconds = opts.ttlSeconds;
+
+      const { status, json } = await signedFetch(
+        opts.endpoint,
+        "/v1/pairing/init",
+        "POST",
+        body,
+        opts.publicKeyPem,
+        opts.privateKeyPem,
+        fetchImpl
+      );
+
+      if (status === 200) {
+        // Format BEFORE the outer finally zeroes the secret.
+        result = {
+          code,
+          pairingString: formatPairingString(code, secret),
+          expires_at: String(json?.expires_at ?? ""),
+        };
+      } else if (status === 409 && json?.error === "CODE_COLLISION") {
+        // fall through to retry; outer finally still zeroes the secret
+      } else {
+        throw new Error(
+          `pairInit failed: HTTP ${status} ${JSON.stringify(json ?? null)}`
+        );
+      }
     } finally {
-      zeroBuffer(key);
+      // Always zero the secret, including on a thrown fetch / network error.
+      // The pairing string returned to the caller is the only copy that
+      // survives this call.
+      zeroBuffer(secret);
     }
-
-    const body: Record<string, unknown> = { code, encrypted_bundle: encryptedBundle };
-    if (opts.ttlSeconds !== undefined) body.ttl_seconds = opts.ttlSeconds;
-
-    const { status, json } = await signedFetch(
-      opts.endpoint,
-      "/v1/pairing/init",
-      "POST",
-      body,
-      opts.publicKeyPem,
-      opts.privateKeyPem,
-      fetchImpl
-    );
-
-    if (status === 200) {
-      return { code, expires_at: String(json?.expires_at ?? "") };
-    }
-    if (status === 409 && json?.error === "CODE_COLLISION") {
-      continue; // pick a new code
-    }
-    throw new Error(
-      `pairInit failed: HTTP ${status} ${JSON.stringify(json ?? null)}`
-    );
+    if (result) return result;
+    // CODE_COLLISION: try again with fresh code + fresh secret.
   }
   throw new Error("pairInit failed: three CODE_COLLISION attempts in a row.");
 }
@@ -243,64 +325,82 @@ export interface PairJoinOpts {
 }
 
 export async function pairJoin(
-  code: string,
+  pairingString: string,
   opts: PairJoinOpts
 ): Promise<{ user_id: string; public_key: string }> {
-  if (!/^[0-9]{8}$/.test(code)) {
-    throw new InvalidPairingCode("Pairing code must be exactly 8 digits.");
-  }
-  const fetchImpl = opts.fetchImpl ?? fetch;
-  const keysDir = keysDirOf(opts.userDir);
-  const identityPath = path.join(keysDir, "identity.json");
-  if (fs.existsSync(identityPath) && !opts.force) {
-    throw new Error(
-      `pairJoin: ${identityPath} already exists. Pass force: true to overwrite.`
-    );
-  }
-
-  // Unauthenticated GET - device B has no identity yet.
-  const url = opts.endpoint.replace(/\/$/, "") + `/v1/pairing/claim/${code}`;
-  const res = await fetchImpl(url, { method: "GET" });
-  let json: any = null;
-  try { json = await res.json(); } catch { json = null; }
-  if (res.status === 404) throw new PairingExpired();
-  if (res.status === 429) throw new PairingLocked();
-  if (res.status !== 200) {
-    throw new Error(`pairJoin: claim failed: HTTP ${res.status} ${JSON.stringify(json ?? null)}`);
-  }
-  const ciphertext = String(json?.encrypted_bundle ?? "");
-  if (ciphertext.length < MIN_BUNDLE_LEN) {
-    throw new Error("pairJoin: server returned a too-short bundle.");
-  }
-  // Defense in depth: `decrypt()` returns non-`enc:` input verbatim for
-  // pre-v0.1.3 plaintext compatibility. A malicious server could exploit
-  // that to serve a plaintext JSON bundle that bypasses the scrypt-derived
-  // pairing key entirely. Refuse anything that isn't authenticated
-  // ciphertext before handing it to decrypt().
-  if (!ciphertext.startsWith("enc:")) {
-    throw new InvalidPairingCode("Pairing bundle is not ciphertext; refusing.");
-  }
-
-  const key = deriveFromPairingCode(code);
-  let bundle: PairingBundle;
+  // Parse early so a malformed input doesn't even hit the network.
+  const { code, secret } = parsePairingString(pairingString);
+  // Single try/finally guarantees the 16-byte secret Buffer is zeroed on
+  // every exit path - including thrown fetches, JSON parse errors, and
+  // unexpected exceptions - rather than leaving it live until GC.
+  let key: Buffer | null = null;
   try {
-    let bundleJson: string;
-    try {
-      bundleJson = decrypt(ciphertext, key);
-    } catch {
-      throw new InvalidPairingCode();
+    const fetchImpl = opts.fetchImpl ?? fetch;
+    const keysDir = keysDirOf(opts.userDir);
+    const identityPath = path.join(keysDir, "identity.json");
+    if (fs.existsSync(identityPath) && !opts.force) {
+      throw new Error(
+        `pairJoin: ${identityPath} already exists. Pass force: true to overwrite.`
+      );
     }
-    try {
-      bundle = JSON.parse(bundleJson);
-    } catch {
-      throw new InvalidPairingCode("Pairing bundle was not valid JSON after decryption.");
+
+    // Unauthenticated GET - device B has no identity yet.
+    const url = opts.endpoint.replace(/\/$/, "") + `/v1/pairing/claim/${code}`;
+    const res = await fetchImpl(url, { method: "GET" });
+    let json: any = null;
+    try { json = await res.json(); } catch { json = null; }
+    if (res.status === 404) throw new PairingExpired();
+    if (res.status === 429) throw new PairingLocked();
+    if (res.status !== 200) {
+      throw new Error(`pairJoin: claim failed: HTTP ${res.status} ${JSON.stringify(json ?? null)}`);
     }
+    const ciphertext = String(json?.encrypted_bundle ?? "");
+    if (ciphertext.length < MIN_BUNDLE_LEN) {
+      throw new Error("pairJoin: server returned a too-short bundle.");
+    }
+    // Defense in depth: `decrypt()` returns non-`enc:` input verbatim for
+    // pre-v0.1.3 plaintext compatibility. A malicious server could exploit
+    // that to serve a plaintext JSON bundle that bypasses the
+    // HKDF-derived pairing key entirely. Refuse anything that isn't
+    // authenticated ciphertext before handing it to decrypt().
+    if (!ciphertext.startsWith("enc:")) {
+      throw new InvalidPairingCode("Pairing bundle is not ciphertext; refusing.");
+    }
+
+    key = deriveFromPairingSecret(code, secret);
+    return await pairJoinAfterDecrypt(ciphertext, key, opts, keysDir, identityPath);
   } finally {
-    zeroBuffer(key);
+    zeroBuffer(secret);
+    if (key) zeroBuffer(key);
+  }
+}
+
+async function pairJoinAfterDecrypt(
+  ciphertext: string,
+  key: Buffer,
+  opts: PairJoinOpts,
+  keysDir: string,
+  identityPath: string
+): Promise<{ user_id: string; public_key: string }> {
+  // Key is zeroed by the caller's outer try/finally, which also handles
+  // the secret. We just use it here and never let it out of scope.
+  let bundle: PairingBundle;
+  let bundleJson: string;
+  try {
+    bundleJson = decrypt(ciphertext, key);
+  } catch {
+    throw new InvalidPairingCode();
+  }
+  try {
+    bundle = JSON.parse(bundleJson);
+  } catch {
+    throw new InvalidPairingCode("Pairing bundle was not valid JSON after decryption.");
   }
 
   if (bundle.schema_v !== PAIRING_BUNDLE_SCHEMA_V) {
-    throw new Error(`pairJoin: unsupported bundle schema_v=${bundle.schema_v}`);
+    throw new Error(
+      `pairJoin: unsupported bundle schema_v=${bundle.schema_v} (expected ${PAIRING_BUNDLE_SCHEMA_V}; v1 codes are incompatible).`
+    );
   }
   if (!bundle.identity?.public_key || !bundle.identity?.user_id) {
     throw new Error("pairJoin: bundle is missing required identity fields.");

@@ -203,11 +203,11 @@ function deriveFromPassphrase(passphrase: string, salt: Buffer): Buffer {
   });
 }
 
-// Fixed, well-known salt for deriving the bundle-encryption key from an
-// 8-digit pairing code. NOT a secret; it is a personalization string that
-// stops a precomputed scrypt table for ALL 1e8 codes from being reusable
-// for unrelated pairing contexts. Brute-force resistance comes from the
-// scrypt cost parameters + the bundle's short TTL on the server.
+// Fixed personalization salt for the legacy (v1) pairing KDF where the
+// 8-digit code was BOTH the lookup key sent to the server AND the scrypt
+// input. v2 (deriveFromPairingSecret below) replaces this design so the
+// cloud no longer holds the decryption material; v1 is retained only for
+// schema_v=1 bundle compatibility during the rollout window.
 export const FIXED_PAIRING_SALT: Buffer = Buffer.from(
   "usrcp-pairing-v1-fixed-salt-32by", // 32 bytes ASCII
   "utf8"
@@ -215,6 +215,30 @@ export const FIXED_PAIRING_SALT: Buffer = Buffer.from(
 
 export function deriveFromPairingCode(code: string): Buffer {
   return deriveFromPassphrase(code, FIXED_PAIRING_SALT);
+}
+
+// v2 KDF: the 16-byte `secret` is the actual encryption material and
+// never reaches the server; `code` is the 8-digit lookup key sent to
+// /v1/pairing/init only. HKDF stretches the 128-bit secret to 256 bits
+// and uses the code as a salt so the same secret would yield a
+// different key under a different code (defense if a client RNG ever
+// regenerates the secret). Output: 32 bytes for AES-256-GCM.
+const PAIRING_HKDF_INFO = Buffer.from("usrcp-pairing-v2", "utf8");
+export function deriveFromPairingSecret(code: string, secret: Buffer): Buffer {
+  if (secret.length !== 16) {
+    throw new Error(
+      `deriveFromPairingSecret: secret must be 16 bytes, got ${secret.length}`
+    );
+  }
+  return Buffer.from(
+    crypto.hkdfSync(
+      "sha256",
+      secret,
+      Buffer.from(code, "utf8"),
+      PAIRING_HKDF_INFO,
+      32
+    )
+  );
 }
 
 export function initializeMasterKey(passphrase?: string): Buffer {

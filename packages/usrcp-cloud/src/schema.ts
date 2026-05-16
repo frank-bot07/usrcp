@@ -128,20 +128,22 @@ CREATE TABLE IF NOT EXISTS seen_nonces (
 );
 CREATE INDEX IF NOT EXISTS idx_nonces_seen ON seen_nonces(seen_at);
 
--- Multi-device pairing bundles. Device A POSTs a client-encrypted bundle
--- under a short-TTL 8-digit code; device B GETs it by code, decrypts
--- locally with scrypt(code, FIXED_PAIRING_SALT). The server stores
--- ciphertext only and never calls the decrypt path, BUT this row holds
--- the 8-digit 'code' next to 'encrypted_bundle' and the code IS the
--- scrypt input, so anyone with row-level read access (DB dump, log of
--- the POST body, malicious operator) can derive the key in a single
--- scrypt invocation. The cloud is therefore trusted for the TTL window
--- rather than cryptographically barred from decrypting; the full
--- trust model lives in tasks/11-multi-device-pairing.md and the
--- READMEs. claim_attempts is incremented on every GET; once it hits 5,
--- the prune loop deletes the row (forces device A to re-init rather
--- than letting an external attacker who does NOT know the code keep
--- trying via the public claim endpoint).
+-- Multi-device pairing bundles (v2). Device A POSTs a client-encrypted
+-- bundle under a short-TTL 8-digit code; device B GETs it by code and
+-- decrypts locally with
+-- HKDF-SHA256(IKM=secret, salt=code, info='usrcp-pairing-v2'), where
+-- 'secret' is a 16-byte value that travels device-to-device out of
+-- band (paste, AirDrop, QR) and NEVER reaches the cloud. The row
+-- therefore holds only the lookup code and the ciphertext; the
+-- decryption key requires the secret which the cloud has no path to.
+-- An attacker with row-level read access (DB dump, log of the POST
+-- body, malicious operator) sees the code and the ciphertext only;
+-- brute-forcing the 128-bit secret is 2^128 work. claim_attempts is
+-- incremented on every GET; once it hits 5, the prune loop deletes
+-- the row (forces device A to re-init rather than letting an external
+-- attacker who does NOT know the code keep trying via the public
+-- claim endpoint). The v1 design (8-digit code = scrypt input, cloud
+-- trusted for the TTL) is retired; see tasks/12-pair-tier-2.md.
 CREATE TABLE IF NOT EXISTS pairing_bundles (
   code             TEXT PRIMARY KEY,
   owner_public_key TEXT NOT NULL REFERENCES users(public_key) ON DELETE CASCADE,

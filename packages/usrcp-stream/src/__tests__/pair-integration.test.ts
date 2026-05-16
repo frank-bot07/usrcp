@@ -100,14 +100,16 @@ describe("multi-device pairing - end-to-end", () => {
     const alice = setupAliceIdentity();
     const aliceUserDir = getUserDir();
 
-    const { code } = await pairInit({
+    const initResult = await pairInit({
       userDir: aliceUserDir,
       publicKeyPem: alice.publicKey,
       privateKeyPem: alice.privateKey,
       endpoint: "http://stub",
       fetchImpl: cloud.fetchImpl,
     });
+    const { code, pairingString } = initResult;
     expect(/^[0-9]{8}$/.test(code)).toBe(true);
+    expect(pairingString.replace(/-/g, "").length).toBe(40); // 8 digits + 32 hex
 
     // No-plaintext-on-server check: the stored bundle ciphertext does NOT
     // contain alice's user_id or PEM substrings as plaintext.
@@ -119,14 +121,25 @@ describe("multi-device pairing - end-to-end", () => {
     expect(bundle.includes(alice.userId)).toBe(false);
     expect(bundle.includes("BEGIN PRIVATE KEY")).toBe(false);
     expect(bundle.includes("BEGIN PUBLIC KEY")).toBe(false);
-    // We do permit the prefix marker.
     expect(bundle.startsWith("enc:")).toBe(true);
 
-    // Switch HOME to bob, run pairJoin.
+    // v2 invariant: the 16-byte secret half of the pairing string MUST
+    // NOT appear in any column of the pairing_bundles row. The cloud
+    // sees the lookup code and the ciphertext only.
+    const secretHex = pairingString.replace(/-/g, "").slice(8);
+    expect(secretHex.length).toBe(32);
+    const allRow = await cloud.cloudDb.query<{ code: string; encrypted_bundle: string; owner_public_key: string }>(
+      "SELECT code, encrypted_bundle, owner_public_key FROM pairing_bundles WHERE code = $1",
+      [code]
+    );
+    for (const col of [allRow.rows[0].code, allRow.rows[0].encrypted_bundle, allRow.rows[0].owner_public_key]) {
+      expect(col.toLowerCase().includes(secretHex.toLowerCase())).toBe(false);
+    }
+
     process.env.HOME = bobHome;
     setUserSlug("default");
     const bobUserDir = getUserDir();
-    const r = await pairJoin(code, {
+    const r = await pairJoin(pairingString, {
       userDir: bobUserDir,
       passphrase: PASSPHRASE,
       endpoint: "http://stub",
@@ -183,7 +196,7 @@ describe("multi-device pairing - end-to-end", () => {
 
   it("wrong-passphrase pairJoin leaves bob's keys/ dir untouched", async () => {
     const alice = setupAliceIdentity();
-    const { code } = await pairInit({
+    const { pairingString } = await pairInit({
       userDir: getUserDir(),
       publicKeyPem: alice.publicKey,
       privateKeyPem: alice.privateKey,
@@ -195,7 +208,7 @@ describe("multi-device pairing - end-to-end", () => {
     setUserSlug("default");
     const bobUserDir = getUserDir();
     await expect(
-      pairJoin(code, {
+      pairJoin(pairingString, {
         userDir: bobUserDir,
         passphrase: "wrong-passphrase",
         endpoint: "http://stub",

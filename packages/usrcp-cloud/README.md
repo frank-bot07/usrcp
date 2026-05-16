@@ -72,16 +72,24 @@ Schema details: see `stream_events` and `stream_embeddings` in
 
 Multi-device pairing lets a new device join an existing user's Ed25519
 identity via the cloud, without manually copying the `keys/` directory.
-The server stores ciphertext bundles and never calls the decrypt path,
-but the bundle's decryption key is derived from the 8-digit `code` that
-the server also stores - so the cloud is **trusted for the 10-minute
-TTL window**, not cryptographically blocked from decrypting. See the
-Threat model section below.
+
+**v2 design (current):** the user-facing pairing string is `<8 digit
+code>-<16 random bytes in hex>`, e.g.
+`1234-5678-aabbccdd-eeff0011-22334455-66778899`. Device A POSTs the
+8-digit `code` plus a ciphertext encrypted under
+`HKDF-SHA256(IKM=secret, salt=code, info="usrcp-pairing-v2")`. The
+16-byte secret travels device-to-device via the printed string (paste,
+QR, AirDrop, etc.) and **never reaches the cloud**, which is why the
+server cannot decrypt the bundle even if its DB or logs leak.
 
 - `POST /v1/pairing/init` (Ed25519-signed): device A uploads a bundle
-  encrypted client-side under `scrypt(code, FIXED_PAIRING_SALT)`. Body:
-  `{ code: "12345678", encrypted_bundle, ttl_seconds? }`. Defaults to a
-  10-minute TTL (max 30 minutes). Returns the expiration timestamp.
+  encrypted client-side under
+  `HKDF-SHA256(IKM=secret, salt=code, info="usrcp-pairing-v2")` where
+  `secret` is 16 random bytes held only by the two devices. Body:
+  `{ code: "12345678", encrypted_bundle, ttl_seconds? }`. The body
+  carries the lookup code only; the secret never reaches the server.
+  Defaults to a 10-minute TTL (max 30 minutes). Returns the
+  expiration timestamp.
 - `GET /v1/pairing/claim/:code` (unauthenticated; device B has no
   identity yet): atomically increments `claim_attempts` and returns
   `{ encrypted_bundle, owner_public_key, expires_at, attempts_remaining }`.
@@ -94,30 +102,26 @@ Threat model section below.
 The same `setInterval` that prunes nonces also deletes pairing rows that
 have expired or hit the 5-attempt cap.
 
-### Threat model
+### Threat model (v2)
 
 The server sees: the 8-digit code (stored verbatim as the row's primary
 key), the Ed25519 signature from device A, and the opaque ciphertext
-blob. Because the bundle is encrypted under
-`scrypt(code, FIXED_PAIRING_SALT, N=131072)` and the cloud holds the
-code alongside the ciphertext, **the cloud has the decryption material
-during the 10-minute TTL.** It cannot decrypt by design (it never calls
-the scrypt KDF), but anyone with read access to the row (DB dump, log
-that captured the POST body, malicious operator) can derive the key
-offline in a single scrypt invocation - this is not a brute-force
-problem; the code IS the key.
+blob. It does NOT see the 16-byte secret; the secret half of the
+pairing string is transferred device-to-device out of band. The bundle
+is encrypted under `HKDF-SHA256(IKM=secret, salt=code,
+info="usrcp-pairing-v2")` so a 128-bit-entropy secret stretches to a
+256-bit AES-GCM key. An attacker with row-level access to the
+`pairing_bundles` table sees the lookup code and the ciphertext only;
+without the secret, brute-force is 2^128 work.
 
-The 5-attempts-per-code cap protects against an *external* attacker who
-does NOT know the code (e.g., someone probing the public GET endpoint).
-It does nothing against the cloud itself. The 10-min default TTL bounds
-how long a compromised row stays exposed.
+The 5-attempts-per-code cap protects against an external attacker
+probing the public claim endpoint who doesn't have the code. The
+10-min default TTL bounds how long a row stays around after pairing.
 
-**Operational guidance:** if you do not trust your cloud provider for a
-10-minute window per pairing, do not use this flow - copy `keys/`
-between devices manually over SSH/USB instead. See
-`tasks/11-multi-device-pairing.md` for the full design rationale and
-the tier-2 redesign options (out-of-band secret, hashed lookup key)
-that would close this gap at the cost of UX.
+The previous v1 design (code = scrypt input) made the cloud trusted
+for the TTL window; it has been retired. The decision write-up lives in
+`tasks/12-pair-tier-2.md`; the historical v1 context is preserved in
+`tasks/11-multi-device-pairing.md`.
 
 ## What the server *can* see
 
