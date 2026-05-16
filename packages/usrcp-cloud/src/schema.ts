@@ -130,10 +130,18 @@ CREATE INDEX IF NOT EXISTS idx_nonces_seen ON seen_nonces(seen_at);
 
 -- Multi-device pairing bundles. Device A POSTs a client-encrypted bundle
 -- under a short-TTL 8-digit code; device B GETs it by code, decrypts
--- locally with scrypt(code, FIXED_PAIRING_SALT). Server stores only
--- ciphertext, has no way to decrypt. claim_attempts is incremented on
--- every GET; once it hits 5, the prune loop deletes the row (forces
--- device A to re-init rather than letting an attacker keep trying).
+-- locally with scrypt(code, FIXED_PAIRING_SALT). The server stores
+-- ciphertext only and never calls the decrypt path, BUT this row holds
+-- the 8-digit 'code' next to 'encrypted_bundle' and the code IS the
+-- scrypt input, so anyone with row-level read access (DB dump, log of
+-- the POST body, malicious operator) can derive the key in a single
+-- scrypt invocation. The cloud is therefore trusted for the TTL window
+-- rather than cryptographically barred from decrypting; the full
+-- trust model lives in tasks/11-multi-device-pairing.md and the
+-- READMEs. claim_attempts is incremented on every GET; once it hits 5,
+-- the prune loop deletes the row (forces device A to re-init rather
+-- than letting an external attacker who does NOT know the code keep
+-- trying via the public claim endpoint).
 CREATE TABLE IF NOT EXISTS pairing_bundles (
   code             TEXT PRIMARY KEY,
   owner_public_key TEXT NOT NULL REFERENCES users(public_key) ON DELETE CASCADE,

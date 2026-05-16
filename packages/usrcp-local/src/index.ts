@@ -973,7 +973,12 @@ async function cmdPair(subcommand: string | undefined, rest: string[]): Promise<
       console.error("  Error: no cloud_endpoint configured. Pass --endpoint=<url> or run `usrcp config set cloud_endpoint <url>`.");
       process.exit(1);
     }
-    let passphrase = process.env.USRCP_PASSPHRASE ?? getArg("passphrase");
+    // Route env/flag passphrase through the shared helper so we get the
+    // same safeguards as the rest of the CLI: USRCP_PASSPHRASE is cleared
+    // from the environment after read, and --passphrase emits the
+    // process-list-visibility warning. Fall back to an interactive prompt
+    // when nothing is supplied.
+    let passphrase = getPassphrase();
     if (!passphrase) {
       if (!process.stdin.isTTY) {
         console.error("  Error: pair join needs a passphrase. Pass --passphrase or set USRCP_PASSPHRASE.");
