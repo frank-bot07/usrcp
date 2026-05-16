@@ -92,16 +92,28 @@ have expired or hit the 5-attempt cap.
 
 ### Threat model
 
-The server sees: the 8-digit code (primary key on the row), the Ed25519
-signature from device A, and the opaque ciphertext blob. The bundle's
-decryption key is `scrypt(code, FIXED_PAIRING_SALT, N=131072)`.
+The server sees: the 8-digit code (stored verbatim as the row's primary
+key), the Ed25519 signature from device A, and the opaque ciphertext
+blob. Because the bundle is encrypted under
+`scrypt(code, FIXED_PAIRING_SALT, N=131072)` and the cloud holds the
+code alongside the ciphertext, **the cloud has the decryption material
+during the 10-minute TTL.** It cannot decrypt by design (it never calls
+the scrypt KDF), but anyone with read access to the row (DB dump, log
+that captured the POST body, malicious operator) can derive the key
+offline in a single scrypt invocation - this is not a brute-force
+problem; the code IS the key.
 
-A maximally-malicious cloud could attempt to brute-force the 8-digit
-code during the bundle's TTL. The 5-attempts-per-code cap and the 10-min
-default TTL bound that exposure. We accept the residual risk: if you do
-not trust your cloud provider during a 10-minute window, pairing isn't
-safe; use the manual-copy fallback (copy `keys/` between devices via
-SSH/USB) instead. See `tasks/11-multi-device-pairing.md`.
+The 5-attempts-per-code cap protects against an *external* attacker who
+does NOT know the code (e.g., someone probing the public GET endpoint).
+It does nothing against the cloud itself. The 10-min default TTL bounds
+how long a compromised row stays exposed.
+
+**Operational guidance:** if you do not trust your cloud provider for a
+10-minute window per pairing, do not use this flow - copy `keys/`
+between devices manually over SSH/USB instead. See
+`tasks/11-multi-device-pairing.md` for the full design rationale and
+the tier-2 redesign options (out-of-band secret, hashed lookup key)
+that would close this gap at the cost of UX.
 
 ## What the server *can* see
 

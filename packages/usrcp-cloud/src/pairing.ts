@@ -62,10 +62,16 @@ export function registerPairingRoutes(app: FastifyInstance, db: Db): void {
     // upserts it before we get here, so the FK will always resolve.
     // ON CONFLICT lets the same owner replace their own pending bundle
     // (e.g. they re-ran `usrcp pair init` because the user lost the code).
+    // ON CONFLICT also rewrites owner_public_key so an expired-but-not-yet-
+    // pruned row from a previous owner cannot leak ownership to the new
+    // poster (the pre-check filter only matches LIVE rows; an expired row
+    // falls through and lands here). The live-cross-user-collision case is
+    // already blocked by the 409 above, so this is safe.
     const insert = await db.query<{ expires_at: string }>(
       `INSERT INTO pairing_bundles (code, owner_public_key, encrypted_bundle, expires_at)
        VALUES ($1, $2, $3, now() + ($4::text || ' seconds')::interval)
        ON CONFLICT (code) DO UPDATE SET
+         owner_public_key = EXCLUDED.owner_public_key,
          encrypted_bundle = EXCLUDED.encrypted_bundle,
          expires_at       = EXCLUDED.expires_at,
          claim_attempts   = 0,

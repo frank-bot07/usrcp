@@ -116,6 +116,47 @@ describe("POST /v1/pairing/init", () => {
     expect(probe.rows[0].claim_attempts).toBe(0);
   });
 
+  it("transfers ownership when a different owner posts the same EXPIRED code", async () => {
+    // An expired-but-not-yet-pruned row from alice must not leak ownership
+    // to bob if bob posts the same code. The pre-check only matches LIVE
+    // rows, so the ON CONFLICT path executes; that path must rewrite
+    // owner_public_key, otherwise bob's `pair status`/`cancel` won't see
+    // the new bundle and alice could cancel it.
+    const alice = makeKeyPair();
+    const bob = makeKeyPair();
+    await signedInject(alice.privateKeyPem, alice.publicKeyPem, "POST", "/v1/pairing/init", {
+      code: "33330000",
+      encrypted_bundle: bundle("ALICE_EXPIRED"),
+    });
+    await db.query(
+      "UPDATE pairing_bundles SET expires_at = $1 WHERE code = $2",
+      [new Date(Date.now() - 60_000).toISOString(), "33330000"]
+    );
+
+    const res = await signedInject(bob.privateKeyPem, bob.publicKeyPem, "POST", "/v1/pairing/init", {
+      code: "33330000",
+      encrypted_bundle: bundle("BOB_FRESH"),
+    });
+    expect(res.statusCode).toBe(200);
+
+    const row = await db.query<{ owner_public_key: string; encrypted_bundle: string }>(
+      "SELECT owner_public_key, encrypted_bundle FROM pairing_bundles WHERE code = $1",
+      ["33330000"]
+    );
+    // Owner must now be bob (not alice).
+    const bobPubFromHeader = bob.publicKeyPem; // raw PEM as stored
+    expect(row.rows[0].owner_public_key).toBe(bobPubFromHeader);
+    expect(row.rows[0].encrypted_bundle).toBe(bundle("BOB_FRESH"));
+
+    // Sanity: alice's `list` no longer sees the row, bob's does.
+    const aliceList = await signedInject(alice.privateKeyPem, alice.publicKeyPem, "GET", "/v1/pairing/list");
+    const aliceCodes = (aliceList.json().bundles as { code: string }[]).map((b) => b.code);
+    expect(aliceCodes).not.toContain("33330000");
+    const bobList = await signedInject(bob.privateKeyPem, bob.publicKeyPem, "GET", "/v1/pairing/list");
+    const bobCodes = (bobList.json().bundles as { code: string }[]).map((b) => b.code);
+    expect(bobCodes).toContain("33330000");
+  });
+
   it("a DIFFERENT owner cannot overwrite an existing code (409 CODE_COLLISION)", async () => {
     const alice = makeKeyPair();
     const bob = makeKeyPair();

@@ -85,9 +85,16 @@ usrcp pair status                              # list pending codes
 usrcp pair cancel  <CODE>                      # delete a pending code
 ```
 
-The default code TTL is 10 minutes. After 5 wrong claim attempts the
-bundle is locked and you must re-init on the source device.
+The default code TTL is 10 minutes. After 5 wrong claim attempts on a
+code the bundle is locked and the source device must re-init. That cap
+protects against external attackers probing the public GET endpoint;
+it does NOT protect against the cloud provider itself, which holds the
+code alongside the ciphertext during the TTL and can derive the
+decryption key in a single scrypt call.
 
-If you don't trust your cloud provider during the 10-minute window, do
-not pair; copy `keys/` between machines manually instead. See
-`tasks/11-multi-device-pairing.md` for the full threat model.
+**Trust requirement:** the cloud provider is trusted to not read or
+copy the row during the 10-minute pairing window. If that assumption
+doesn't hold for your provider, copy `keys/` between devices manually
+(SSH/USB) instead. The full design and the tier-2 redesign options
+(out-of-band secret, hashed lookup key) live in
+`tasks/11-multi-device-pairing.md`.

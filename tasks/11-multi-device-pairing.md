@@ -31,19 +31,42 @@ sanity check.
 
 ## Threat model
 
-The server sees: the 8-digit code (primary key), an Ed25519-signed
-POST from device A, and the encrypted bundle blob. It does **not** see
-the passphrase or the bundle plaintext.
+The server sees:
 
-A maximally-malicious cloud could attempt to brute-force the 8-digit
-code within the bundle's TTL. The scrypt cost (N=131072, r=8, p=2)
-makes that ~3 hours of single-machine CPU-time per code; a GPU farm
-brings that down, but the 10-minute TTL still constrains the window.
+- The 8-digit code, stored verbatim as the primary key on the row.
+- The Ed25519-signed POST from device A (proves which user owns the bundle).
+- The encrypted bundle blob.
 
-**We accept the residual risk**: if you do not trust your cloud
-provider for a 10-minute window per pairing, this flow is not for you.
-Fall back to manual `keys/` copy over SSH/USB. This trade-off is called
-out in both READMEs.
+It does **not** see the passphrase or the bundle plaintext, and the
+server code never calls the scrypt KDF.
+
+**The cloud holds the decryption material during the TTL.** The bundle
+is encrypted under `scrypt(code, FIXED_PAIRING_SALT, N=131072)`, and
+the cloud stores `code` alongside `encrypted_bundle`. Anyone with read
+access to the row (operator, log that captured the POST body, DB dump)
+can derive the key offline in a single scrypt invocation. This is not
+a brute-force problem; the code IS the key. The 5-attempts-per-code
+cap protects against an *external* attacker probing the public GET
+endpoint - it does nothing against the cloud itself.
+
+**Residual risk we accept:** for the 10-minute TTL window, the cloud
+provider is trusted. If you don't trust your cloud provider for that
+window, use the manual `keys/` copy fallback over SSH/USB. This
+trade-off is called out in both READMEs.
+
+### Tier-2 design options (NOT in this PR)
+
+The current design optimises for the "8 digits read aloud" UX. Two
+alternatives would close the cloud-holds-the-key gap at a UX cost:
+
+| Option | Mechanism | UX cost |
+|---|---|---|
+| Out-of-band secret | Random 128-bit secret stays between devices; cloud sees `(code, ciphertext)` where ciphertext is encrypted under `HKDF(code || secret)`. Code is the lookup; secret is the actual key. | Code becomes long enough to embed the secret (e.g., 24+ base32 chars) - not voiceable. QR code becomes the natural transport. |
+| Hashed lookup key | Server stores `hash(code)` as the PK; raw code never reaches the server. Same 8-digit UX preserved. | Only protects against passive log dumps; an active malicious server can still observe codes in transit during the POST, so the protection is weaker than option 1. |
+
+If/when Chad decides the trust-the-cloud window is unacceptable, option 1
+is the right path. The current PR documents the trade-off honestly and
+leaves both options open.
 
 Specifically NOT in this PR:
 
