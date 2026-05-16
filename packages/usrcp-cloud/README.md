@@ -136,15 +136,22 @@ header set using the OLD key (K1). Body:
 }
 ```
 
-On success the server atomically:
+On success the server, inside a single transaction:
 
-1. Re-points every child row (timeline_events, core_identity,
-   global_preferences, domain_context, active_projects,
-   schemaless_facts, domain_maps, stream_events, stream_embeddings)
-   from K1 to K2.
-2. Drops any pending pairing_bundles owned by K1 (they're stale).
-3. Replaces the K1 row in `users` with K2, preserving `created_at`.
-4. Inserts a row into `revoked_keys` recording `(K1 -> K2)`.
+1. Inserts a new K2 row in `users`, copying K1's `created_at`.
+2. Copies `stream_events` and `stream_embeddings` from K1 to K2 via
+   parent-first `INSERT ... SELECT` (the composite FK on
+   `stream_embeddings` declares only ON DELETE CASCADE, so a plain
+   UPDATE would orphan the child rows), then deletes the K1 child
+   rows (child first then parent).
+3. Plain `UPDATE` re-points the remaining per-user child tables
+   (timeline_events, core_identity, global_preferences,
+   domain_context, active_projects, schemaless_facts, domain_maps)
+   from K1 to K2. Safe because the K2 users row already exists.
+4. Drops K1's pending pairing_bundles and seen_nonces (stale /
+   housekeeping).
+5. Deletes the K1 row from `users`.
+6. Inserts `(K1, K2)` into `revoked_keys`.
 
 After rotation, every signed request from K1 is rejected with 401
 `KEY_REVOKED` (the auth middleware checks `revoked_keys` before the

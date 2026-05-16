@@ -37,16 +37,33 @@ parameters without ambiguity.
 On success the cloud, inside a single transaction:
 
 1. `SELECT public_key FOR UPDATE` on the K1 user row.
-2. `INSERT INTO users (public_key, created_at, last_seen_at)` copying
-   `created_at` from K1, so the user's join date is preserved.
-3. `UPDATE <each child table> SET user_public_key = K2 WHERE user_public_key = K1` for:
+2. RE-check `revoked_keys` for K1 inside the locked transaction (auth
+   already checked it but a concurrent rotation could have committed
+   in the meantime). If found, abort with 409 `CONCURRENT_ROTATION`.
+3. `INSERT INTO users (public_key, created_at, last_seen_at)` copying
+   `created_at` from K1, so the user's join date is preserved. If
+   `INSERT-from-SELECT` returns 0 rows, abort with 409
+   `CONCURRENT_ROTATION`.
+4. For `stream_events` and `stream_embeddings`: the composite FK on
+   `stream_embeddings(user_public_key, event_id) REFERENCES
+   stream_events(user_public_key, event_id)` declares only ON DELETE
+   CASCADE, so a plain UPDATE of the parent would orphan the child
+   rows. Instead the rotation:
+     a. `INSERT INTO stream_events ... SELECT $K2, ... FROM stream_events WHERE user_public_key = $K1`
+     b. `INSERT INTO stream_embeddings ... SELECT $K2, ... FROM stream_embeddings WHERE user_public_key = $K1`
+     c. `DELETE FROM stream_embeddings WHERE user_public_key = $K1`
+     d. `DELETE FROM stream_events WHERE user_public_key = $K1`
+   (child copied AFTER parent so the FK is valid throughout, child
+   deleted BEFORE parent for the same reason.)
+5. `UPDATE <each child table> SET user_public_key = K2 WHERE user_public_key = K1` for the remaining per-user tables:
    timeline_events, core_identity, global_preferences, domain_context,
-   active_projects, schemaless_facts, domain_maps, stream_events,
-   stream_embeddings.
-4. `DELETE FROM pairing_bundles WHERE owner_public_key = K1` (stale).
-5. `DELETE FROM seen_nonces WHERE user_public_key = K1` (housekeeping).
-6. `DELETE FROM users WHERE public_key = K1`.
-7. `INSERT INTO revoked_keys (public_key, rotated_to) VALUES (K1, K2)`.
+   active_projects, schemaless_facts, domain_maps. These FKs only
+   reference `users(public_key)` so plain UPDATE is safe once the K2
+   users row already exists from step 3.
+6. `DELETE FROM pairing_bundles WHERE owner_public_key = K1` (stale).
+7. `DELETE FROM seen_nonces WHERE user_public_key = K1` (housekeeping).
+8. `DELETE FROM users WHERE public_key = K1`.
+9. `INSERT INTO revoked_keys (public_key, rotated_to) VALUES (K1, K2) ON CONFLICT DO NOTHING`.
 
 The auth middleware (`packages/usrcp-cloud/src/auth.ts`) checks
 `revoked_keys` BEFORE the nonce-claim / users-upsert path, so a
