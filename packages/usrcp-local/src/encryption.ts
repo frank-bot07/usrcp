@@ -203,6 +203,20 @@ function deriveFromPassphrase(passphrase: string, salt: Buffer): Buffer {
   });
 }
 
+// Fixed, well-known salt for deriving the bundle-encryption key from an
+// 8-digit pairing code. NOT a secret; it is a personalization string that
+// stops a precomputed scrypt table for ALL 1e8 codes from being reusable
+// for unrelated pairing contexts. Brute-force resistance comes from the
+// scrypt cost parameters + the bundle's short TTL on the server.
+export const FIXED_PAIRING_SALT: Buffer = Buffer.from(
+  "usrcp-pairing-v1-fixed-salt-32by", // 32 bytes ASCII
+  "utf8"
+);
+
+export function deriveFromPairingCode(code: string): Buffer {
+  return deriveFromPassphrase(code, FIXED_PAIRING_SALT);
+}
+
 export function initializeMasterKey(passphrase?: string): Buffer {
   fs.mkdirSync(getKeysDir(), { recursive: true, mode: 0o700 });
 

@@ -128,6 +128,23 @@ CREATE TABLE IF NOT EXISTS seen_nonces (
 );
 CREATE INDEX IF NOT EXISTS idx_nonces_seen ON seen_nonces(seen_at);
 
+-- Multi-device pairing bundles. Device A POSTs a client-encrypted bundle
+-- under a short-TTL 8-digit code; device B GETs it by code, decrypts
+-- locally with scrypt(code, FIXED_PAIRING_SALT). Server stores only
+-- ciphertext, has no way to decrypt. claim_attempts is incremented on
+-- every GET; once it hits 5, the prune loop deletes the row (forces
+-- device A to re-init rather than letting an attacker keep trying).
+CREATE TABLE IF NOT EXISTS pairing_bundles (
+  code             TEXT PRIMARY KEY,
+  owner_public_key TEXT NOT NULL REFERENCES users(public_key) ON DELETE CASCADE,
+  encrypted_bundle TEXT NOT NULL,
+  expires_at       TIMESTAMPTZ NOT NULL,
+  claim_attempts   INTEGER NOT NULL DEFAULT 0,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_pairing_expires ON pairing_bundles(expires_at);
+CREATE INDEX IF NOT EXISTS idx_pairing_owner ON pairing_bundles(owner_public_key);
+
 -- ============================================================================
 -- usrcp-stream sync tables.
 -- ============================================================================

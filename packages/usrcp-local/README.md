@@ -52,5 +52,51 @@ CLI. Supported targets: `claude-code`, `claude-desktop`, `cursor`,
 ```
 
 The master key never leaves your machine. Cloud sync (`usrcp-cloud`) is
-ciphertext-only — the hosted ledger stores opaque blobs and can never
+ciphertext-only - the hosted ledger stores opaque blobs and can never
 decrypt.
+
+## Multi-device pairing
+
+Share your identity to a new device without copying `keys/` by hand:
+
+```bash
+# On the existing device (passphrase mode required):
+usrcp pair init
+#  Pairing code:  1234-5678
+#  Expires:       2026-05-15T22:50:00Z
+
+# On the new device:
+usrcp pair join 1234-5678 --user=laptop
+#  (prompts for the passphrase that protects the existing identity)
+```
+
+`pair init` builds a bundle of `master.salt`, `master.verify`,
+`identity.json`, and the encrypted `private.pem`, encrypts the bundle
+under `scrypt(code, FIXED_PAIRING_SALT)`, and uploads the ciphertext to
+`/v1/pairing/init`. The server stores the code alongside the
+ciphertext, so it is trusted for the 10-minute TTL rather than
+cryptographically barred from decrypting (see the trust requirement
+below). `pair join` fetches by code, decrypts, writes the four files
+atomically, and validates by deriving the master key from the supplied
+passphrase. A wrong passphrase rolls back all writes.
+
+```
+usrcp pair init    [--ttl=<seconds>] [--endpoint=<url>]
+usrcp pair join    <CODE> [--endpoint=<url>] [--force] [--user=<slug>]
+usrcp pair status                              # list pending codes
+usrcp pair cancel  <CODE>                      # delete a pending code
+```
+
+The default code TTL is 10 minutes. After 5 wrong claim attempts on a
+code the bundle is locked and the source device must re-init. That cap
+protects against external attackers probing the public GET endpoint;
+it does NOT protect against the cloud provider itself, which holds the
+code alongside the ciphertext during the TTL and can derive the
+decryption key in a single scrypt call.
+
+**Trust requirement:** the cloud provider is trusted to not read or
+copy the row during the 10-minute pairing window. If that assumption
+doesn't hold for your provider, copy `keys/` between devices manually
+(SSH/USB) instead. The full design and the tier-2 redesign options
+(out-of-band secret, hashed lookup key) live in
+`tasks/11-multi-device-pairing.md`.
