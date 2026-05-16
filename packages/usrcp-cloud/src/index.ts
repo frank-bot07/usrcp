@@ -13,6 +13,7 @@
 import { createApp } from "./server.js";
 import { createPgPool } from "./db.js";
 import { pruneOldNonces } from "./auth.js";
+import { prunePairingBundles } from "./pairing.js";
 
 const NONCE_PRUNE_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -33,8 +34,10 @@ async function main() {
 
   // Periodically prune expired nonces so seen_nonces doesn't grow
   // unboundedly. .unref() so the timer doesn't hold the process open.
+  // Same loop prunes expired and locked-out pairing bundles.
   const pruneTimer = setInterval(() => {
     pruneOldNonces(db).catch((err) => app.log.error({ err }, "nonce prune failed"));
+    prunePairingBundles(db).catch((err) => app.log.error({ err }, "pairing prune failed"));
   }, NONCE_PRUNE_INTERVAL_MS);
   pruneTimer.unref();
 

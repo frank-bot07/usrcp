@@ -20,6 +20,18 @@ import { startHttpTransport, ensureTlsCert, ensureAuthToken } from "./transport.
 import { readConfig, updateConfig } from "./config.js";
 import { syncPush, syncPull, syncStatus } from "./sync.js";
 import {
+  pairInit,
+  pairJoin,
+  pairStatus,
+  pairCancel,
+  formatCode,
+  InvalidPairingCode,
+  WrongPassphrase,
+  PairingExpired,
+  PairingLocked,
+} from "./pair.js";
+import { getDecryptedPrivateKeyPem } from "./crypto.js";
+import {
   addTerminalAdapter,
   removeTerminalAdapter,
   listTerminalAdapters,
@@ -941,6 +953,155 @@ async function cmdAdapter(args: string[]): Promise<void> {
   process.exit(1);
 }
 
+async function cmdPair(subcommand: string | undefined, rest: string[]): Promise<void> {
+  migrateLegacyLayout();
+
+  const endpointFromArg = getArg("endpoint");
+
+  if (subcommand === "join") {
+    // Special-cased: the user dir may not exist yet; `pair join` IS the init.
+    // We still need a slug; default to "default" unless --user= is passed.
+    resolveUserSlug({ forInit: true });
+    const codeRaw = rest[0] ?? "";
+    if (!codeRaw) {
+      console.error("  Usage: usrcp pair join <CODE> [--endpoint=<url>] [--force]");
+      process.exit(1);
+    }
+    const code = codeRaw.replace(/-/g, "");
+    const endpoint = endpointFromArg ?? readConfig().cloud_endpoint;
+    if (!endpoint) {
+      console.error("  Error: no cloud_endpoint configured. Pass --endpoint=<url> or run `usrcp config set cloud_endpoint <url>`.");
+      process.exit(1);
+    }
+    let passphrase = process.env.USRCP_PASSPHRASE ?? getArg("passphrase");
+    if (!passphrase) {
+      if (!process.stdin.isTTY) {
+        console.error("  Error: pair join needs a passphrase. Pass --passphrase or set USRCP_PASSPHRASE.");
+        process.exit(1);
+      }
+      passphrase = (await readHiddenLine("  Passphrase for the existing identity: ")).trim();
+      if (!passphrase) {
+        console.error("  Error: empty passphrase.");
+        process.exit(1);
+      }
+    }
+    try {
+      const r = await pairJoin(code, {
+        userDir: getUserDir(),
+        passphrase,
+        endpoint,
+        force: hasFlag("force"),
+      });
+      console.error(`  Joined identity ${r.user_id}.`);
+      console.error(`  public_key fingerprint: ${r.public_key.split("\n").slice(1, -2).join("").slice(0, 16)}…`);
+    } catch (err) {
+      if (err instanceof WrongPassphrase) {
+        console.error("  Error: wrong passphrase. Nothing was written.");
+        process.exit(1);
+      }
+      if (err instanceof InvalidPairingCode) {
+        console.error("  Error: invalid pairing code (bundle could not be decrypted).");
+        process.exit(1);
+      }
+      if (err instanceof PairingExpired) {
+        console.error("  Error: pairing code expired or never existed. Re-init on device A.");
+        process.exit(1);
+      }
+      if (err instanceof PairingLocked) {
+        console.error("  Error: pairing code locked after too many attempts. Re-init on device A.");
+        process.exit(1);
+      }
+      throw err;
+    }
+    return;
+  }
+
+  // init / status / cancel: need an existing identity to sign requests.
+  resolveUserSlug();
+  const identity = getIdentity();
+  if (!identity) {
+    console.error("  Error: no identity in this user dir. Run `usrcp init` first.");
+    process.exit(1);
+  }
+  const passphrase = isPassphraseMode() ? getPassphrase() : undefined;
+  const masterKey = initializeMasterKey(passphrase);
+  let privateKeyPem: string;
+  try {
+    privateKeyPem = getDecryptedPrivateKeyPem(masterKey);
+  } finally {
+    masterKey.fill(0);
+  }
+  const publicKeyPem = identity.public_key;
+  const endpoint = endpointFromArg ?? readConfig().cloud_endpoint;
+  if (!endpoint) {
+    console.error("  Error: no cloud_endpoint configured. Pass --endpoint=<url> or run `usrcp config set cloud_endpoint <url>`.");
+    process.exit(1);
+  }
+
+  switch (subcommand) {
+    case "init": {
+      const ttl = getArg("ttl");
+      const r = await pairInit({
+        userDir: getUserDir(),
+        publicKeyPem,
+        privateKeyPem,
+        endpoint,
+        ttlSeconds: ttl ? Number(ttl) : undefined,
+      });
+      console.error("");
+      console.error(`  Pairing code:  ${formatCode(r.code)}`);
+      console.error(`  Expires:       ${r.expires_at}`);
+      console.error("");
+      console.error("  On the new device, run:");
+      console.error(`    usrcp pair join ${formatCode(r.code)}`);
+      console.error("");
+      return;
+    }
+    case "status": {
+      const list = await pairStatus({ publicKeyPem, privateKeyPem, endpoint });
+      if (list.length === 0) {
+        console.error("  No pending pairing bundles.");
+        return;
+      }
+      console.error("  Pending pairing bundles:");
+      for (const row of list) {
+        console.error(
+          `    ${formatCode(row.code)}  expires ${row.expires_at}  attempts ${row.claim_attempts}/5`
+        );
+      }
+      return;
+    }
+    case "cancel": {
+      const codeRaw = rest[0] ?? "";
+      if (!codeRaw) {
+        console.error("  Usage: usrcp pair cancel <CODE>");
+        process.exit(1);
+      }
+      const code = codeRaw.replace(/-/g, "");
+      try {
+        await pairCancel(code, { publicKeyPem, privateKeyPem, endpoint });
+        console.error(`  Cancelled ${formatCode(code)}.`);
+      } catch (err) {
+        if (err instanceof PairingExpired) {
+          console.error("  Nothing to cancel; that code is already gone.");
+          return;
+        }
+        throw err;
+      }
+      return;
+    }
+    default:
+      console.error(
+        "  Usage: usrcp pair <init|join|status|cancel> [args]\n" +
+        "    init                          Generate a pairing code on this device\n" +
+        "    join <CODE> [--force]         Join an existing identity using a code\n" +
+        "    status                        List pending pairing codes for this identity\n" +
+        "    cancel <CODE>                 Cancel a pending pairing code"
+      );
+      process.exit(1);
+  }
+}
+
 // --- CLI Router ---
 const command = process.argv[2];
 
@@ -975,6 +1136,12 @@ switch (command) {
   case "sync":
     cmdSync(process.argv[3]).catch((err) => {
       console.error("[usrcp sync] Error:", err instanceof Error ? err.message : "Unknown error");
+      process.exit(1);
+    });
+    break;
+  case "pair":
+    cmdPair(process.argv[3], process.argv.slice(4)).catch((err) => {
+      console.error("[usrcp pair] Error:", err instanceof Error ? err.message : "Unknown error");
       process.exit(1);
     });
     break;
@@ -1017,6 +1184,7 @@ switch (command) {
     users            List user slugs on this machine
     config <op>      get / set — manage per-user config (e.g., cloud_endpoint)
     sync <op>        push / pull / status — hosted ledger synchronization
+    pair <op>        init / join / status / cancel - multi-device identity pairing
     adapter <op>     add/remove/list terminal MCP registration for CLI agents
     snapshot         Take an atomic snapshot of the ledger (--list to view existing)
     restore          Restore from a snapshot (--from=<path> [--dry-run]; --list to view)

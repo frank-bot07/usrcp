@@ -52,5 +52,42 @@ CLI. Supported targets: `claude-code`, `claude-desktop`, `cursor`,
 ```
 
 The master key never leaves your machine. Cloud sync (`usrcp-cloud`) is
-ciphertext-only — the hosted ledger stores opaque blobs and can never
+ciphertext-only - the hosted ledger stores opaque blobs and can never
 decrypt.
+
+## Multi-device pairing
+
+Share your identity to a new device without copying `keys/` by hand:
+
+```bash
+# On the existing device (passphrase mode required):
+usrcp pair init
+#  Pairing code:  1234-5678
+#  Expires:       2026-05-15T22:50:00Z
+
+# On the new device:
+usrcp pair join 1234-5678 --user=laptop
+#  (prompts for the passphrase that protects the existing identity)
+```
+
+`pair init` builds a bundle of `master.salt`, `master.verify`,
+`identity.json`, and the encrypted `private.pem`, encrypts the bundle
+under `scrypt(code, FIXED_PAIRING_SALT)`, and uploads the ciphertext to
+`/v1/pairing/init`. The server cannot decrypt; only a holder of the
+8-digit code can. `pair join` fetches by code, decrypts, writes the
+four files atomically, and validates by deriving the master key from
+the supplied passphrase. A wrong passphrase rolls back all writes.
+
+```
+usrcp pair init    [--ttl=<seconds>] [--endpoint=<url>]
+usrcp pair join    <CODE> [--endpoint=<url>] [--force] [--user=<slug>]
+usrcp pair status                              # list pending codes
+usrcp pair cancel  <CODE>                      # delete a pending code
+```
+
+The default code TTL is 10 minutes. After 5 wrong claim attempts the
+bundle is locked and you must re-init on the source device.
+
+If you don't trust your cloud provider during the 10-minute window, do
+not pair; copy `keys/` between machines manually instead. See
+`tasks/11-multi-device-pairing.md` for the full threat model.

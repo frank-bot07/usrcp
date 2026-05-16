@@ -11,6 +11,7 @@ import { z } from "zod";
 import type { Db } from "./db.js";
 import { verifyAndClaim, AuthError } from "./auth.js";
 import { registerStreamRoutes } from "./stream.js";
+import { registerPairingRoutes } from "./pairing.js";
 
 // --- Wire schemas (Zod) ---
 
@@ -399,6 +400,9 @@ export function createApp(opts: ServerOptions): FastifyInstance {
 
   // Stream sync routes live in a sibling module; same auth, same db.
   registerStreamRoutes(app, db);
+
+  // Multi-device pairing endpoints (POST /v1/pairing/init, GET claim, etc.)
+  registerPairingRoutes(app, db);
 
   return app;
 }
