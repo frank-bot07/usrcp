@@ -145,6 +145,24 @@ export async function verifyAndClaim(
     throw new AuthError("BAD_SIGNATURE", "Signature verification failed");
   }
 
+  // Reject revoked keys BEFORE claiming a nonce or upserting the user
+  // row, so a revoked key cannot create a fresh phantom account by
+  // re-presenting itself after rotation. The rotated_to column lets a
+  // confused client discover where to migrate.
+  const revoked = await db.query<{ rotated_to: string | null }>(
+    "SELECT rotated_to FROM revoked_keys WHERE public_key = $1",
+    [pub]
+  );
+  if (revoked.rows.length > 0) {
+    const rotatedTo = revoked.rows[0].rotated_to;
+    throw new AuthError(
+      "KEY_REVOKED",
+      rotatedTo
+        ? `This public key was rotated; sign requests with the new key.`
+        : `This public key has been revoked.`
+    );
+  }
+
   // Claim the nonce atomically — prevents replay within the window.
   // INSERT will fail on PK conflict if the nonce was already seen.
   try {

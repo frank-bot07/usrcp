@@ -123,7 +123,38 @@ for the TTL window; it has been retired. The decision write-up lives in
 `tasks/12-pair-tier-2.md`; the historical v1 context is preserved in
 `tasks/11-multi-device-pairing.md`.
 
-## What the server *can* see
+## Identity rotation
+
+`POST /v1/rotate-identity` lets a user replace their Ed25519 identity
+without losing cloud-side data. Authentication is the standard signed
+header set using the OLD key (K1). Body:
+
+```json
+{
+  "new_public_key": "<PEM>",
+  "rotation_attestation": "<base64url Ed25519 signature by K1 over `usrcp-rotate-v1\\n<new_pem>`>"
+}
+```
+
+On success the server atomically:
+
+1. Re-points every child row (timeline_events, core_identity,
+   global_preferences, domain_context, active_projects,
+   schemaless_facts, domain_maps, stream_events, stream_embeddings)
+   from K1 to K2.
+2. Drops any pending pairing_bundles owned by K1 (they're stale).
+3. Replaces the K1 row in `users` with K2, preserving `created_at`.
+4. Inserts a row into `revoked_keys` recording `(K1 -> K2)`.
+
+After rotation, every signed request from K1 is rejected with 401
+`KEY_REVOKED` (the auth middleware checks `revoked_keys` before the
+nonce-claim / upsert path, so a revoked key cannot recreate a phantom
+user). The cloud rejects rotations that would target a key already in
+use (`409 NEW_KEY_IN_USE`) or a previously-revoked key
+(`409 NEW_KEY_REVOKED`).
+
+See `tasks/13-identity-rotation.md` for the threat model and the
+client side of the protocol.
 
 - Account pseudonym, device pseudonym, monotonic ledger sequence
 - Idempotency key, client timestamp, version numbers

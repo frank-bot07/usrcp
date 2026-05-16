@@ -128,6 +128,21 @@ CREATE TABLE IF NOT EXISTS seen_nonces (
 );
 CREATE INDEX IF NOT EXISTS idx_nonces_seen ON seen_nonces(seen_at);
 
+-- Revoked public keys (identity rotation). When a user rotates from K1
+-- to K2 via POST /v1/rotate-identity, the cloud:
+--   1. UPDATEs users.public_key from K1 to K2 (FK CASCADEs do the rest)
+--   2. INSERTs a row here with public_key=K1, rotated_to=K2
+-- The auth middleware checks this table FIRST so a revoked key cannot
+-- recreate a fresh phantom user via the upsert-on-write path. Multiple
+-- rotations accumulate: K1->K2->K3 yields rows (K1->K2), (K2->K3) with
+-- only K3 live in the users table.
+CREATE TABLE IF NOT EXISTS revoked_keys (
+  public_key  TEXT PRIMARY KEY,
+  rotated_to  TEXT,
+  revoked_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_revoked_rotated_to ON revoked_keys(rotated_to);
+
 -- Multi-device pairing bundles (v2). Device A POSTs a client-encrypted
 -- bundle under a short-TTL 8-digit code; device B GETs it by code and
 -- decrypts locally with

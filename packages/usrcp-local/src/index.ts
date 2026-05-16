@@ -31,6 +31,7 @@ import {
   PairingLocked,
 } from "./pair.js";
 import { getDecryptedPrivateKeyPem } from "./crypto.js";
+import { rotateIdentity } from "./rotate-identity.js";
 import {
   addTerminalAdapter,
   removeTerminalAdapter,
@@ -1131,6 +1132,64 @@ async function cmdPair(subcommand: string | undefined, rest: string[]): Promise<
   }
 }
 
+async function cmdRotateIdentity(): Promise<void> {
+  migrateLegacyLayout();
+  resolveUserSlug();
+  const identity = getIdentity();
+  if (!identity) {
+    console.error("  Error: no identity in this user dir. Run `usrcp init` first.");
+    process.exit(1);
+  }
+
+  const endpoint = getArg("endpoint") ?? readConfig().cloud_endpoint;
+  if (!endpoint) {
+    console.error("  Error: no cloud_endpoint configured. Pass --endpoint=<url> or run `usrcp config set cloud_endpoint <url>`.");
+    process.exit(1);
+  }
+
+  if (!hasFlag("yes")) {
+    if (!process.stdin.isTTY) {
+      console.error("  Error: rotate-identity is destructive; rerun with --yes (non-TTY) to confirm.");
+      process.exit(1);
+    }
+    console.error("  Identity rotation will:");
+    console.error(`    - generate a fresh Ed25519 keypair for user ${identity.user_id}`);
+    console.error(`    - revoke the current key on ${endpoint}`);
+    console.error(`    - replace this device's keys/identity.json + private.pem + public.pem`);
+    console.error("");
+    console.error("  Any other device still holding the OLD key must be re-paired");
+    console.error("  via 'usrcp pair init' / 'usrcp pair join' to receive the new key.");
+    console.error("");
+    const ans = (await readPlainLine("  Proceed? [y/N]: ")).trim().toLowerCase();
+    if (ans !== "y" && ans !== "yes") {
+      console.error("  Cancelled.");
+      return;
+    }
+  }
+
+  const passphrase = isPassphraseMode() ? getPassphrase() : undefined;
+  const masterKey = initializeMasterKey(passphrase);
+  try {
+    const r = await rotateIdentity({
+      userDir: getUserDir(),
+      masterKey,
+      endpoint,
+    });
+    console.error("");
+    console.error("  Identity rotated.");
+    console.error(`    old user_id:  ${identity.user_id}`);
+    console.error(`    new user_id:  ${r.new_user_id}`);
+    console.error(`    old key fingerprint: ${r.old_public_key.split("\n").slice(1, -2).join("").slice(0, 16)}…`);
+    console.error(`    new key fingerprint: ${r.new_public_key.split("\n").slice(1, -2).join("").slice(0, 16)}…`);
+    console.error("");
+    console.error("  Cloud writes from any other device still holding the OLD key");
+    console.error("  will be rejected with 401 KEY_REVOKED. Re-pair those devices");
+    console.error("  with 'usrcp pair init' on this device + 'usrcp pair join' on them.");
+  } finally {
+    masterKey.fill(0);
+  }
+}
+
 // --- CLI Router ---
 const command = process.argv[2];
 
@@ -1174,6 +1233,12 @@ switch (command) {
       process.exit(1);
     });
     break;
+  case "rotate-identity":
+    cmdRotateIdentity().catch((err) => {
+      console.error("[usrcp rotate-identity] Error:", err instanceof Error ? err.message : "Unknown error");
+      process.exit(1);
+    });
+    break;
   case "config":
     cmdConfig(process.argv.slice(3));
     break;
@@ -1214,6 +1279,7 @@ switch (command) {
     config <op>      get / set — manage per-user config (e.g., cloud_endpoint)
     sync <op>        push / pull / status — hosted ledger synchronization
     pair <op>        init / join / status / cancel - multi-device identity pairing
+    rotate-identity  Rotate the Ed25519 identity for this user (revokes old key)
     adapter <op>     add/remove/list terminal MCP registration for CLI agents
     snapshot         Take an atomic snapshot of the ledger (--list to view existing)
     restore          Restore from a snapshot (--from=<path> [--dry-run]; --list to view)

@@ -12,6 +12,7 @@ import type { Db } from "./db.js";
 import { verifyAndClaim, AuthError } from "./auth.js";
 import { registerStreamRoutes } from "./stream.js";
 import { registerPairingRoutes } from "./pairing.js";
+import { registerRotateRoutes } from "./rotate.js";
 
 // --- Wire schemas (Zod) ---
 
@@ -403,6 +404,9 @@ export function createApp(opts: ServerOptions): FastifyInstance {
 
   // Multi-device pairing endpoints (POST /v1/pairing/init, GET claim, etc.)
   registerPairingRoutes(app, db);
+
+  // Identity rotation endpoint (POST /v1/rotate-identity).
+  registerRotateRoutes(app, db);
 
   return app;
 }
