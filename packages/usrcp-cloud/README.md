@@ -83,9 +83,13 @@ QR, AirDrop, etc.) and **never reaches the cloud**, which is why the
 server cannot decrypt the bundle even if its DB or logs leak.
 
 - `POST /v1/pairing/init` (Ed25519-signed): device A uploads a bundle
-  encrypted client-side under `scrypt(code, FIXED_PAIRING_SALT)`. Body:
-  `{ code: "12345678", encrypted_bundle, ttl_seconds? }`. Defaults to a
-  10-minute TTL (max 30 minutes). Returns the expiration timestamp.
+  encrypted client-side under
+  `HKDF-SHA256(IKM=secret, salt=code, info="usrcp-pairing-v2")` where
+  `secret` is 16 random bytes held only by the two devices. Body:
+  `{ code: "12345678", encrypted_bundle, ttl_seconds? }`. The body
+  carries the lookup code only; the secret never reaches the server.
+  Defaults to a 10-minute TTL (max 30 minutes). Returns the
+  expiration timestamp.
 - `GET /v1/pairing/claim/:code` (unauthenticated; device B has no
   identity yet): atomically increments `claim_attempts` and returns
   `{ encrypted_bundle, owner_public_key, expires_at, attempts_remaining }`.

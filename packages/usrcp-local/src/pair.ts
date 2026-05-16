@@ -265,43 +265,51 @@ export async function pairInit(opts: PairInitOpts): Promise<PairInitResult> {
     // ever sees `code` and `encrypted_bundle`. Brand-new randomness per
     // attempt so a 409 retry doesn't reuse a leaked secret.
     const secret = crypto.randomBytes(PAIRING_SECRET_BYTES);
-    const key = deriveFromPairingSecret(code, secret);
-    let encryptedBundle: string;
+    let result: PairInitResult | undefined;
     try {
-      encryptedBundle = encrypt(bundleJson, key);
+      const key = deriveFromPairingSecret(code, secret);
+      let encryptedBundle: string;
+      try {
+        encryptedBundle = encrypt(bundleJson, key);
+      } finally {
+        zeroBuffer(key);
+      }
+
+      const body: Record<string, unknown> = { code, encrypted_bundle: encryptedBundle };
+      if (opts.ttlSeconds !== undefined) body.ttl_seconds = opts.ttlSeconds;
+
+      const { status, json } = await signedFetch(
+        opts.endpoint,
+        "/v1/pairing/init",
+        "POST",
+        body,
+        opts.publicKeyPem,
+        opts.privateKeyPem,
+        fetchImpl
+      );
+
+      if (status === 200) {
+        // Format BEFORE the outer finally zeroes the secret.
+        result = {
+          code,
+          pairingString: formatPairingString(code, secret),
+          expires_at: String(json?.expires_at ?? ""),
+        };
+      } else if (status === 409 && json?.error === "CODE_COLLISION") {
+        // fall through to retry; outer finally still zeroes the secret
+      } else {
+        throw new Error(
+          `pairInit failed: HTTP ${status} ${JSON.stringify(json ?? null)}`
+        );
+      }
     } finally {
-      zeroBuffer(key);
-    }
-
-    const body: Record<string, unknown> = { code, encrypted_bundle: encryptedBundle };
-    if (opts.ttlSeconds !== undefined) body.ttl_seconds = opts.ttlSeconds;
-
-    const { status, json } = await signedFetch(
-      opts.endpoint,
-      "/v1/pairing/init",
-      "POST",
-      body,
-      opts.publicKeyPem,
-      opts.privateKeyPem,
-      fetchImpl
-    );
-
-    if (status === 200) {
-      const pairingString = formatPairingString(code, secret);
+      // Always zero the secret, including on a thrown fetch / network error.
+      // The pairing string returned to the caller is the only copy that
+      // survives this call.
       zeroBuffer(secret);
-      return {
-        code,
-        pairingString,
-        expires_at: String(json?.expires_at ?? ""),
-      };
     }
-    zeroBuffer(secret);
-    if (status === 409 && json?.error === "CODE_COLLISION") {
-      continue; // pick a new code AND a fresh secret
-    }
-    throw new Error(
-      `pairInit failed: HTTP ${status} ${JSON.stringify(json ?? null)}`
-    );
+    if (result) return result;
+    // CODE_COLLISION: try again with fresh code + fresh secret.
   }
   throw new Error("pairInit failed: three CODE_COLLISION attempts in a row.");
 }

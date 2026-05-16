@@ -962,10 +962,15 @@ async function cmdPair(subcommand: string | undefined, rest: string[]): Promise<
     // Special-cased: the user dir may not exist yet; `pair join` IS the init.
     // We still need a slug; default to "default" unless --user= is passed.
     resolveUserSlug({ forInit: true });
-    // The pairing string is now <8 digits>-<32 hex>. The user may have
-    // copy-pasted it with hyphens, spaces, or split across argv tokens;
-    // join all positional args and let pair.ts strip/normalize.
-    const pairingStringRaw = rest.join(" ").trim();
+    // The pairing string is <8 digits>-<32 hex>. Users may paste it with
+    // hyphens, spaces, or shells may split it across argv tokens. We join
+    // every POSITIONAL arg (anything not starting with --) so a quoted
+    // paste, an unquoted paste with spaces, and the README example
+    // `usrcp pair join 1234-... --user=laptop` all work.
+    const pairingStringRaw = rest
+      .filter((a) => !a.startsWith("--"))
+      .join(" ")
+      .trim();
     if (!pairingStringRaw) {
       console.error("  Usage: usrcp pair join <PAIRING-STRING> [--endpoint=<url>] [--force]");
       console.error("    where PAIRING-STRING looks like 1234-5678-aabbccdd-eeff0011-22334455-66778899");
