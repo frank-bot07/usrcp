@@ -183,6 +183,82 @@ describe("rotateIdentity (failure paths)", () => {
     zeroBuffer(masterKey);
   });
 
+  it("preserves K2 in a sidecar backup when the canonical local write fails after cloud accepts", async () => {
+    const { userDir, masterKey } = initDevice();
+    const state: StubServerState = { status: 200 };
+    const privatePath = path.join(userDir, "keys", "private.pem");
+    const publicPath = path.join(userDir, "keys", "public.pem");
+
+    // Sabotage: replace public.pem with a symlink to a real file
+    // (/etc/hosts is universally readable). The pre-flight existsSync
+    // check resolves the symlink and passes, but safeWriteFile's lstat
+    // check sees the symlink and refuses to overwrite it - so the
+    // canonical local write fails after the cloud has already 200d
+    // and after K2's encrypted private key is in the .bak file.
+    fs.unlinkSync(publicPath);
+    fs.symlinkSync("/etc/hosts", publicPath);
+
+    const priorPrivateHex = fs.readFileSync(privatePath).toString("hex");
+
+    await expect(
+      rotateIdentity({
+        userDir,
+        masterKey,
+        endpoint: "http://stub",
+        fetchImpl: stubFetch(state),
+      })
+    ).rejects.toThrow(/cloud accepted rotation but the local write failed/i);
+
+    // The canonical private.pem was rewritten to K2 BEFORE the public.pem
+    // step failed (writes run in order: private -> public -> identity).
+    // So canonical now holds K2, NOT a rollback to K1.
+    expect(fs.readFileSync(privatePath).toString("hex")).not.toBe(priorPrivateHex);
+
+    // The sidecar backup file exists with K2's encrypted private key.
+    const keysDir = path.join(userDir, "keys");
+    const backups = fs.readdirSync(keysDir).filter((f) => f.startsWith("private.pem.rotated-") && f.endsWith(".bak"));
+    expect(backups.length).toBe(1);
+    // The backup is byte-equal to the canonical (both are K2's encrypted private key).
+    expect(fs.readFileSync(path.join(keysDir, backups[0])).toString("hex"))
+      .toBe(fs.readFileSync(privatePath).toString("hex"));
+
+    // Cleanup symlink for afterEach rm.
+    fs.unlinkSync(publicPath);
+    zeroBuffer(masterKey);
+  });
+
+  it("does NOT leave a backup file behind on a clean rotation", async () => {
+    const { userDir, masterKey } = initDevice();
+    const state: StubServerState = { status: 200 };
+    await rotateIdentity({
+      userDir,
+      masterKey,
+      endpoint: "http://stub",
+      fetchImpl: stubFetch(state),
+    });
+    const keysDir = path.join(userDir, "keys");
+    const backups = fs.readdirSync(keysDir).filter((f) => f.startsWith("private.pem.rotated-"));
+    expect(backups).toEqual([]);
+    zeroBuffer(masterKey);
+  });
+
+  it("does NOT leave a backup file behind when the cloud rejects", async () => {
+    const { userDir, masterKey } = initDevice();
+    const state: StubServerState = { status: 409, errorBody: { error: "NEW_KEY_IN_USE" } };
+    await expect(
+      rotateIdentity({
+        userDir,
+        masterKey,
+        endpoint: "http://stub",
+        fetchImpl: stubFetch(state),
+      })
+    ).rejects.toThrow();
+    const keysDir = path.join(userDir, "keys");
+    const backups = fs.readdirSync(keysDir).filter((f) => f.startsWith("private.pem.rotated-"));
+    expect(backups).toEqual([]);
+    zeroBuffer(masterKey);
+  });
+
   it("rejects when private.pem is missing on disk", async () => {
     const { userDir, masterKey } = initDevice();
     fs.unlinkSync(path.join(userDir, "keys", "private.pem"));

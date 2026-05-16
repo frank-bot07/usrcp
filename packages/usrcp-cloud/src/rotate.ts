@@ -119,60 +119,125 @@ export function registerRotateRoutes(app: FastifyInstance, db: Db): void {
     // FKs validate when we re-point, then DELETE the old user once no
     // child references it. pairing_bundles for K1 are stale by design
     // and dropped.
-    await db.transaction(async (client) => {
-      await client.query(
-        "SELECT public_key FROM users WHERE public_key = $1 FOR UPDATE",
-        [oldPub]
-      );
-      // Copy created_at from old to new so the user's "I joined at" is
-      // preserved. last_seen_at refreshes.
-      await client.query(
-        `INSERT INTO users (public_key, created_at, last_seen_at)
-         SELECT $2, created_at, now() FROM users WHERE public_key = $1`,
-        [oldPub, newPub]
-      );
-
-      const tables = [
-        "timeline_events",
-        "core_identity",
-        "global_preferences",
-        "domain_context",
-        "active_projects",
-        "schemaless_facts",
-        "domain_maps",
-        "stream_events",
-        "stream_embeddings",
-      ];
-      for (const t of tables) {
+    //
+    // Concurrent-rotation race: a second rotation request for the same
+    // K1 can pass auth before the first commits, then block on SELECT
+    // FOR UPDATE. After the first commits and deletes K1, the second
+    // sees an empty users row and would otherwise proceed to overwrite
+    // revoked_keys with stale data. We detect that by checking the
+    // rowCount of the K2 INSERT-from-SELECT (0 means K1 was already
+    // drained by a concurrent rotation) and abort with 409.
+    let rotated = false;
+    try {
+      await db.transaction(async (client) => {
         await client.query(
-          `UPDATE ${t} SET user_public_key = $2 WHERE user_public_key = $1`,
+          "SELECT public_key FROM users WHERE public_key = $1 FOR UPDATE",
+          [oldPub]
+        );
+        // Copy created_at from old to new so the user's "I joined at" is
+        // preserved. last_seen_at refreshes.
+        const insertK2 = await client.query<{ public_key: string }>(
+          `INSERT INTO users (public_key, created_at, last_seen_at)
+           SELECT $2, created_at, now() FROM users WHERE public_key = $1
+           RETURNING public_key`,
           [oldPub, newPub]
         );
+        if (insertK2.rows.length === 0) {
+          // The K1 row vanished between our auth check and this transaction.
+          // Almost always a concurrent rotation; throw to roll back.
+          throw new Error("__CONCURRENT_ROTATION__");
+        }
+
+        // stream_events + stream_embeddings have a composite FK
+        // (user_public_key, event_id) without ON UPDATE CASCADE, so a
+        // naive UPDATE of the parent would orphan the embeddings rows.
+        // INSERT-SELECT the K2 copies for both tables (parent first,
+        // child second) before deleting the K1 rows.
+        await client.query(
+          `INSERT INTO stream_events
+             (user_public_key, event_id, server_seq, client_timestamp, server_timestamp,
+              surface, side, content_kind, ts_ms, channel_ref_enc, author_ref_enc,
+              content_enc, entity_refs_enc, ingested_at, schema_v, embedding_present,
+              idempotency_key)
+           SELECT $2, event_id, server_seq, client_timestamp, server_timestamp,
+                  surface, side, content_kind, ts_ms, channel_ref_enc, author_ref_enc,
+                  content_enc, entity_refs_enc, ingested_at, schema_v, embedding_present,
+                  idempotency_key
+             FROM stream_events WHERE user_public_key = $1`,
+          [oldPub, newPub]
+        );
+        await client.query(
+          `INSERT INTO stream_embeddings
+             (user_public_key, event_id, vec_enc, dims, model_enc, created_at_ms)
+           SELECT $2, event_id, vec_enc, dims, model_enc, created_at_ms
+             FROM stream_embeddings WHERE user_public_key = $1`,
+          [oldPub, newPub]
+        );
+        // Delete child first then parent to respect the composite FK.
+        await client.query("DELETE FROM stream_embeddings WHERE user_public_key = $1", [oldPub]);
+        await client.query("DELETE FROM stream_events WHERE user_public_key = $1", [oldPub]);
+
+        // Tables that only reference users(public_key) with ON DELETE
+        // CASCADE: a plain UPDATE works because the K2 users row already
+        // exists (so the FK target is valid) and the K1 row isn't deleted
+        // yet (so the cascade doesn't fire).
+        const tables = [
+          "timeline_events",
+          "core_identity",
+          "global_preferences",
+          "domain_context",
+          "active_projects",
+          "schemaless_facts",
+          "domain_maps",
+        ];
+        for (const t of tables) {
+          await client.query(
+            `UPDATE ${t} SET user_public_key = $2 WHERE user_public_key = $1`,
+            [oldPub, newPub]
+          );
+        }
+
+        await client.query(
+          "DELETE FROM pairing_bundles WHERE owner_public_key = $1",
+          [oldPub]
+        );
+        await client.query(
+          "DELETE FROM seen_nonces WHERE user_public_key = $1",
+          [oldPub]
+        );
+
+        // Remove the old user row. No children remain.
+        await client.query("DELETE FROM users WHERE public_key = $1", [oldPub]);
+
+        // Permanently revoke the old key so it can't recreate itself via
+        // the upsert-on-write path the next time it signs a request.
+        // Use ON CONFLICT DO NOTHING here so a parallel rotation race
+        // can't overwrite the legitimate first rotation's pointer; the
+        // concurrent-rotation check above is the primary guard, this is
+        // just defense in depth.
+        await client.query(
+          `INSERT INTO revoked_keys (public_key, rotated_to)
+           VALUES ($1, $2)
+           ON CONFLICT (public_key) DO NOTHING`,
+          [oldPub, newPub]
+        );
+      });
+      rotated = true;
+    } catch (err) {
+      if (err instanceof Error && err.message === "__CONCURRENT_ROTATION__") {
+        return reply.code(409).send({
+          error: "CONCURRENT_ROTATION",
+          message: "Old key was rotated by a concurrent request; refresh and try again.",
+        });
       }
+      throw err;
+    }
 
-      await client.query(
-        "DELETE FROM pairing_bundles WHERE owner_public_key = $1",
-        [oldPub]
-      );
-      await client.query(
-        "DELETE FROM seen_nonces WHERE user_public_key = $1",
-        [oldPub]
-      );
-
-      // Remove the old user row. No children remain.
-      await client.query("DELETE FROM users WHERE public_key = $1", [oldPub]);
-
-      // Permanently revoke the old key so it can't recreate itself via
-      // the upsert-on-write path the next time it signs a request.
-      await client.query(
-        `INSERT INTO revoked_keys (public_key, rotated_to)
-         VALUES ($1, $2)
-         ON CONFLICT (public_key) DO UPDATE SET
-           rotated_to = EXCLUDED.rotated_to,
-           revoked_at = now()`,
-        [oldPub, newPub]
-      );
-    });
+    if (!rotated) {
+      // Defense in depth; the try/catch above always sets rotated=true
+      // on success or returns 409 on the race path.
+      return reply.code(500).send({ error: "ROTATE_FAILED" });
+    }
 
     return reply.code(200).send({
       ok: true,

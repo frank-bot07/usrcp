@@ -216,6 +216,61 @@ describe("POST /v1/rotate-identity", () => {
     expect(res.statusCode).toBe(401);
   });
 
+  it("rotates a user that has stream_events and stream_embeddings without FK violation", async () => {
+    const alice = makeKeyPair();
+    const aliceNew = makeKeyPair();
+    await seedUser(alice.publicKeyPem, alice.privateKeyPem);
+
+    // Seed a stream_events row and a matching stream_embeddings row
+    // directly via db.query (bypass the auth-signed /v1/stream/push
+    // route to keep this test focused on the rotation FK behavior).
+    await db.query(
+      `INSERT INTO stream_events
+         (user_public_key, event_id, server_seq, client_timestamp, surface,
+          side, content_kind, ts_ms, channel_ref_enc, author_ref_enc,
+          content_enc, ingested_at, schema_v, embedding_present)
+       VALUES ($1, 'ev_pre_rot', 1, '2026-05-16T00:00:00Z', 'imessage',
+               'inbound', 'text', 1747000000000, 'enc:CH', 'enc:AUTH',
+               'enc:CONTENT', 1747000000000, 1, true)`,
+      [alice.publicKeyPem]
+    );
+    await db.query(
+      `INSERT INTO stream_embeddings
+         (user_public_key, event_id, vec_enc, dims, created_at_ms)
+       VALUES ($1, 'ev_pre_rot', 'enc:VEC', 64, 1747000000000)`,
+      [alice.publicKeyPem]
+    );
+
+    const att = attestRotation(alice.privateKeyPem, aliceNew.publicKeyPem);
+    const rot = await signedInject(alice.privateKeyPem, alice.publicKeyPem, "POST", "/v1/rotate-identity", {
+      new_public_key: aliceNew.publicKeyPem,
+      rotation_attestation: att,
+    });
+    expect(rot.statusCode).toBe(200);
+
+    // Both rows survive at K2; K1 has nothing left.
+    const events = await db.query<{ user_public_key: string; event_id: string }>(
+      "SELECT user_public_key, event_id FROM stream_events"
+    );
+    expect(events.rows.length).toBe(1);
+    expect(events.rows[0].user_public_key).toBe(aliceNew.publicKeyPem);
+    expect(events.rows[0].event_id).toBe("ev_pre_rot");
+
+    const embeddings = await db.query<{ user_public_key: string; event_id: string }>(
+      "SELECT user_public_key, event_id FROM stream_embeddings"
+    );
+    expect(embeddings.rows.length).toBe(1);
+    expect(embeddings.rows[0].user_public_key).toBe(aliceNew.publicKeyPem);
+    expect(embeddings.rows[0].event_id).toBe("ev_pre_rot");
+  });
+
+  // Note: the CONCURRENT_ROTATION (409) path triggers when the K1
+  // users row vanishes between auth and the transaction body. That
+  // requires a real concurrent connection that pg-mem can't simulate
+  // without a separate Pool. The rowCount-on-INSERT-from-SELECT guard
+  // in rotate.ts is the load-bearing fix; a smoke test under real
+  // Postgres + two parallel requests would cover it end-to-end.
+
   it("drops pending pairing_bundles for the old key during rotation", async () => {
     const alice = makeKeyPair();
     const aliceNew = makeKeyPair();

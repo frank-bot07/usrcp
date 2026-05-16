@@ -108,6 +108,32 @@ export async function rotateIdentity(opts: RotateIdentityOpts): Promise<RotateId
   // canonical "usrcp-rotate-v1\n<new_pub>" bytes.
   const rotationAttestation = attestRotation(oldPrivatePem, newPublicPem);
 
+  // Encrypt K2's private key under the SAME master key, then BACK IT UP
+  // to a sidecar file BEFORE the cloud call. This makes K2 durable on
+  // disk regardless of how the rest of this function ends: if a later
+  // local write fails (disk full, permissions, interrupted SIGKILL),
+  // the user still has a copy of K2's encrypted private key and can
+  // recover by hand. Rolling K1 back over the canonical private.pem
+  // after a successful cloud rotation would lock the user out of their
+  // own data, so we never do that.
+  const globalKey = deriveGlobalEncryptionKey(opts.masterKey);
+  let encryptedPriv: string;
+  try {
+    encryptedPriv = encrypt(newPrivatePem, globalKey);
+  } finally {
+    zeroBuffer(globalKey);
+  }
+
+  const backupTs = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupPath = path.join(keysDir, `private.pem.rotated-${backupTs}.bak`);
+  safeWriteFile(backupPath, Buffer.from(encryptedPriv, "utf8"), 0o600);
+
+  const newIdentity: LedgerIdentity = {
+    user_id: newUserId,
+    public_key: newPublicPem,
+    created_at: oldIdentity.created_at,
+  };
+
   // POST signed as K1.
   const body = {
     new_public_key: newPublicPem,
@@ -116,50 +142,32 @@ export async function rotateIdentity(opts: RotateIdentityOpts): Promise<RotateId
   const bodyStr = JSON.stringify(body);
   const signed = signRequest(oldPrivatePem, "POST", "/v1/rotate-identity", bodyStr);
   const url = opts.endpoint.replace(/\/$/, "") + "/v1/rotate-identity";
-  const res = await fetchImpl(url, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-usrcp-publickey": Buffer.from(oldPublicPem).toString("base64"),
-      "x-usrcp-timestamp": String(signed.timestampMs),
-      "x-usrcp-nonce": signed.nonce,
-      "x-usrcp-signature": signed.signature,
-    },
-    body: bodyStr,
-  });
-  let json: any = null;
-  try { json = await res.json(); } catch { json = null; }
-  if (res.status !== 200) {
-    throw new Error(
-      `rotateIdentity: cloud rejected rotation: HTTP ${res.status} ${JSON.stringify(json ?? null)}`
-    );
-  }
 
-  // Cloud has rotated. Now persist the new identity locally. Snapshot
-  // the prior files for rollback in case any local write fails.
-  const priorIdentity = fs.readFileSync(identityPath);
-  const priorPrivate = fs.readFileSync(privatePath);
-  const priorPublic = fs.readFileSync(publicPath);
-  const priorModes = {
-    identity: fs.statSync(identityPath).mode & 0o7777,
-    private: fs.statSync(privatePath).mode & 0o7777,
-    public: fs.statSync(publicPath).mode & 0o7777,
-  };
-
-  const newIdentity: LedgerIdentity = {
-    user_id: newUserId,
-    public_key: newPublicPem,
-    created_at: oldIdentity.created_at,
-  };
-
+  let cloudAccepted = false;
   try {
-    const globalKey = deriveGlobalEncryptionKey(opts.masterKey);
-    let encryptedPriv: string;
-    try {
-      encryptedPriv = encrypt(newPrivatePem, globalKey);
-    } finally {
-      zeroBuffer(globalKey);
+    const res = await fetchImpl(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-usrcp-publickey": Buffer.from(oldPublicPem).toString("base64"),
+        "x-usrcp-timestamp": String(signed.timestampMs),
+        "x-usrcp-nonce": signed.nonce,
+        "x-usrcp-signature": signed.signature,
+      },
+      body: bodyStr,
+    });
+    let json: any = null;
+    try { json = await res.json(); } catch { json = null; }
+    if (res.status !== 200) {
+      throw new Error(
+        `rotateIdentity: cloud rejected rotation: HTTP ${res.status} ${JSON.stringify(json ?? null)}`
+      );
     }
+    cloudAccepted = true;
+
+    // Cloud accepted. Replace the canonical key files in place. The
+    // backup at backupPath is K2's durable copy until we delete it
+    // after every in-place write succeeds.
     safeWriteFile(privatePath, Buffer.from(encryptedPriv, "utf8"), 0o600);
     safeWriteFile(publicPath, Buffer.from(newPublicPem, "utf8"), 0o644);
     safeWriteFile(
@@ -167,17 +175,25 @@ export async function rotateIdentity(opts: RotateIdentityOpts): Promise<RotateId
       Buffer.from(JSON.stringify(newIdentity, null, 2), "utf8"),
       0o600
     );
+    // All canonical writes succeeded; the backup is no longer needed.
+    try { fs.unlinkSync(backupPath); } catch { /* */ }
   } catch (err) {
-    // Roll local back. Cloud is already rotated; the user can use pair_join
-    // from another device to recover. We surface a clear error pointing at
-    // the recovery path.
-    try { safeWriteFile(identityPath, priorIdentity, priorModes.identity); } catch { /* */ }
-    try { safeWriteFile(privatePath, priorPrivate, priorModes.private); } catch { /* */ }
-    try { safeWriteFile(publicPath, priorPublic, priorModes.public); } catch { /* */ }
+    if (!cloudAccepted) {
+      // Cloud rejected (or network error). Remove the backup; nothing
+      // rotated server-side, so no recovery state is needed.
+      try { fs.unlinkSync(backupPath); } catch { /* */ }
+      throw err;
+    }
+    // Cloud accepted but a canonical local write failed. Leave the
+    // backup AND any partial in-place writes alone, and surface the
+    // exact path of the backup so the user can recover by hand.
     throw new Error(
-      `rotateIdentity: cloud accepted rotation but local key write failed (${err instanceof Error ? err.message : String(err)}). ` +
-      `The cloud now expects the new key; local files were rolled back. ` +
-      `Recover by running 'usrcp pair join <code>' from a device that already holds the new identity.`
+      `rotateIdentity: cloud accepted rotation but the local write failed (${err instanceof Error ? err.message : String(err)}). ` +
+      `K2's encrypted private key has been preserved at ${backupPath}. ` +
+      `Copy it to ${privatePath} (mode 0600), write the new public key to ${publicPath} ` +
+      `(${newPublicPem.length} bytes, see the network response), then write identity.json with ` +
+      `{"user_id":"${newUserId}","public_key":"<the new PEM>","created_at":"${oldIdentity.created_at}"}. ` +
+      `Until that is done, this device cannot sign requests as the new identity.`
     );
   }
 
