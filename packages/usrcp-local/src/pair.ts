@@ -272,6 +272,14 @@ export async function pairJoin(
   if (ciphertext.length < MIN_BUNDLE_LEN) {
     throw new Error("pairJoin: server returned a too-short bundle.");
   }
+  // Defense in depth: `decrypt()` returns non-`enc:` input verbatim for
+  // pre-v0.1.3 plaintext compatibility. A malicious server could exploit
+  // that to serve a plaintext JSON bundle that bypasses the scrypt-derived
+  // pairing key entirely. Refuse anything that isn't authenticated
+  // ciphertext before handing it to decrypt().
+  if (!ciphertext.startsWith("enc:")) {
+    throw new InvalidPairingCode("Pairing bundle is not ciphertext; refusing.");
+  }
 
   const key = deriveFromPairingCode(code);
   let bundle: PairingBundle;
@@ -303,8 +311,29 @@ export async function pairJoin(
 
   fs.mkdirSync(keysDir, { recursive: true, mode: 0o700 });
 
+  // Snapshot the prior on-disk state of every path we're about to write so
+  // a failed pairJoin (wrong passphrase, malformed bundle, etc.) can restore
+  // the original keys/ rather than leaving the user identity-less. Without
+  // this, --force or a partially-populated keys/ dir would lose their
+  // contents on rollback: safeWriteFile renames a tmp file over the target,
+  // clobbering the original, and then the rollback unlinks the new file too.
   const writtenPaths: string[] = [];
+  const priorState = new Map<string, { content: Buffer; mode: number } | null>();
   const writeAndTrack = (p: string, content: Buffer, mode: number) => {
+    if (!priorState.has(p)) {
+      if (fs.existsSync(p)) {
+        try {
+          priorState.set(p, {
+            content: fs.readFileSync(p),
+            mode: fs.statSync(p).mode & 0o7777,
+          });
+        } catch {
+          priorState.set(p, null);
+        }
+      } else {
+        priorState.set(p, null);
+      }
+    }
     safeWriteFile(p, content, mode);
     writtenPaths.push(p);
   };
@@ -352,9 +381,19 @@ export async function pairJoin(
       public_key: bundle.identity.public_key,
     };
   } catch (err) {
-    // Rollback: remove every file we wrote so the userDir is left empty.
+    // Rollback: restore the pre-existing content where the file existed
+    // before we wrote, otherwise unlink. Best-effort: if restore fails for
+    // any reason, leave the file as-is rather than risk destroying both
+    // versions; the user can re-run pairJoin.
     for (const p of writtenPaths) {
-      try { fs.unlinkSync(p); } catch { /* best effort */ }
+      const prior = priorState.get(p) ?? null;
+      if (prior) {
+        try {
+          safeWriteFile(p, prior.content, prior.mode);
+        } catch { /* best effort */ }
+      } else {
+        try { fs.unlinkSync(p); } catch { /* best effort */ }
+      }
     }
     throw err;
   }

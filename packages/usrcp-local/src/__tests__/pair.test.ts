@@ -321,6 +321,83 @@ describe("pairJoin", () => {
     expect(cur.user_id).toBe("u_existing");
   });
 
+  it("refuses to install a plaintext (non-`enc:`) bundle that bypasses scrypt", async () => {
+    // A malicious server could serve a plaintext JSON bundle, which would
+    // bypass the scrypt-derived pairing key because decrypt() returns
+    // non-`enc:` input verbatim for legacy compatibility. pairJoin must
+    // reject anything that isn't ciphertext.
+    const { code, state } = await makeBundleOnServer();
+    const row = state.bundles.get(code)!;
+    row.encrypted_bundle = JSON.stringify({
+      schema_v: 1,
+      salt: Buffer.alloc(32).toString("base64"),
+      verify: Buffer.alloc(32).toString("base64"),
+      identity: { user_id: "u_attacker", public_key: "fake-pem", created_at: "" },
+      private_pem_enc: "enc:0000000000000000000000",
+    });
+    expect(row.encrypted_bundle.startsWith("enc:")).toBe(false);
+    expect(row.encrypted_bundle.length).toBeGreaterThan(16);
+
+    process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-pair-test-deviceB-"));
+    setUserSlug("default");
+    await expect(
+      pairJoin(code, {
+        userDir: path.join(process.env.HOME!, ".usrcp", "users", "default"),
+        passphrase: PASSPHRASE,
+        endpoint: "http://stub",
+        fetchImpl: stubFetch(state),
+      })
+    ).rejects.toBeInstanceOf(InvalidPairingCode);
+  });
+
+  it("preserves existing keys on rollback when force=true and the join fails", async () => {
+    // Set up Alice's identity that we'll attempt to pair into Bob's slot.
+    const { code, state } = await makeBundleOnServer();
+
+    // Now set up Bob with a DIFFERENT identity already in keys/ - simulating
+    // a stale install the user is intentionally overwriting via --force.
+    process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-pair-test-deviceB-"));
+    setUserSlug("default");
+    const masterKeyB = initializeMasterKey("bob-original-passphrase");
+    initializeIdentity(masterKeyB);
+    const bUserDir = getUserDir();
+    const bKeysDir = path.join(bUserDir, "keys");
+
+    const snap = (name: string) =>
+      fs.readFileSync(path.join(bKeysDir, name)).toString("hex");
+    const before = {
+      salt: snap("master.salt"),
+      verify: snap("master.verify"),
+      identity: snap("identity.json"),
+      privatePem: snap("private.pem"),
+      publicPem: snap("public.pem"),
+      mode: fs.readFileSync(path.join(bKeysDir, "mode"), "utf-8"),
+    };
+
+    // Run with WRONG passphrase + force; pairJoin must roll back without
+    // destroying Bob's pre-existing identity.
+    await expect(
+      pairJoin(code, {
+        userDir: bUserDir,
+        passphrase: "wrong-passphrase-on-purpose",
+        endpoint: "http://stub",
+        fetchImpl: stubFetch(state),
+        force: true,
+      })
+    ).rejects.toBeInstanceOf(WrongPassphrase);
+
+    expect(snap("master.salt")).toBe(before.salt);
+    expect(snap("master.verify")).toBe(before.verify);
+    expect(snap("identity.json")).toBe(before.identity);
+    expect(snap("private.pem")).toBe(before.privatePem);
+    expect(snap("public.pem")).toBe(before.publicPem);
+    expect(fs.readFileSync(path.join(bKeysDir, "mode"), "utf-8")).toBe(before.mode);
+
+    // Bob can still unlock with his original passphrase.
+    const restored = initializeMasterKey("bob-original-passphrase");
+    zeroBuffer(restored);
+  });
+
   it("surfaces InvalidPairingCode when the bundle decryption fails", async () => {
     const { code, state } = await makeBundleOnServer();
     // Replace the bundle ciphertext with a ciphertext that decrypts under a
