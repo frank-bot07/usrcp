@@ -103,3 +103,41 @@ have the secret either, so even a compromised cloud cannot decrypt.
 See `tasks/12-pair-tier-2.md` for the full v2 design write-up. The
 retired v1 design (where the code WAS the scrypt input and the cloud
 was trusted for the TTL) is preserved in `tasks/11-multi-device-pairing.md`.
+
+## Identity rotation
+
+If your device is lost, stolen, or you suspect your passphrase or
+private key was exposed, rotate the Ed25519 identity:
+
+```bash
+usrcp rotate-identity
+#   Identity rotation will:
+#     - generate a fresh Ed25519 keypair for user u_abc123...
+#     - revoke the current key on https://cloud.example
+#     - replace this device's keys/identity.json + private.pem + public.pem
+#   Proceed? [y/N]: y
+```
+
+This generates a fresh keypair (K2), signs a rotation attestation with
+the current key (K1), and POSTs to `/v1/rotate-identity` authenticated
+as K1. On success, the cloud atomically moves all data from K1 to K2
+and records K1 in `revoked_keys`. Every subsequent K1-signed request
+is rejected with 401 `KEY_REVOKED`.
+
+The passphrase does NOT change; the new private.pem is encrypted under
+the same master key, so the existing passphrase still unlocks the
+rotated identity on this device.
+
+Any other device still holding the OLD key needs to be re-paired (via
+`usrcp pair init` here + `usrcp pair join` on the other device) to
+receive K2. The OLD key will start failing for them on the next sync
+attempt.
+
+```
+usrcp rotate-identity   [--endpoint=<url>] [--yes]
+```
+
+`--yes` skips the interactive confirmation (required for non-TTY
+invocations).
+
+See `tasks/13-identity-rotation.md` for the threat model.

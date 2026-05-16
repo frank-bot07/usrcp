@@ -123,7 +123,45 @@ for the TTL window; it has been retired. The decision write-up lives in
 `tasks/12-pair-tier-2.md`; the historical v1 context is preserved in
 `tasks/11-multi-device-pairing.md`.
 
-## What the server *can* see
+## Identity rotation
+
+`POST /v1/rotate-identity` lets a user replace their Ed25519 identity
+without losing cloud-side data. Authentication is the standard signed
+header set using the OLD key (K1). Body:
+
+```json
+{
+  "new_public_key": "<PEM>",
+  "rotation_attestation": "<base64url Ed25519 signature by K1 over `usrcp-rotate-v1\\n<new_pem>`>"
+}
+```
+
+On success the server, inside a single transaction:
+
+1. Inserts a new K2 row in `users`, copying K1's `created_at`.
+2. Copies `stream_events` and `stream_embeddings` from K1 to K2 via
+   parent-first `INSERT ... SELECT` (the composite FK on
+   `stream_embeddings` declares only ON DELETE CASCADE, so a plain
+   UPDATE would orphan the child rows), then deletes the K1 child
+   rows (child first then parent).
+3. Plain `UPDATE` re-points the remaining per-user child tables
+   (timeline_events, core_identity, global_preferences,
+   domain_context, active_projects, schemaless_facts, domain_maps)
+   from K1 to K2. Safe because the K2 users row already exists.
+4. Drops K1's pending pairing_bundles and seen_nonces (stale /
+   housekeeping).
+5. Deletes the K1 row from `users`.
+6. Inserts `(K1, K2)` into `revoked_keys`.
+
+After rotation, every signed request from K1 is rejected with 401
+`KEY_REVOKED` (the auth middleware checks `revoked_keys` before the
+nonce-claim / upsert path, so a revoked key cannot recreate a phantom
+user). The cloud rejects rotations that would target a key already in
+use (`409 NEW_KEY_IN_USE`) or a previously-revoked key
+(`409 NEW_KEY_REVOKED`).
+
+See `tasks/13-identity-rotation.md` for the threat model and the
+client side of the protocol.
 
 - Account pseudonym, device pseudonym, monotonic ledger sequence
 - Idempotency key, client timestamp, version numbers

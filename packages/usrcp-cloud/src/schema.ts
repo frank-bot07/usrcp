@@ -128,6 +128,34 @@ CREATE TABLE IF NOT EXISTS seen_nonces (
 );
 CREATE INDEX IF NOT EXISTS idx_nonces_seen ON seen_nonces(seen_at);
 
+-- Revoked public keys (identity rotation). When a user rotates from K1
+-- to K2 via POST /v1/rotate-identity, the cloud (inside one transaction):
+--   1. INSERTs a new K2 row in users, copying K1.created_at.
+--   2. INSERT-SELECTs K1's stream_events into K2 (parent-first so the
+--      composite FK on stream_embeddings stays valid), then
+--      INSERT-SELECTs K1's stream_embeddings into K2.
+--   3. UPDATEs every other per-user child table's user_public_key from
+--      K1 to K2 (timeline_events, core_identity, global_preferences,
+--      domain_context, active_projects, schemaless_facts, domain_maps).
+--   4. DELETEs K1's stream_embeddings, stream_events, pairing_bundles,
+--      seen_nonces, and finally the K1 users row.
+--   5. INSERTs a row here with public_key=K1, rotated_to=K2.
+-- The per-user FKs only declare ON DELETE CASCADE (no ON UPDATE
+-- CASCADE), which is why rotation uses explicit UPDATEs / INSERT-SELECT
+-- rather than a single UPDATE on users.public_key.
+-- The auth middleware checks this table BEFORE the nonce claim and
+-- RE-CHECKS it after the users upsert, so a revoked key cannot
+-- recreate a fresh phantom user via the upsert-on-write path even
+-- under the auth-upsert race window. Multiple rotations accumulate:
+-- K1->K2->K3 yields rows (K1->K2), (K2->K3) with only K3 live in the
+-- users table.
+CREATE TABLE IF NOT EXISTS revoked_keys (
+  public_key  TEXT PRIMARY KEY,
+  rotated_to  TEXT,
+  revoked_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_revoked_rotated_to ON revoked_keys(rotated_to);
+
 -- Multi-device pairing bundles (v2). Device A POSTs a client-encrypted
 -- bundle under a short-TTL 8-digit code; device B GETs it by code and
 -- decrypts locally with
