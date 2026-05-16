@@ -242,6 +242,47 @@ describe("rotateIdentity (failure paths)", () => {
     zeroBuffer(masterKey);
   });
 
+  it("PRESERVES the backup when the cloud call ends ambiguously (fetch throws)", async () => {
+    const { userDir, masterKey } = initDevice();
+    // fetch throws - cloud state is unknown. The backup MUST survive
+    // so the user can recover if the rotation actually committed.
+    const throwingFetch: typeof fetch = (async () => {
+      throw new Error("ETIMEDOUT");
+    }) as unknown as typeof fetch;
+
+    await expect(
+      rotateIdentity({
+        userDir,
+        masterKey,
+        endpoint: "http://stub",
+        fetchImpl: throwingFetch,
+      })
+    ).rejects.toThrow(/cloud state UNKNOWN/i);
+
+    const keysDir = path.join(userDir, "keys");
+    const backups = fs.readdirSync(keysDir).filter((f) => f.startsWith("private.pem.rotated-") && f.endsWith(".bak"));
+    expect(backups.length).toBe(1);
+    zeroBuffer(masterKey);
+  });
+
+  it("PRESERVES the backup when the cloud returns 5xx (possible post-commit failure)", async () => {
+    const { userDir, masterKey } = initDevice();
+    const state: StubServerState = { status: 503, errorBody: { error: "INTERNAL" } };
+    await expect(
+      rotateIdentity({
+        userDir,
+        masterKey,
+        endpoint: "http://stub",
+        fetchImpl: stubFetch(state),
+      })
+    ).rejects.toThrow(/cloud state UNKNOWN/i);
+
+    const keysDir = path.join(userDir, "keys");
+    const backups = fs.readdirSync(keysDir).filter((f) => f.startsWith("private.pem.rotated-") && f.endsWith(".bak"));
+    expect(backups.length).toBe(1);
+    zeroBuffer(masterKey);
+  });
+
   it("does NOT leave a backup file behind when the cloud rejects", async () => {
     const { userDir, masterKey } = initDevice();
     const state: StubServerState = { status: 409, errorBody: { error: "NEW_KEY_IN_USE" } };

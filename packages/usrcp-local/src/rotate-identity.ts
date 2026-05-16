@@ -143,7 +143,16 @@ export async function rotateIdentity(opts: RotateIdentityOpts): Promise<RotateId
   const signed = signRequest(oldPrivatePem, "POST", "/v1/rotate-identity", bodyStr);
   const url = opts.endpoint.replace(/\/$/, "") + "/v1/rotate-identity";
 
-  let cloudAccepted = false;
+  // Three exit states for the cloud call:
+  //   - DEFINITE_ACCEPT: cloud returned 200. Replace local files in-place.
+  //   - DEFINITE_REJECT: cloud returned 4xx (auth/validation/conflict).
+  //     Nothing rotated server-side; delete the backup.
+  //   - AMBIGUOUS: the cloud may or may not have committed (network drop
+  //     after the request reached the server, 5xx that could be
+  //     post-commit, etc.). Keep the backup so the user can verify and
+  //     finish manually or rerun safely.
+  let outcome: "ACCEPT" | "REJECT" | "AMBIGUOUS" = "AMBIGUOUS";
+  let cloudErrSummary = "network error";
   try {
     const res = await fetchImpl(url, {
       method: "POST",
@@ -158,16 +167,53 @@ export async function rotateIdentity(opts: RotateIdentityOpts): Promise<RotateId
     });
     let json: any = null;
     try { json = await res.json(); } catch { json = null; }
-    if (res.status !== 200) {
-      throw new Error(
-        `rotateIdentity: cloud rejected rotation: HTTP ${res.status} ${JSON.stringify(json ?? null)}`
-      );
+    if (res.status === 200) {
+      outcome = "ACCEPT";
+    } else if (res.status >= 400 && res.status < 500) {
+      // 4xx is a definite server-side rejection (e.g. BAD_ATTESTATION,
+      // NEW_KEY_IN_USE, KEY_REVOKED). The cloud did NOT commit.
+      outcome = "REJECT";
+      cloudErrSummary = `HTTP ${res.status} ${JSON.stringify(json ?? null)}`;
+    } else {
+      // 5xx or other unexpected status: the cloud may have committed the
+      // rotation before erroring (write made it but the response did not).
+      // Treat as ambiguous.
+      outcome = "AMBIGUOUS";
+      cloudErrSummary = `HTTP ${res.status} ${JSON.stringify(json ?? null)}`;
     }
-    cloudAccepted = true;
+  } catch (err) {
+    // The fetch threw (DNS, TCP reset, abort, etc). The request may have
+    // reached the server and committed before the connection dropped.
+    outcome = "AMBIGUOUS";
+    cloudErrSummary = err instanceof Error ? err.message : String(err);
+  }
 
-    // Cloud accepted. Replace the canonical key files in place. The
-    // backup at backupPath is K2's durable copy until we delete it
-    // after every in-place write succeeds.
+  if (outcome === "REJECT") {
+    // Cloud definitely rejected. Nothing rotated server-side; remove the
+    // sidecar - we don't need a recovery copy.
+    try { fs.unlinkSync(backupPath); } catch { /* */ }
+    throw new Error(`rotateIdentity: cloud rejected rotation: ${cloudErrSummary}`);
+  }
+
+  if (outcome === "AMBIGUOUS") {
+    // Cloud state unknown. Leave the K2 backup in place. If the rotation
+    // committed server-side, K2's private key survives at backupPath and
+    // the user can finish the local side manually. If it didn't, no harm:
+    // the backup is just an unused encrypted file.
+    throw new Error(
+      `rotateIdentity: cloud state UNKNOWN after rotation request (${cloudErrSummary}). ` +
+      `K2's encrypted private key has been preserved at ${backupPath} in case the cloud committed. ` +
+      `Check with 'usrcp status' or by signing a probe request from both K1 and K2 - whichever ` +
+      `returns 200 is your current identity. If K2 is now authoritative, copy ${backupPath} to ` +
+      `${privatePath} and write the new public.pem + identity.json as documented in the rotate-identity ` +
+      `error path. If K1 is still authoritative, delete ${backupPath} and try again.`
+    );
+  }
+
+  // outcome === "ACCEPT": cloud accepted. Replace the canonical key files
+  // in place. The backup remains as K2's durable copy until every
+  // canonical write succeeds.
+  try {
     safeWriteFile(privatePath, Buffer.from(encryptedPriv, "utf8"), 0o600);
     safeWriteFile(publicPath, Buffer.from(newPublicPem, "utf8"), 0o644);
     safeWriteFile(
@@ -178,12 +224,6 @@ export async function rotateIdentity(opts: RotateIdentityOpts): Promise<RotateId
     // All canonical writes succeeded; the backup is no longer needed.
     try { fs.unlinkSync(backupPath); } catch { /* */ }
   } catch (err) {
-    if (!cloudAccepted) {
-      // Cloud rejected (or network error). Remove the backup; nothing
-      // rotated server-side, so no recovery state is needed.
-      try { fs.unlinkSync(backupPath); } catch { /* */ }
-      throw err;
-    }
     // Cloud accepted but a canonical local write failed. Leave the
     // backup AND any partial in-place writes alone, and surface the
     // exact path of the backup so the user can recover by hand.
