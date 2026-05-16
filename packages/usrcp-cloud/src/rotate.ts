@@ -134,6 +134,21 @@ export function registerRotateRoutes(app: FastifyInstance, db: Db): void {
           "SELECT public_key FROM users WHERE public_key = $1 FOR UPDATE",
           [oldPub]
         );
+        // Re-check revoked_keys INSIDE the transaction. Auth checked it
+        // before the lock above, but a concurrent rotation could have
+        // committed in the meantime (inserting K1 into revoked_keys and
+        // deleting K1 from users). Auth's INSERT-ON-CONFLICT upsert can
+        // then recreate K1 as an empty row before this transaction
+        // runs, so the rowCount guard alone is not enough on real
+        // Postgres. If K1 is now revoked, abort instead of "rotating"
+        // a phantom empty K1 row to the caller's K2.
+        const reRevoked = await client.query<{ public_key: string }>(
+          "SELECT public_key FROM revoked_keys WHERE public_key = $1",
+          [oldPub]
+        );
+        if (reRevoked.rows.length > 0) {
+          throw new Error("__CONCURRENT_ROTATION__");
+        }
         // Copy created_at from old to new so the user's "I joined at" is
         // preserved. last_seen_at refreshes.
         const insertK2 = await client.query<{ public_key: string }>(
@@ -143,8 +158,9 @@ export function registerRotateRoutes(app: FastifyInstance, db: Db): void {
           [oldPub, newPub]
         );
         if (insertK2.rows.length === 0) {
-          // The K1 row vanished between our auth check and this transaction.
-          // Almost always a concurrent rotation; throw to roll back.
+          // K1's row vanished and auth didn't re-upsert it (e.g. rotate
+          // called directly with no prior write). Same fail mode as the
+          // revoked_keys check above.
           throw new Error("__CONCURRENT_ROTATION__");
         }
 
