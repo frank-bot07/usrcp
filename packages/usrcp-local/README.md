@@ -62,41 +62,44 @@ Share your identity to a new device without copying `keys/` by hand:
 ```bash
 # On the existing device (passphrase mode required):
 usrcp pair init
-#  Pairing code:  1234-5678
-#  Expires:       2026-05-15T22:50:00Z
+#  Pairing string: 1234-5678-aabbccdd-eeff0011-22334455-66778899
+#  Lookup code:    1234-5678   (use this for 'usrcp pair status' / 'cancel')
+#  Expires:        2026-05-16T01:25:00Z
 
 # On the new device:
-usrcp pair join 1234-5678 --user=laptop
+usrcp pair join 1234-5678-aabbccdd-eeff0011-22334455-66778899 --user=laptop
 #  (prompts for the passphrase that protects the existing identity)
 ```
 
 `pair init` builds a bundle of `master.salt`, `master.verify`,
-`identity.json`, and the encrypted `private.pem`, encrypts the bundle
-under `scrypt(code, FIXED_PAIRING_SALT)`, and uploads the ciphertext to
-`/v1/pairing/init`. The server stores the code alongside the
-ciphertext, so it is trusted for the 10-minute TTL rather than
-cryptographically barred from decrypting (see the trust requirement
-below). `pair join` fetches by code, decrypts, writes the four files
-atomically, and validates by deriving the master key from the supplied
-passphrase. A wrong passphrase rolls back all writes.
+`identity.json`, and the encrypted `private.pem`, encrypts it under
+`HKDF-SHA256(IKM=secret, salt=code, info="usrcp-pairing-v2")`, and
+uploads ONLY the 8-digit code + ciphertext to `/v1/pairing/init`. The
+16-byte secret half of the pairing string never leaves your devices,
+so the cloud cannot decrypt the bundle even if its DB or logs leak.
+
+Share the full pairing string out-of-band: paste between machines via
+a trusted channel (clipboard, AirDrop, encrypted DM, QR). Anything
+that doesn't traverse the same path as the lookup code is fine.
+
+`pair join` parses the string, fetches the bundle by code, derives the
+same key from secret+code, decrypts, writes the four files atomically,
+and validates by deriving the master key from the supplied passphrase.
+A wrong passphrase rolls back all writes.
 
 ```
 usrcp pair init    [--ttl=<seconds>] [--endpoint=<url>]
-usrcp pair join    <CODE> [--endpoint=<url>] [--force] [--user=<slug>]
-usrcp pair status                              # list pending codes
-usrcp pair cancel  <CODE>                      # delete a pending code
+usrcp pair join    <PAIRING-STRING> [--endpoint=<url>] [--force] [--user=<slug>]
+usrcp pair status                              # list pending codes (by 8-digit lookup)
+usrcp pair cancel  <CODE>                      # delete a pending code (8-digit lookup)
 ```
 
 The default code TTL is 10 minutes. After 5 wrong claim attempts on a
 code the bundle is locked and the source device must re-init. That cap
-protects against external attackers probing the public GET endpoint;
-it does NOT protect against the cloud provider itself, which holds the
-code alongside the ciphertext during the TTL and can derive the
-decryption key in a single scrypt call.
+protects against external attackers probing the public claim endpoint;
+they don't have the code OR the secret. The cloud itself does not
+have the secret either, so even a compromised cloud cannot decrypt.
 
-**Trust requirement:** the cloud provider is trusted to not read or
-copy the row during the 10-minute pairing window. If that assumption
-doesn't hold for your provider, copy `keys/` between devices manually
-(SSH/USB) instead. The full design and the tier-2 redesign options
-(out-of-band secret, hashed lookup key) live in
-`tasks/11-multi-device-pairing.md`.
+See `tasks/12-pair-tier-2.md` for the full v2 design write-up. The
+retired v1 design (where the code WAS the scrypt input and the cloud
+was trusted for the TTL) is preserved in `tasks/11-multi-device-pairing.md`.

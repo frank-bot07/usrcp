@@ -5,11 +5,10 @@ import * as path from "node:path";
 import {
   setUserSlug,
   initializeMasterKey,
-  deriveFromPairingCode,
+  deriveFromPairingSecret,
   decrypt,
   encrypt,
   zeroBuffer,
-  FIXED_PAIRING_SALT,
   getUserDir,
 } from "../encryption.js";
 import { initializeIdentity, getDecryptedPrivateKeyPem } from "../crypto.js";
@@ -19,6 +18,8 @@ import {
   pairStatus,
   pairCancel,
   formatCode,
+  formatPairingString,
+  parsePairingString,
   InvalidPairingCode,
   WrongPassphrase,
   PairingExpired,
@@ -59,6 +60,7 @@ interface StubServerState {
   bundles: Map<string, { encrypted_bundle: string; owner_public_key: string; expires_at: string; claim_attempts: number }>;
   collisionCount?: number; // force N upfront CODE_COLLISION responses on POST
   ownerForPost?: string;   // public key the server should record as owner
+  lastPostBody?: string;   // most recent POST /v1/pairing/init body (for assertions)
 }
 
 function stubFetch(state: StubServerState): typeof fetch {
@@ -69,6 +71,7 @@ function stubFetch(state: StubServerState): typeof fetch {
     const body = init?.body ? String(init.body) : "";
 
     if (method === "POST" && u.pathname === "/v1/pairing/init") {
+      state.lastPostBody = body;
       if ((state.collisionCount ?? 0) > 0) {
         state.collisionCount! -= 1;
         return new Response(
@@ -158,46 +161,105 @@ describe("formatCode", () => {
   });
 });
 
-describe("FIXED_PAIRING_SALT", () => {
-  it("is 32 bytes (matches scrypt convention)", () => {
-    expect(FIXED_PAIRING_SALT.length).toBe(32);
+describe("pairing-string format helpers", () => {
+  it("formatPairingString produces a 40-char body split into six groups", () => {
+    const code = "12345678";
+    const secret = Buffer.from("0123456789abcdef" + "fedcba9876543210", "hex");
+    expect(secret.length).toBe(16);
+    const s = formatPairingString(code, secret);
+    expect(s).toBe("1234-5678-01234567-89abcdef-fedcba98-76543210");
+    expect(s.replace(/-/g, "").length).toBe(8 + 32);
+  });
+
+  it("parsePairingString round-trips with formatPairingString", () => {
+    const code = "98765432";
+    const secret = Buffer.from("aabbccddeeff00112233445566778899", "hex");
+    const s = formatPairingString(code, secret);
+    const parsed = parsePairingString(s);
+    expect(parsed.code).toBe(code);
+    expect(parsed.secret.equals(secret)).toBe(true);
+  });
+
+  it("parsePairingString accepts whitespace, mixed case, and missing hyphens", () => {
+    const a = parsePairingString("1234-5678-AABBCCDD-EEFF0011-22334455-66778899");
+    const b = parsePairingString("1234 5678 aabbccdd eeff0011 22334455 66778899");
+    const c = parsePairingString("12345678aabbccddeeff001122334455 66778899");
+    expect(a.code).toBe("12345678");
+    expect(a.secret.toString("hex")).toBe("aabbccddeeff001122334455" + "66778899");
+    expect(b.code).toBe(a.code); expect(b.secret.equals(a.secret)).toBe(true);
+    expect(c.code).toBe(a.code); expect(c.secret.equals(a.secret)).toBe(true);
+  });
+
+  it("parsePairingString rejects too-short, too-long, and non-hex tails", () => {
+    for (const bad of [
+      "1234-5678",                                              // missing secret
+      "1234-5678-aabbccdd",                                     // partial secret
+      "1234-5678-aabbccdd-eeff0011-22334455-66778899-EXTRA",    // too long
+      "abcd-5678-aabbccdd-eeff0011-22334455-66778899",          // non-digit prefix
+      "1234-5678-zzzzzzzz-zzzzzzzz-zzzzzzzz-zzzzzzzz",          // non-hex secret
+    ]) {
+      expect(() => parsePairingString(bad)).toThrow(InvalidPairingCode);
+    }
   });
 });
 
 describe("pairInit", () => {
-  it("writes a bundle whose code decrypts to the four source artifacts", async () => {
+  it("returns a pairing string whose secret decrypts the server-stored bundle", async () => {
     const { userDir, publicKey, privateKey } = initDeviceA();
     const state: StubServerState = { bundles: new Map(), ownerForPost: publicKey };
-    const { code, expires_at } = await pairInit({
+    const r = await pairInit({
       userDir,
       publicKeyPem: publicKey,
       privateKeyPem: privateKey,
       endpoint: "http://stub",
       fetchImpl: stubFetch(state),
     });
-    expect(/^[0-9]{8}$/.test(code)).toBe(true);
-    expect(expires_at).not.toBe("");
+    expect(/^[0-9]{8}$/.test(r.code)).toBe(true);
+    expect(r.expires_at).not.toBe("");
+    const parsed = parsePairingString(r.pairingString);
+    expect(parsed.code).toBe(r.code);
+    expect(parsed.secret.length).toBe(16);
 
-    const row = state.bundles.get(code)!;
-    const key = deriveFromPairingCode(code);
+    // Derive the key client-side from the printed secret and confirm the
+    // server-stored ciphertext decrypts to the source bundle.
+    const row = state.bundles.get(r.code)!;
+    const key = deriveFromPairingSecret(r.code, parsed.secret);
     const bundleJson = decrypt(row.encrypted_bundle, key);
     zeroBuffer(key);
     const bundle = JSON.parse(bundleJson);
 
-    expect(bundle.schema_v).toBe(1);
-    // salt + verify round-trip byte-for-byte against the original files.
+    expect(bundle.schema_v).toBe(2);
     expect(Buffer.from(bundle.salt, "base64").toString("hex")).toBe(
       fs.readFileSync(path.join(userDir, "keys", "master.salt")).toString("hex")
     );
-    expect(Buffer.from(bundle.verify, "base64").toString("hex")).toBe(
-      fs.readFileSync(path.join(userDir, "keys", "master.verify")).toString("hex")
-    );
     expect(bundle.identity.public_key).toBe(publicKey);
-    expect(bundle.private_pem_enc.startsWith("enc:")).toBe(true);
-    // The bundle contains the encrypted private key verbatim from disk.
     expect(bundle.private_pem_enc).toBe(
       fs.readFileSync(path.join(userDir, "keys", "private.pem"), "utf-8").trim()
     );
+  });
+
+  it("does NOT include the secret in the POST body sent to the server", async () => {
+    const { userDir, publicKey, privateKey } = initDeviceA();
+    const state: StubServerState = { bundles: new Map(), ownerForPost: publicKey };
+    const r = await pairInit({
+      userDir,
+      publicKeyPem: publicKey,
+      privateKeyPem: privateKey,
+      endpoint: "http://stub",
+      fetchImpl: stubFetch(state),
+    });
+    expect(state.lastPostBody).toBeDefined();
+    const parsed = parsePairingString(r.pairingString);
+    const secretHex = parsed.secret.toString("hex");
+    // The hex secret must not appear anywhere in the POST body.
+    expect(state.lastPostBody!.includes(secretHex)).toBe(false);
+    // The pairing string as a whole must not appear either (different framing
+    // but same hex content; defense in depth).
+    expect(state.lastPostBody!.includes(r.pairingString)).toBe(false);
+    // The 8-digit code IS sent (it's the lookup key).
+    const sentBody = JSON.parse(state.lastPostBody!);
+    expect(sentBody.code).toBe(r.code);
+    expect(typeof sentBody.encrypted_bundle).toBe("string");
   });
 
   it("retries when the server returns CODE_COLLISION and eventually succeeds", async () => {
@@ -217,6 +279,7 @@ describe("pairInit", () => {
 
 describe("pairJoin", () => {
   async function makeBundleOnServer(): Promise<{
+    pairingString: string;
     code: string;
     state: StubServerState;
     sourceUserDir: string;
@@ -224,24 +287,23 @@ describe("pairJoin", () => {
   }> {
     const { userDir, publicKey, privateKey } = initDeviceA();
     const state: StubServerState = { bundles: new Map(), ownerForPost: publicKey };
-    const { code } = await pairInit({
+    const r = await pairInit({
       userDir,
       publicKeyPem: publicKey,
       privateKeyPem: privateKey,
       endpoint: "http://stub",
       fetchImpl: stubFetch(state),
     });
-    return { code, state, sourceUserDir: userDir, publicKey };
+    return { pairingString: r.pairingString, code: r.code, state, sourceUserDir: userDir, publicKey };
   }
 
   it("writes the six expected key files and validates the passphrase", async () => {
-    const { code, state, sourceUserDir, publicKey } = await makeBundleOnServer();
+    const { pairingString, state, sourceUserDir, publicKey } = await makeBundleOnServer();
 
-    // Switch to a fresh HOME so the device-B writes go to an empty dir.
     process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-pair-test-deviceB-"));
     setUserSlug("default");
 
-    const result = await pairJoin(code, {
+    const result = await pairJoin(pairingString, {
       userDir: path.join(process.env.HOME!, ".usrcp", "users", "default"),
       passphrase: PASSPHRASE,
       endpoint: "http://stub",
@@ -253,28 +315,23 @@ describe("pairJoin", () => {
     for (const name of ["master.salt", "master.verify", "mode", "identity.json", "private.pem", "public.pem"]) {
       expect(fs.existsSync(path.join(bKeysDir, name))).toBe(true);
     }
-    // identity.json byte equality with the source device.
     const aIdentity = JSON.parse(fs.readFileSync(path.join(sourceUserDir, "keys", "identity.json"), "utf-8"));
     const bIdentity = JSON.parse(fs.readFileSync(path.join(bKeysDir, "identity.json"), "utf-8"));
     expect(bIdentity).toEqual(aIdentity);
 
-    // master.salt + master.verify equal.
     expect(fs.readFileSync(path.join(bKeysDir, "master.salt")).toString("hex"))
       .toBe(fs.readFileSync(path.join(sourceUserDir, "keys", "master.salt")).toString("hex"));
     expect(fs.readFileSync(path.join(bKeysDir, "master.verify")).toString("hex"))
       .toBe(fs.readFileSync(path.join(sourceUserDir, "keys", "master.verify")).toString("hex"));
-
-    // mode is "passphrase".
     expect(fs.readFileSync(path.join(bKeysDir, "mode"), "utf-8")).toBe("passphrase");
 
-    // initializeMasterKey + getDecryptedPrivateKeyPem succeed on device B.
     const masterKey = initializeMasterKey(PASSPHRASE);
     expect(getDecryptedPrivateKeyPem(masterKey).includes("BEGIN PRIVATE KEY")).toBe(true);
     zeroBuffer(masterKey);
   });
 
   it("rolls back all writes when the passphrase is wrong", async () => {
-    const { code, state } = await makeBundleOnServer();
+    const { pairingString, state } = await makeBundleOnServer();
 
     process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-pair-test-deviceB-"));
     setUserSlug("default");
@@ -282,7 +339,7 @@ describe("pairJoin", () => {
     const bKeysDir = path.join(bUserDir, "keys");
 
     await expect(
-      pairJoin(code, {
+      pairJoin(pairingString, {
         userDir: bUserDir,
         passphrase: "wrong-passphrase",
         endpoint: "http://stub",
@@ -290,15 +347,12 @@ describe("pairJoin", () => {
       })
     ).rejects.toBeInstanceOf(WrongPassphrase);
 
-    // The whole keys/ should be empty (we removed every file we wrote).
-    const remaining = fs.existsSync(bKeysDir)
-      ? fs.readdirSync(bKeysDir)
-      : [];
+    const remaining = fs.existsSync(bKeysDir) ? fs.readdirSync(bKeysDir) : [];
     expect(remaining).toEqual([]);
   });
 
   it("refuses to overwrite an existing identity.json unless force=true", async () => {
-    const { code, state } = await makeBundleOnServer();
+    const { pairingString, state } = await makeBundleOnServer();
 
     process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-pair-test-deviceB-"));
     setUserSlug("default");
@@ -308,7 +362,7 @@ describe("pairJoin", () => {
     fs.writeFileSync(path.join(bKeysDir, "identity.json"), '{"user_id":"u_existing","public_key":"","created_at":""}');
 
     await expect(
-      pairJoin(code, {
+      pairJoin(pairingString, {
         userDir: bUserDir,
         passphrase: PASSPHRASE,
         endpoint: "http://stub",
@@ -316,32 +370,26 @@ describe("pairJoin", () => {
       })
     ).rejects.toThrow(/already exists/);
 
-    // The existing identity is untouched.
     const cur = JSON.parse(fs.readFileSync(path.join(bKeysDir, "identity.json"), "utf-8"));
     expect(cur.user_id).toBe("u_existing");
   });
 
-  it("refuses to install a plaintext (non-`enc:`) bundle that bypasses scrypt", async () => {
-    // A malicious server could serve a plaintext JSON bundle, which would
-    // bypass the scrypt-derived pairing key because decrypt() returns
-    // non-`enc:` input verbatim for legacy compatibility. pairJoin must
-    // reject anything that isn't ciphertext.
-    const { code, state } = await makeBundleOnServer();
+  it("refuses to install a plaintext (non-`enc:`) bundle", async () => {
+    const { pairingString, code, state } = await makeBundleOnServer();
     const row = state.bundles.get(code)!;
     row.encrypted_bundle = JSON.stringify({
-      schema_v: 1,
+      schema_v: 2,
       salt: Buffer.alloc(32).toString("base64"),
       verify: Buffer.alloc(32).toString("base64"),
       identity: { user_id: "u_attacker", public_key: "fake-pem", created_at: "" },
       private_pem_enc: "enc:0000000000000000000000",
     });
     expect(row.encrypted_bundle.startsWith("enc:")).toBe(false);
-    expect(row.encrypted_bundle.length).toBeGreaterThan(16);
 
     process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-pair-test-deviceB-"));
     setUserSlug("default");
     await expect(
-      pairJoin(code, {
+      pairJoin(pairingString, {
         userDir: path.join(process.env.HOME!, ".usrcp", "users", "default"),
         passphrase: PASSPHRASE,
         endpoint: "http://stub",
@@ -351,11 +399,8 @@ describe("pairJoin", () => {
   });
 
   it("preserves existing keys on rollback when force=true and the join fails", async () => {
-    // Set up Alice's identity that we'll attempt to pair into Bob's slot.
-    const { code, state } = await makeBundleOnServer();
+    const { pairingString, state } = await makeBundleOnServer();
 
-    // Now set up Bob with a DIFFERENT identity already in keys/ - simulating
-    // a stale install the user is intentionally overwriting via --force.
     process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-pair-test-deviceB-"));
     setUserSlug("default");
     const masterKeyB = initializeMasterKey("bob-original-passphrase");
@@ -363,8 +408,7 @@ describe("pairJoin", () => {
     const bUserDir = getUserDir();
     const bKeysDir = path.join(bUserDir, "keys");
 
-    const snap = (name: string) =>
-      fs.readFileSync(path.join(bKeysDir, name)).toString("hex");
+    const snap = (name: string) => fs.readFileSync(path.join(bKeysDir, name)).toString("hex");
     const before = {
       salt: snap("master.salt"),
       verify: snap("master.verify"),
@@ -374,10 +418,8 @@ describe("pairJoin", () => {
       mode: fs.readFileSync(path.join(bKeysDir, "mode"), "utf-8"),
     };
 
-    // Run with WRONG passphrase + force; pairJoin must roll back without
-    // destroying Bob's pre-existing identity.
     await expect(
-      pairJoin(code, {
+      pairJoin(pairingString, {
         userDir: bUserDir,
         passphrase: "wrong-passphrase-on-purpose",
         endpoint: "http://stub",
@@ -393,27 +435,27 @@ describe("pairJoin", () => {
     expect(snap("public.pem")).toBe(before.publicPem);
     expect(fs.readFileSync(path.join(bKeysDir, "mode"), "utf-8")).toBe(before.mode);
 
-    // Bob can still unlock with his original passphrase.
     const restored = initializeMasterKey("bob-original-passphrase");
     zeroBuffer(restored);
   });
 
-  it("surfaces InvalidPairingCode when the bundle decryption fails", async () => {
-    const { code, state } = await makeBundleOnServer();
-    // Replace the bundle ciphertext with a ciphertext that decrypts under a
-    // DIFFERENT code's key. That hits the bundle-decrypt failure branch.
-    const wrongKey = deriveFromPairingCode("99999999");
-    const tampered = encrypt('{"schema_v":1,"this":"is wrong"}', wrongKey);
+  it("surfaces InvalidPairingCode when the secret half does not decrypt", async () => {
+    const { pairingString, code, state } = await makeBundleOnServer();
+    // Replace the server-stored ciphertext with one encrypted under a
+    // DIFFERENT random secret. The user-presented pairing string carries
+    // the original secret, which won't decrypt the tampered ciphertext.
+    const wrongSecret = Buffer.alloc(16, 7);
+    const wrongKey = deriveFromPairingSecret(code, wrongSecret);
+    const tampered = encrypt('{"schema_v":2,"this":"is wrong"}', wrongKey);
     zeroBuffer(wrongKey);
-    const row = state.bundles.get(code)!;
-    row.encrypted_bundle = tampered;
+    state.bundles.get(code)!.encrypted_bundle = tampered;
 
     process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-pair-test-deviceB-"));
     setUserSlug("default");
     const bUserDir = path.join(process.env.HOME!, ".usrcp", "users", "default");
 
     await expect(
-      pairJoin(code, {
+      pairJoin(pairingString, {
         userDir: bUserDir,
         passphrase: PASSPHRASE,
         endpoint: "http://stub",
@@ -422,7 +464,7 @@ describe("pairJoin", () => {
     ).rejects.toBeInstanceOf(InvalidPairingCode);
   });
 
-  it("rejects malformed codes before talking to the server", async () => {
+  it("rejects malformed pairing strings before talking to the server", async () => {
     process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-pair-test-deviceB-"));
     setUserSlug("default");
     const bUserDir = path.join(process.env.HOME!, ".usrcp", "users", "default");
@@ -432,7 +474,7 @@ describe("pairJoin", () => {
       return new Response("{}", { status: 200 });
     }) as unknown as typeof fetch;
     await expect(
-      pairJoin("12345", {
+      pairJoin("12345678", { // missing secret half
         userDir: bUserDir,
         passphrase: PASSPHRASE,
         endpoint: "http://stub",
@@ -442,15 +484,32 @@ describe("pairJoin", () => {
     expect(calls.length).toBe(0);
   });
 
+  it("rejects a v1-style 8-digit code as a malformed pairing string", async () => {
+    // v1 codes are an outright clean-break failure; a user paste of
+    // "1234-5678" from an old binary must not be silently coerced.
+    process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-pair-test-deviceB-"));
+    setUserSlug("default");
+    const bUserDir = path.join(process.env.HOME!, ".usrcp", "users", "default");
+    await expect(
+      pairJoin("1234-5678", {
+        userDir: bUserDir,
+        passphrase: PASSPHRASE,
+        endpoint: "http://stub",
+        fetchImpl: (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch,
+      })
+    ).rejects.toBeInstanceOf(InvalidPairingCode);
+  });
+
   it("maps 404 to PairingExpired and 429 to PairingLocked", async () => {
     process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-pair-test-deviceB-"));
     setUserSlug("default");
     const bUserDir = path.join(process.env.HOME!, ".usrcp", "users", "default");
+    const wellFormed = formatPairingString("12345678", Buffer.alloc(16, 1));
 
     const expiredFetch: typeof fetch = (async () =>
       new Response(JSON.stringify({ error: "NOT_FOUND" }), { status: 404 })) as unknown as typeof fetch;
     await expect(
-      pairJoin("12345678", {
+      pairJoin(wellFormed, {
         userDir: bUserDir,
         passphrase: PASSPHRASE,
         endpoint: "http://stub",
@@ -461,7 +520,7 @@ describe("pairJoin", () => {
     const lockedFetch: typeof fetch = (async () =>
       new Response(JSON.stringify({ error: "TOO_MANY_ATTEMPTS" }), { status: 429 })) as unknown as typeof fetch;
     await expect(
-      pairJoin("12345678", {
+      pairJoin(wellFormed, {
         userDir: bUserDir,
         passphrase: PASSPHRASE,
         endpoint: "http://stub",
@@ -472,10 +531,10 @@ describe("pairJoin", () => {
 });
 
 describe("pairStatus / pairCancel", () => {
-  it("returns the owner's pending bundles and can cancel one", async () => {
+  it("uses just the 8-digit code (the secret is not needed for management)", async () => {
     const { userDir, publicKey, privateKey } = initDeviceA();
     const state: StubServerState = { bundles: new Map(), ownerForPost: publicKey };
-    const { code } = await pairInit({
+    const r = await pairInit({
       userDir,
       publicKeyPem: publicKey,
       privateKeyPem: privateKey,
@@ -490,19 +549,18 @@ describe("pairStatus / pairCancel", () => {
       fetchImpl: stubFetch(state),
     });
     expect(list.length).toBe(1);
-    expect(list[0].code).toBe(code);
+    expect(list[0].code).toBe(r.code);
 
-    await pairCancel(code, {
+    await pairCancel(r.code, {
       publicKeyPem: publicKey,
       privateKeyPem: privateKey,
       endpoint: "http://stub",
       fetchImpl: stubFetch(state),
     });
-    expect(state.bundles.has(code)).toBe(false);
+    expect(state.bundles.has(r.code)).toBe(false);
 
-    // cancelling again throws PairingExpired.
     await expect(
-      pairCancel(code, {
+      pairCancel(r.code, {
         publicKeyPem: publicKey,
         privateKeyPem: privateKey,
         endpoint: "http://stub",

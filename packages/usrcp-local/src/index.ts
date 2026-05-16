@@ -962,12 +962,15 @@ async function cmdPair(subcommand: string | undefined, rest: string[]): Promise<
     // Special-cased: the user dir may not exist yet; `pair join` IS the init.
     // We still need a slug; default to "default" unless --user= is passed.
     resolveUserSlug({ forInit: true });
-    const codeRaw = rest[0] ?? "";
-    if (!codeRaw) {
-      console.error("  Usage: usrcp pair join <CODE> [--endpoint=<url>] [--force]");
+    // The pairing string is now <8 digits>-<32 hex>. The user may have
+    // copy-pasted it with hyphens, spaces, or split across argv tokens;
+    // join all positional args and let pair.ts strip/normalize.
+    const pairingStringRaw = rest.join(" ").trim();
+    if (!pairingStringRaw) {
+      console.error("  Usage: usrcp pair join <PAIRING-STRING> [--endpoint=<url>] [--force]");
+      console.error("    where PAIRING-STRING looks like 1234-5678-aabbccdd-eeff0011-22334455-66778899");
       process.exit(1);
     }
-    const code = codeRaw.replace(/-/g, "");
     const endpoint = endpointFromArg ?? readConfig().cloud_endpoint;
     if (!endpoint) {
       console.error("  Error: no cloud_endpoint configured. Pass --endpoint=<url> or run `usrcp config set cloud_endpoint <url>`.");
@@ -991,7 +994,7 @@ async function cmdPair(subcommand: string | undefined, rest: string[]): Promise<
       }
     }
     try {
-      const r = await pairJoin(code, {
+      const r = await pairJoin(pairingStringRaw, {
         userDir: getUserDir(),
         passphrase,
         endpoint,
@@ -1005,7 +1008,7 @@ async function cmdPair(subcommand: string | undefined, rest: string[]): Promise<
         process.exit(1);
       }
       if (err instanceof InvalidPairingCode) {
-        console.error("  Error: invalid pairing code (bundle could not be decrypted).");
+        console.error(`  Error: ${err.message}`);
         process.exit(1);
       }
       if (err instanceof PairingExpired) {
@@ -1054,11 +1057,16 @@ async function cmdPair(subcommand: string | undefined, rest: string[]): Promise<
         ttlSeconds: ttl ? Number(ttl) : undefined,
       });
       console.error("");
-      console.error(`  Pairing code:  ${formatCode(r.code)}`);
-      console.error(`  Expires:       ${r.expires_at}`);
+      console.error(`  Pairing string: ${r.pairingString}`);
+      console.error(`  Lookup code:    ${formatCode(r.code)}   (use this for 'usrcp pair status' / 'cancel')`);
+      console.error(`  Expires:        ${r.expires_at}`);
       console.error("");
       console.error("  On the new device, run:");
-      console.error(`    usrcp pair join ${formatCode(r.code)}`);
+      console.error(`    usrcp pair join ${r.pairingString}`);
+      console.error("");
+      console.error("  Share the full pairing string via a trusted channel");
+      console.error("  (paste, AirDrop, encrypted DM). The cloud holds only the");
+      console.error("  lookup code; the secret half stays between your devices.");
       console.error("");
       return;
     }
