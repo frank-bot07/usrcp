@@ -68,4 +68,12 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 );
 
 INSERT OR IGNORE INTO schema_meta(k, v) VALUES ('schema_v', '1');
+
+-- Cursor + bookkeeping for cloud sync. Plaintext locally; the server-
+-- side server_seq we track here is just a number, not a secret.
+-- Known keys: last_pushed_local_id, last_pulled_server_seq, last_sync_at.
+CREATE TABLE IF NOT EXISTS sync_state (
+  k TEXT PRIMARY KEY,
+  v TEXT NOT NULL
+);
 `;

@@ -5,8 +5,10 @@ import {
   initializeMasterKey,
   getUserDir,
 } from "usrcp-local/dist/encryption.js";
+import { Ledger } from "usrcp-local/dist/ledger/index.js";
 import { createStreamServer } from "./server.js";
 import { openStreamDb, closeStreamDb } from "./db/index.js";
+import { loadVectorExtension } from "./vector/index.js";
 import { pingOllama } from "./embeddings/ollama.js";
 import {
   loadConfig,
@@ -14,6 +16,11 @@ import {
   configPath,
   type StreamConfig,
 } from "./config-io.js";
+import {
+  syncStreamPush,
+  syncStreamPull,
+  syncStreamStatus,
+} from "./sync.js";
 
 function hasFlag(name: string): boolean {
   return process.argv.some((a) => a === `--${name}`);
@@ -193,9 +200,12 @@ function usage(): void {
   console.error(`Usage: usrcp-stream <command>
 
 Commands:
-  init      Configure embedding provider and write stream-config.toml
-  serve     Run the MCP server over stdio
-  status    Print event/thread/surface counts
+  init                 Configure embedding provider and write stream-config.toml
+  serve                Run the MCP server over stdio
+  status               Print event/thread/surface counts
+  sync push            Push local events (+ embeddings) to a usrcp-cloud endpoint
+  sync pull            Pull events from the cloud and re-stitch threads locally
+  sync status          Report sync cursor positions and pending-to-push count
 
 Common flags:
   --user=<slug>         User slug to operate on (default: "default")
@@ -207,7 +217,69 @@ Common flags:
 
 Init flags:
   --embedding-provider=<ollama|openai|voyage>   Skip the interactive prompt
+
+Sync flags:
+  --endpoint=<url>      Cloud endpoint URL (required for push/pull)
+  --limit=<N>           Batch size (default 200, max 500)
 `);
+}
+
+async function cmdSync(subcommand: string | undefined): Promise<number> {
+  if (subcommand !== "push" && subcommand !== "pull" && subcommand !== "status") {
+    console.error(
+      "[usrcp-stream] sync subcommand must be one of: push, pull, status"
+    );
+    return 1;
+  }
+
+  const endpoint = getArg("endpoint");
+  if (!endpoint && subcommand !== "status") {
+    console.error(
+      "[usrcp-stream] sync requires --endpoint=<url> (or future: cloud_endpoint in stream-config.toml)"
+    );
+    return 1;
+  }
+
+  const limit = getArg("limit") ? Number(getArg("limit")) : undefined;
+  const passphrase = getPassphrase();
+  const masterKey = initializeMasterKey(passphrase);
+  const userDir = getUserDir();
+  const ledger = new Ledger(undefined, passphrase);
+  const handle = openStreamDb(userDir, masterKey);
+  try {
+    loadVectorExtension(handle.db);
+  } catch (err) {
+    console.error(
+      "[usrcp-stream] sqlite-vec failed to load; pull will not re-index vectors",
+      err
+    );
+  }
+
+  try {
+    let result: unknown;
+    if (subcommand === "push") {
+      result = await syncStreamPush(handle, ledger, { endpoint, limit });
+    } else if (subcommand === "pull") {
+      result = await syncStreamPull(handle, ledger, { endpoint, limit });
+    } else {
+      result = syncStreamStatus(handle, { endpoint });
+    }
+    console.log(JSON.stringify(result));
+    return 0;
+  } catch (err) {
+    console.error(
+      `[usrcp-stream] sync ${subcommand} failed:`,
+      err instanceof Error ? err.message : err
+    );
+    return 1;
+  } finally {
+    closeStreamDb(handle);
+    try {
+      ledger.close();
+    } catch {
+      // ignore
+    }
+  }
 }
 
 async function main(): Promise<number> {
@@ -219,6 +291,8 @@ async function main(): Promise<number> {
       return cmdServe();
     case "status":
       return cmdStatus();
+    case "sync":
+      return cmdSync(process.argv[3]);
     case undefined:
     case "--help":
     case "-h":

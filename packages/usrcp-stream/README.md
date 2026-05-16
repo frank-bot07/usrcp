@@ -75,6 +75,53 @@ Opt-in providers (OpenAI, Voyage AI) require ALL of:
 
 The API key is stored inside the encrypted `stream-config.toml`, never on the command line and never in environment variables that might end up in `/proc`.
 
+## Cloud sync
+
+Stream supports zero-knowledge cross-device sync via the existing `usrcp-cloud` server (Fastify + Postgres). Two new routes were added in PR #44:
+
+- `POST /v1/stream/push` — accepts encrypted events + encrypted embeddings, assigns a per-user monotonic `server_seq`.
+- `GET /v1/stream/pull?since=N` — returns events with `server_seq > N` in monotonic order.
+
+Both reuse the existing Ed25519 per-request signature auth used by ledger sync. The server stores ciphertext only; nothing decrypts server-side.
+
+### What syncs
+
+| Item | Synced? | Notes |
+|---|---|---|
+| `events` | **Yes** | Encrypted columns (channel_ref, author_ref, content, entity_refs) ride through verbatim under the existing `stream-events` HKDF domain. Surface, side, content_kind, ts_ms stay plaintext for cursor / index purposes. |
+| `embeddings` | **Yes, encrypted** | Raw float32 vectors are re-encrypted client-side under a new HKDF domain `stream-embeddings` before push. Server stores opaque `vec_enc` blobs and the model name (also encrypted). Receiving device decrypts and inserts raw into the local `sqlite-vec` index. |
+| `threads` | **No** | Threads are derived state. The receiving device re-runs the stitcher over pulled events to rebuild local thread linkage. Thread IDs may differ across devices but content is identical. |
+| `surface_state` | **No** | Active-surface is per-device by design. |
+| `stream-config.toml` | **No** | Each device opts in to its own embedding provider. |
+
+### Triggering sync
+
+```bash
+# CLI
+usrcp-stream sync push   --endpoint=https://your.cloud.url
+usrcp-stream sync pull   --endpoint=https://your.cloud.url
+usrcp-stream sync status
+```
+
+Or via MCP, when the server is launched with `cloudEndpoint`:
+
+- `stream_sync_push` — global-mutation, rejected when the MCP server runs with `--scopes`
+- `stream_sync_pull` — global-mutation, same rejection rule
+- `stream_sync_status` — global-read, always available
+
+The CLI subcommand and the MCP tool both call the same `syncStreamPush` / `syncStreamPull` / `syncStreamStatus` functions in `src/sync.ts`. Cursors (`last_pushed_local_id`, `last_pulled_server_seq`, `last_sync_at`) live in a small `sync_state` table inside `stream.db`.
+
+### Multi-device key model
+
+The receiving device decrypts pulled events using its local `stream-events` key. Two devices with the same passphrase produce identical HKDF-derived domain keys (verified by `master-key-stability.test.ts`'s frozen vectors). The Ed25519 identity used for cloud auth must be shared across devices (today: copy the `keys/` dir during pairing).
+
+### What's NOT in scope yet
+
+- Three-way device conflict resolution beyond LWW (the stitcher re-runs on each device, so order-of-pull divergence is handled naturally for thread state).
+- WebSocket / push-style sync. Pull is polling; run on a cron or via an agent loop.
+- Backfilling pre-PR-#41 events into the server.
+- Rate limiting on the new endpoints.
+
 ## Capture surface coverage
 
 | Surface | Package | Notes |

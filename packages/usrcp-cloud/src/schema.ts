@@ -127,4 +127,68 @@ CREATE TABLE IF NOT EXISTS seen_nonces (
   PRIMARY KEY (user_public_key, nonce)
 );
 CREATE INDEX IF NOT EXISTS idx_nonces_seen ON seen_nonces(seen_at);
+
+-- ============================================================================
+-- usrcp-stream sync tables.
+-- ============================================================================
+-- The sibling usrcp-stream package writes conversational events into a
+-- separate local SQLite DB (stream.db) under its own HKDF keyspace
+-- (stream-events, stream-threads, stream-surface, stream-config, and
+-- stream-embeddings for sync). The two tables below mirror that
+-- structure on the server side so a user with multiple devices can
+-- push stream events from device A and pull them on device B.
+--
+-- Threads and surface_state are NOT synced - threads are derived state
+-- (the local stitcher re-runs on pull) and active-surface is
+-- per-device by definition.
+--
+-- All encrypted columns store opaque ciphertext from the client; the
+-- server never decrypts. surface / side / content_kind / ts_ms stay
+-- plaintext for cursor/index purposes (same posture as the ledger's
+-- domain_pseudonym and timestamps).
+
+CREATE TABLE IF NOT EXISTS stream_events (
+  user_public_key TEXT NOT NULL REFERENCES users(public_key) ON DELETE CASCADE,
+  event_id TEXT NOT NULL,
+  server_seq BIGSERIAL NOT NULL,
+  client_timestamp TEXT,
+  server_timestamp TIMESTAMPTZ NOT NULL DEFAULT now(),
+  surface TEXT NOT NULL,
+  side TEXT NOT NULL,
+  content_kind TEXT NOT NULL,
+  ts_ms BIGINT NOT NULL,
+  channel_ref_enc TEXT NOT NULL,
+  author_ref_enc TEXT NOT NULL,
+  content_enc TEXT NOT NULL,
+  entity_refs_enc TEXT,
+  ingested_at BIGINT NOT NULL,
+  schema_v INTEGER NOT NULL DEFAULT 1,
+  embedding_present BOOLEAN NOT NULL DEFAULT FALSE,
+  idempotency_key TEXT,
+  PRIMARY KEY (user_public_key, event_id),
+  UNIQUE (user_public_key, server_seq)
+);
+CREATE INDEX IF NOT EXISTS idx_stream_events_user_seq
+  ON stream_events(user_public_key, server_seq);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_stream_events_idempotency
+  ON stream_events(user_public_key, idempotency_key)
+  WHERE idempotency_key IS NOT NULL;
+
+-- Per-event embedding row, attached 1:1 to a stream_events row via the
+-- composite primary key. vec_enc is the client-side encrypted blob (raw
+-- float32 bytes -> base64 -> AES-256-GCM via the stream-embeddings HKDF
+-- domain). dims is plaintext so a fresh device can route the pulled
+-- embedding into the matching event_vec_<dims> sqlite-vec table after
+-- decryption.
+CREATE TABLE IF NOT EXISTS stream_embeddings (
+  user_public_key TEXT NOT NULL,
+  event_id TEXT NOT NULL,
+  vec_enc TEXT NOT NULL,
+  dims INTEGER NOT NULL,
+  model_enc TEXT,
+  created_at_ms BIGINT NOT NULL,
+  PRIMARY KEY (user_public_key, event_id),
+  FOREIGN KEY (user_public_key, event_id)
+    REFERENCES stream_events(user_public_key, event_id) ON DELETE CASCADE
+);
 `;
