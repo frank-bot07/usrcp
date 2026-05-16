@@ -20,6 +20,7 @@ jobs:
       fail-fast: false
       matrix:
         package:
+          - usrcp-claude-code
           - usrcp-cloud
           - usrcp-discord
           - usrcp-extension
@@ -36,6 +37,7 @@ jobs:
           node-version: '24'
           cache: 'npm'
           cache-dependency-path: |
+            packages/usrcp-claude-code/package-lock.json
             packages/usrcp-cloud/package-lock.json
             packages/usrcp-discord/package-lock.json
             packages/usrcp-extension/package-lock.json
