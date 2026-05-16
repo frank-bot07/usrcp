@@ -2,7 +2,14 @@ import type { z } from "zod";
 
 // Tool surface mirrors usrcp-local/src/server.ts:60-65 so stream tools
 // flow through the same scope-enforcement wrapper.
-export type ToolKind = "global-read" | "domain-scoped" | "multi-domain-read";
+// global-mutation is refused outright when serveOptions.scopes is set
+// (it touches all surfaces; a domain-scoped server shouldn't be allowed
+// to trigger it). Used by the cloud-sync tools.
+export type ToolKind =
+  | "global-read"
+  | "global-mutation"
+  | "domain-scoped"
+  | "multi-domain-read";
 
 export interface StreamToolDef {
   name: string;

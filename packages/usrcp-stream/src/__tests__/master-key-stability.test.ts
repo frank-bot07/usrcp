@@ -55,6 +55,7 @@ const FROZEN_VECTORS = {
   threads: "5c2668a19aae57e26f2b04fe0b2118e0ea98f038e0c9291efced48ebc3325dba",
   surface: "5f77913de6974f46d9872dc4474f7688caedb36579596200555970dfabce42f8",
   config: "5974e85e93140b09a101d2b4559fcf58ded0ae0cd832349f47c10171ada0a417",
+  embeddings: "966b6436d1e3b79f8510cfeb36df86f9914200d553d11ae15e84306d9b8daaf7",
   blindEvents: "2bfc835f5379411ba8409bc706a1a3c440ac006d47ff9542040c41280f525902",
 } as const;
 
@@ -87,6 +88,12 @@ describe("frozen HKDF vectors (Codex P0-2)", () => {
     expect(
       deriveDomainEncryptionKey(FROZEN_MASTER_KEY, "stream-config").toString("hex")
     ).toBe(FROZEN_VECTORS.config);
+  });
+
+  it("deriveDomainEncryptionKey(stream-embeddings) matches the frozen vector", () => {
+    expect(
+      deriveDomainEncryptionKey(FROZEN_MASTER_KEY, "stream-embeddings").toString("hex")
+    ).toBe(FROZEN_VECTORS.embeddings);
   });
 
   it("deriveBlindIndexKey(stream-events) matches the frozen vector", () => {

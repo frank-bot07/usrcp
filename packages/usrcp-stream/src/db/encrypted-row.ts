@@ -79,3 +79,64 @@ export function decryptJsonFromColumn<T = unknown>(
 ): T {
   return JSON.parse(decryptFromColumn(masterKey, table, ciphertext)) as T;
 }
+
+// --- Embedding sync helpers ---
+// Embeddings are stored RAW (float32 BLOB) in the local sqlite-vec
+// index because the extension needs raw bytes. Cloud sync requires
+// they leave the device encrypted, so on push we re-encrypt the raw
+// vector under HKDF domain `stream-embeddings` (disjoint from
+// stream-events / stream-threads / etc.) and on pull we decrypt back
+// to raw float32 before inserting into the local index.
+//
+// Wire format: base64(raw float32 bytes) -> encrypt() -> "enc:<base64>"
+// string. ~33% size overhead vs the raw blob, plus the 28-byte AES-GCM
+// frame from encryption.ts.
+
+const EMBEDDING_DOMAIN = "stream-embeddings";
+
+const embeddingKeyCache = new WeakMap<Buffer, Buffer>();
+
+function embeddingKey(masterKey: Buffer): Buffer {
+  const cached = embeddingKeyCache.get(masterKey);
+  if (cached) return cached;
+  const key = _deriveDomainEncryptionKey(masterKey, EMBEDDING_DOMAIN);
+  embeddingKeyCache.set(masterKey, key);
+  return key;
+}
+
+export function encryptEmbeddingForSync(
+  masterKey: Buffer,
+  vec: Float32Array
+): string {
+  const bytes = Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
+  return _encrypt(bytes.toString("base64"), embeddingKey(masterKey));
+}
+
+export function decryptEmbeddingFromSync(
+  masterKey: Buffer,
+  ciphertext: string
+): Float32Array {
+  const b64 = _decrypt(ciphertext, embeddingKey(masterKey));
+  const buf = Buffer.from(b64, "base64");
+  return new Float32Array(
+    buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
+  );
+}
+
+// Convenience for the optional model name on a synced embedding row.
+// The model string itself isn't load-bearing for crypto but encrypting
+// it under the same domain keeps the wire format uniform and the
+// server's `model_enc` opaque.
+export function encryptEmbeddingModelForSync(
+  masterKey: Buffer,
+  model: string
+): string {
+  return _encrypt(model, embeddingKey(masterKey));
+}
+
+export function decryptEmbeddingModelFromSync(
+  masterKey: Buffer,
+  ciphertext: string
+): string {
+  return _decrypt(ciphertext, embeddingKey(masterKey));
+}

@@ -10,6 +10,7 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import { z } from "zod";
 import type { Db } from "./db.js";
 import { verifyAndClaim, AuthError } from "./auth.js";
+import { registerStreamRoutes } from "./stream.js";
 
 // --- Wire schemas (Zod) ---
 
@@ -396,6 +397,9 @@ export function createApp(opts: ServerOptions): FastifyInstance {
     return { status: "ok" };
   });
 
+  // Stream sync routes live in a sibling module; same auth, same db.
+  registerStreamRoutes(app, db);
+
   return app;
 }
 
@@ -605,7 +609,7 @@ function replyVersionConflictIfMismatch(
   return true;
 }
 
-async function tryAuth(
+export async function tryAuth(
   req: FastifyRequest,
   reply: FastifyReply,
   db: Db,
@@ -625,7 +629,7 @@ async function tryAuth(
   }
 }
 
-function numberQuery(q: Record<string, unknown>, name: string): number | undefined {
+export function numberQuery(q: Record<string, unknown>, name: string): number | undefined {
   const v = q[name];
   if (v === undefined || v === null) return undefined;
   const n = Number(v);

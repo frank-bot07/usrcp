@@ -14,6 +14,9 @@ import { streamThread } from "./tools/stream-thread.js";
 import { streamActiveSurface } from "./tools/stream-active-surface.js";
 import { streamPrewarm } from "./tools/stream-prewarm.js";
 import { streamStatus } from "./tools/stream-status.js";
+import { streamSyncPush } from "./tools/stream-sync-push.js";
+import { streamSyncPull } from "./tools/stream-sync-pull.js";
+import { streamSyncStatus } from "./tools/stream-sync-status.js";
 import type { StreamToolDef } from "./tools/types.js";
 
 export interface StreamServeOptions {
@@ -36,6 +39,9 @@ export interface RegisterStreamOptions {
   //   EmbeddingProvider:           use this instance verbatim.
   embedder?: EmbeddingProvider | null;
   serveOptions?: StreamServeOptions;
+  // Cloud sync endpoint for stream_sync_push / stream_sync_pull tools.
+  // Optional; when absent, those tools throw a clear error on use.
+  cloudEndpoint?: string;
   prewarmSummarizer?: (
     events: PrewarmEvent[],
     maxTokens: number
@@ -93,6 +99,17 @@ export function registerStreamTools(
     streamPrewarm(handle, { summarizer: options.prewarmSummarizer }),
     streamStatus(handle, embedder),
   ];
+
+  // Sync tools register only when a Ledger is wired AND a cloud
+  // endpoint is provided. Without a ledger we can't sign requests;
+  // without an endpoint there's nowhere to push.
+  if (ledger && options.cloudEndpoint) {
+    defs.push(
+      streamSyncPush(handle, { ledger, endpoint: options.cloudEndpoint }),
+      streamSyncPull(handle, { ledger, endpoint: options.cloudEndpoint }),
+      streamSyncStatus(handle, { endpoint: options.cloudEndpoint })
+    );
+  }
   const scopedMode =
     scopes !== undefined ||
     serveOpts.readonly === true ||
@@ -121,6 +138,9 @@ export function registerStreamTools(
       }
 
       if (scopes) {
+        if (def.kind === "global-mutation") {
+          return outOfScopeResponse(def.name, ["<global>"], scopes);
+        }
         if (def.kind === "domain-scoped" && def.scopeOf) {
           const requested = def.scopeOf(params) as string[];
           const out = requested.filter((d) => !scopes.includes(d));
