@@ -185,6 +185,28 @@ export async function verifyAndClaim(
     [pub]
   );
 
+  // Post-upsert revocation re-check (race close): the pre-upsert check
+  // above can see no revoked row, then the INSERT-ON-CONFLICT can block
+  // behind a concurrent rotation's row lock on K1 and resume AFTER the
+  // rotation commits, leaving us with a freshly-recreated phantom K1
+  // users row even though K1 is now in revoked_keys. Re-check and
+  // remove the phantom row before any route handler runs.
+  const postRevoked = await db.query<{ public_key: string }>(
+    "SELECT public_key FROM revoked_keys WHERE public_key = $1",
+    [pub]
+  );
+  if (postRevoked.rows.length > 0) {
+    // Undo our upsert. K1 has no children: either it was just inserted
+    // by us (no chance for child rows to exist) or the concurrent
+    // rotation already moved all of K1's children to K2 before it
+    // committed. The DELETE is a best-effort cleanup.
+    await db.query("DELETE FROM users WHERE public_key = $1", [pub]).catch(() => { /* */ });
+    throw new AuthError(
+      "KEY_REVOKED",
+      "This public key was rotated; sign requests with the new key."
+    );
+  }
+
   return { publicKeyPem: pub, userPublicKey: pub, timestampMs, nonce };
 }
 
