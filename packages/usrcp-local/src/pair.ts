@@ -330,59 +330,71 @@ export async function pairJoin(
 ): Promise<{ user_id: string; public_key: string }> {
   // Parse early so a malformed input doesn't even hit the network.
   const { code, secret } = parsePairingString(pairingString);
-  const fetchImpl = opts.fetchImpl ?? fetch;
-  const keysDir = keysDirOf(opts.userDir);
-  const identityPath = path.join(keysDir, "identity.json");
-  if (fs.existsSync(identityPath) && !opts.force) {
-    zeroBuffer(secret);
-    throw new Error(
-      `pairJoin: ${identityPath} already exists. Pass force: true to overwrite.`
-    );
-  }
-
-  // Unauthenticated GET - device B has no identity yet.
-  const url = opts.endpoint.replace(/\/$/, "") + `/v1/pairing/claim/${code}`;
-  const res = await fetchImpl(url, { method: "GET" });
-  let json: any = null;
-  try { json = await res.json(); } catch { json = null; }
-  if (res.status === 404) { zeroBuffer(secret); throw new PairingExpired(); }
-  if (res.status === 429) { zeroBuffer(secret); throw new PairingLocked(); }
-  if (res.status !== 200) {
-    zeroBuffer(secret);
-    throw new Error(`pairJoin: claim failed: HTTP ${res.status} ${JSON.stringify(json ?? null)}`);
-  }
-  const ciphertext = String(json?.encrypted_bundle ?? "");
-  if (ciphertext.length < MIN_BUNDLE_LEN) {
-    zeroBuffer(secret);
-    throw new Error("pairJoin: server returned a too-short bundle.");
-  }
-  // Defense in depth: `decrypt()` returns non-`enc:` input verbatim for
-  // pre-v0.1.3 plaintext compatibility. A malicious server could exploit
-  // that to serve a plaintext JSON bundle that bypasses the scrypt-derived
-  // pairing key entirely. Refuse anything that isn't authenticated
-  // ciphertext before handing it to decrypt().
-  if (!ciphertext.startsWith("enc:")) {
-    zeroBuffer(secret);
-    throw new InvalidPairingCode("Pairing bundle is not ciphertext; refusing.");
-  }
-
-  const key = deriveFromPairingSecret(code, secret);
-  zeroBuffer(secret);
-  let bundle: PairingBundle;
+  // Single try/finally guarantees the 16-byte secret Buffer is zeroed on
+  // every exit path - including thrown fetches, JSON parse errors, and
+  // unexpected exceptions - rather than leaving it live until GC.
+  let key: Buffer | null = null;
   try {
-    let bundleJson: string;
-    try {
-      bundleJson = decrypt(ciphertext, key);
-    } catch {
-      throw new InvalidPairingCode();
+    const fetchImpl = opts.fetchImpl ?? fetch;
+    const keysDir = keysDirOf(opts.userDir);
+    const identityPath = path.join(keysDir, "identity.json");
+    if (fs.existsSync(identityPath) && !opts.force) {
+      throw new Error(
+        `pairJoin: ${identityPath} already exists. Pass force: true to overwrite.`
+      );
     }
-    try {
-      bundle = JSON.parse(bundleJson);
-    } catch {
-      throw new InvalidPairingCode("Pairing bundle was not valid JSON after decryption.");
+
+    // Unauthenticated GET - device B has no identity yet.
+    const url = opts.endpoint.replace(/\/$/, "") + `/v1/pairing/claim/${code}`;
+    const res = await fetchImpl(url, { method: "GET" });
+    let json: any = null;
+    try { json = await res.json(); } catch { json = null; }
+    if (res.status === 404) throw new PairingExpired();
+    if (res.status === 429) throw new PairingLocked();
+    if (res.status !== 200) {
+      throw new Error(`pairJoin: claim failed: HTTP ${res.status} ${JSON.stringify(json ?? null)}`);
     }
+    const ciphertext = String(json?.encrypted_bundle ?? "");
+    if (ciphertext.length < MIN_BUNDLE_LEN) {
+      throw new Error("pairJoin: server returned a too-short bundle.");
+    }
+    // Defense in depth: `decrypt()` returns non-`enc:` input verbatim for
+    // pre-v0.1.3 plaintext compatibility. A malicious server could exploit
+    // that to serve a plaintext JSON bundle that bypasses the
+    // HKDF-derived pairing key entirely. Refuse anything that isn't
+    // authenticated ciphertext before handing it to decrypt().
+    if (!ciphertext.startsWith("enc:")) {
+      throw new InvalidPairingCode("Pairing bundle is not ciphertext; refusing.");
+    }
+
+    key = deriveFromPairingSecret(code, secret);
+    return await pairJoinAfterDecrypt(ciphertext, key, opts, keysDir, identityPath);
   } finally {
-    zeroBuffer(key);
+    zeroBuffer(secret);
+    if (key) zeroBuffer(key);
+  }
+}
+
+async function pairJoinAfterDecrypt(
+  ciphertext: string,
+  key: Buffer,
+  opts: PairJoinOpts,
+  keysDir: string,
+  identityPath: string
+): Promise<{ user_id: string; public_key: string }> {
+  // Key is zeroed by the caller's outer try/finally, which also handles
+  // the secret. We just use it here and never let it out of scope.
+  let bundle: PairingBundle;
+  let bundleJson: string;
+  try {
+    bundleJson = decrypt(ciphertext, key);
+  } catch {
+    throw new InvalidPairingCode();
+  }
+  try {
+    bundle = JSON.parse(bundleJson);
+  } catch {
+    throw new InvalidPairingCode("Pairing bundle was not valid JSON after decryption.");
   }
 
   if (bundle.schema_v !== PAIRING_BUNDLE_SCHEMA_V) {

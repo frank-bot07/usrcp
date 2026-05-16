@@ -963,14 +963,25 @@ async function cmdPair(subcommand: string | undefined, rest: string[]): Promise<
     // We still need a slug; default to "default" unless --user= is passed.
     resolveUserSlug({ forInit: true });
     // The pairing string is <8 digits>-<32 hex>. Users may paste it with
-    // hyphens, spaces, or shells may split it across argv tokens. We join
-    // every POSITIONAL arg (anything not starting with --) so a quoted
-    // paste, an unquoted paste with spaces, and the README example
-    // `usrcp pair join 1234-... --user=laptop` all work.
-    const pairingStringRaw = rest
-      .filter((a) => !a.startsWith("--"))
-      .join(" ")
-      .trim();
+    // hyphens, spaces, or shells may split it across argv tokens, AND the
+    // CLI accepts space-separated flag values like `--user laptop`. To
+    // recover only the positional fragments, walk argv and skip flags
+    // plus (if the flag is value-taking and not --flag=value form) the
+    // immediately-following value token.
+    const VALUE_FLAGS = new Set(["user", "endpoint", "passphrase", "ttl"]);
+    const positionals: string[] = [];
+    for (let i = 0; i < rest.length; i++) {
+      const a = rest[i];
+      if (a.startsWith("--")) {
+        if (!a.includes("=")) {
+          const name = a.slice(2);
+          if (VALUE_FLAGS.has(name)) i++; // consume the value too
+        }
+        continue;
+      }
+      positionals.push(a);
+    }
+    const pairingStringRaw = positionals.join(" ").trim();
     if (!pairingStringRaw) {
       console.error("  Usage: usrcp pair join <PAIRING-STRING> [--endpoint=<url>] [--force]");
       console.error("    where PAIRING-STRING looks like 1234-5678-aabbccdd-eeff0011-22334455-66778899");
