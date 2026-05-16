@@ -73,10 +73,12 @@ usrcp pair join 1234-5678 --user=laptop
 `pair init` builds a bundle of `master.salt`, `master.verify`,
 `identity.json`, and the encrypted `private.pem`, encrypts the bundle
 under `scrypt(code, FIXED_PAIRING_SALT)`, and uploads the ciphertext to
-`/v1/pairing/init`. The server cannot decrypt; only a holder of the
-8-digit code can. `pair join` fetches by code, decrypts, writes the
-four files atomically, and validates by deriving the master key from
-the supplied passphrase. A wrong passphrase rolls back all writes.
+`/v1/pairing/init`. The server stores the code alongside the
+ciphertext, so it is trusted for the 10-minute TTL rather than
+cryptographically barred from decrypting (see the trust requirement
+below). `pair join` fetches by code, decrypts, writes the four files
+atomically, and validates by deriving the master key from the supplied
+passphrase. A wrong passphrase rolls back all writes.
 
 ```
 usrcp pair init    [--ttl=<seconds>] [--endpoint=<url>]

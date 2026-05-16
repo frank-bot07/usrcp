@@ -62,11 +62,15 @@ export function registerPairingRoutes(app: FastifyInstance, db: Db): void {
     // upserts it before we get here, so the FK will always resolve.
     // ON CONFLICT lets the same owner replace their own pending bundle
     // (e.g. they re-ran `usrcp pair init` because the user lost the code).
-    // ON CONFLICT also rewrites owner_public_key so an expired-but-not-yet-
-    // pruned row from a previous owner cannot leak ownership to the new
-    // poster (the pre-check filter only matches LIVE rows; an expired row
-    // falls through and lands here). The live-cross-user-collision case is
-    // already blocked by the 409 above, so this is safe.
+    // Belt-and-suspenders against the concurrent-init TOCTOU: two POSTs from
+    // different users for the same fresh code can both pass the pre-check;
+    // the second hits the PK conflict, and without a predicate here the ON
+    // CONFLICT path would silently transfer ownership. The WHERE clause
+    // refuses the update unless either (a) same owner replacing own bundle
+    // or (b) the prior row is expired, in which case taking it over is
+    // fine. pg-mem ignores ON CONFLICT WHERE predicates, but the pre-check
+    // above covers every case pg-mem can exercise; this clause is the
+    // load-bearing guard in real Postgres under concurrent load.
     const insert = await db.query<{ expires_at: string }>(
       `INSERT INTO pairing_bundles (code, owner_public_key, encrypted_bundle, expires_at)
        VALUES ($1, $2, $3, now() + ($4::text || ' seconds')::interval)
@@ -76,9 +80,22 @@ export function registerPairingRoutes(app: FastifyInstance, db: Db): void {
          expires_at       = EXCLUDED.expires_at,
          claim_attempts   = 0,
          created_at       = now()
+       WHERE pairing_bundles.owner_public_key = EXCLUDED.owner_public_key
+          OR pairing_bundles.expires_at < now()
        RETURNING expires_at`,
       [code, auth.userPublicKey, encrypted_bundle, String(ttl)]
     );
+
+    if (insert.rows.length === 0) {
+      // Real-Postgres-only path: a concurrent init from another user
+      // beat us to the PK between our pre-check and our INSERT. Surface
+      // the same 409 as the pre-check would have. (pg-mem cannot reach
+      // this branch because it ignores the ON CONFLICT WHERE predicate.)
+      return reply.code(409).send({
+        error: "CODE_COLLISION",
+        message: "Pairing code raced with another user. Re-run init.",
+      });
+    }
 
     return { ok: true, expires_at: insert.rows[0].expires_at };
   });

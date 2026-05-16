@@ -72,7 +72,11 @@ Schema details: see `stream_events` and `stream_embeddings` in
 
 Multi-device pairing lets a new device join an existing user's Ed25519
 identity via the cloud, without manually copying the `keys/` directory.
-The server stores only ciphertext bundles; it cannot decrypt them.
+The server stores ciphertext bundles and never calls the decrypt path,
+but the bundle's decryption key is derived from the 8-digit `code` that
+the server also stores - so the cloud is **trusted for the 10-minute
+TTL window**, not cryptographically blocked from decrypting. See the
+Threat model section below.
 
 - `POST /v1/pairing/init` (Ed25519-signed): device A uploads a bundle
   encrypted client-side under `scrypt(code, FIXED_PAIRING_SALT)`. Body:
