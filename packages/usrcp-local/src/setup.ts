@@ -271,6 +271,16 @@ export const KNOWN_ADAPTERS: readonly AdapterSpec[] = [
     blurb: "Capture issues and comments YOU author in Linear. Polls Linear's GraphQL API every minute (configurable). Requires a Linear personal API key. v0: capture-only, no @usrcp replies.",
   },
   {
+    name: "Google Calendar",
+    value: "google-calendar",
+    blurb: "Capture past events you attended on your primary Google Calendar. Polls every 5 min (configurable). Requires a Google Cloud OAuth client + refresh token (see packages/usrcp-google-calendar/README.md). v0: capture-only.",
+  },
+  {
+    name: "Gmail",
+    value: "gmail",
+    blurb: "Capture messages YOU sent in Gmail. Polls every 10 min (configurable). Requires a Google Cloud OAuth client + refresh token (same setup as Google Calendar, different scope). v0: capture-only, no received mail.",
+  },
+  {
     name: "Browser extension (Chrome)",
     value: "extension",
     blurb: "Capture claude.ai conversations and inject ledger context via /usrcp slash command. Chrome only in v0; requires manual extension load (Developer Mode → Load Unpacked).",
