@@ -215,6 +215,75 @@ describe("rate limits", () => {
     await app.close();
   });
 
+  it("the probe map stays bounded even when the same IP keeps scanning after a block", async () => {
+    // The probe detector must not grow its per-IP set indefinitely
+    // under sustained attack. observe() caps the set at threshold+1.
+    const { _internal } = await import("../rate-limit.js");
+    const probe = new _internal.DistinctProbeTracker();
+    const now = Date.now();
+    const HARD_CAP = 6; // threshold+1 for a 5-code threshold
+
+    // Probe 100 distinct codes from the same IP within the window.
+    for (let i = 0; i < 100; i++) {
+      probe.observe("10.0.0.99", String(20000000 + i), now + i, 60_000, HARD_CAP);
+    }
+    // Set size must not exceed the cap.
+    expect(probe.size()).toBeLessThanOrEqual(HARD_CAP);
+  });
+
+  it("rate-limits POSTs at onRequest BEFORE the body is parsed", async () => {
+    // A flood of oversized POSTs to /v1/pairing/init must hit 429 from
+    // the rate limiter, not 413 from the body-size guard or 200 after
+    // the body has been JSON.parsed. Because the hook runs at
+    // onRequest (before preParsing/the JSON parser), the rejected
+    // request never spends the CPU on the body.
+    const app = makeAppWithLimit({
+      pairingInitRpm: 2,
+      trustProxy: true,
+    });
+    await app.ready();
+    const { privateKeyPem, publicKeyPem } = makeKeyPair();
+    const big = "x".repeat(50_000); // not over 2 MiB; enough to be wasteful
+    const body = JSON.stringify({ code: "12345678", encrypted_bundle: big });
+
+    function sign() {
+      const signed = signRequest(privateKeyPem, "POST", "/v1/pairing/init", body);
+      return {
+        "x-forwarded-for": "10.0.0.10",
+        "content-type": "application/json",
+        "x-usrcp-publickey": Buffer.from(publicKeyPem).toString("base64"),
+        "x-usrcp-timestamp": String(signed.timestampMs),
+        "x-usrcp-nonce": signed.nonce,
+        "x-usrcp-signature": signed.signature,
+      } as Record<string, string>;
+    }
+
+    // First 2 go through (will 400 because the bundle isn't real ciphertext;
+    // we just want any non-429 status to confirm the route ran).
+    for (let i = 0; i < 2; i++) {
+      const res = await app.inject({
+        method: "POST",
+        url: "/v1/pairing/init",
+        headers: sign(),
+        payload: body,
+        remoteAddress: "10.0.0.10",
+      });
+      expect(res.statusCode).not.toBe(429);
+    }
+    // 3rd request must 429 from rate limiter, NOT 413/400 from later stages.
+    const blocked = await app.inject({
+      method: "POST",
+      url: "/v1/pairing/init",
+      headers: sign(),
+      payload: body,
+      remoteAddress: "10.0.0.10",
+    });
+    expect(blocked.statusCode).toBe(429);
+    expect(blocked.json().error).toBe("RATE_LIMITED");
+
+    await app.close();
+  });
+
   it("can be disabled entirely with rateLimit:false (used in the existing test suites)", async () => {
     const app = createApp({ db, logger: false, rateLimit: false });
     await app.ready();

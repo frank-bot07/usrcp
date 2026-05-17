@@ -118,15 +118,23 @@ class SlidingCounter {
 /**
  * Distinct-set tracker: per IP, the set of pairing codes it has
  * probed within `probeWindowMs`. Each entry stores (code, firstSeenAt).
+ *
+ * To bound memory under attack, observe() refuses to grow the per-IP
+ * set past `hardCap` entries; once a scanner has tripped the
+ * threshold, subsequent requests still return `hardCap` (so the
+ * caller keeps returning 429 PROBE_DETECTED) but the map stops
+ * accumulating new codes.
  */
 class DistinctProbeTracker {
   private readonly buckets = new Map<string, Map<string, number>>();
 
-  observe(key: string, distinctValue: string, now: number, windowMs: number): number {
+  observe(key: string, distinctValue: string, now: number, windowMs: number, hardCap: number): number {
     const cutoff = now - windowMs;
     const m = this.buckets.get(key) ?? new Map<string, number>();
     for (const [v, ts] of m) if (ts < cutoff) m.delete(v);
-    if (!m.has(distinctValue)) m.set(distinctValue, now);
+    if (m.size < hardCap) {
+      if (!m.has(distinctValue)) m.set(distinctValue, now);
+    }
     this.buckets.set(key, m);
     return m.size;
   }
@@ -203,14 +211,18 @@ function rejectRate(reply: FastifyReply, retryAfterSec: number, code: string, me
 
 /**
  * Register the rate-limit hook + probe detector on a Fastify app.
- * Must run BEFORE the route handlers see the request. The hook is
- * a `preHandler` so it runs after URL parsing (we need the matched
- * route) but before the handler.
+ *
+ * The hook is wired as `onRequest` (the earliest lifecycle stage) so
+ * blocked clients receive 429 BEFORE their POST body is buffered or
+ * JSON-parsed. preParsing / preValidation / preHandler all run later
+ * in the pipeline; putting the limiter at onRequest stops a
+ * sustained POST flood from doing the 2 MiB body-buffer + JSON.parse
+ * work just to be rejected.
  */
 export function registerRateLimits(app: FastifyInstance, state: RateLimitState): void {
   const { config } = state;
 
-  app.addHook("preHandler", async (req, reply) => {
+  app.addHook("onRequest", async (req, reply) => {
     const ip = clientIp(req, config.trustProxy);
     const url = req.routeOptions?.url ?? req.url;
     const method = req.method.toUpperCase();
@@ -221,24 +233,10 @@ export function registerRateLimits(app: FastifyInstance, state: RateLimitState):
 
     // Per-route stricter limits.
     if (method === "GET" && url === "/v1/pairing/claim/:code") {
-      // Distinct-code probe detector: if this IP has hit too many
-      // DIFFERENT codes recently, block before incrementing the
-      // per-route counter so we don't waste counter slots on probes.
-      const codeParam = (req.params as { code?: string }).code ?? "";
-      const distinct = state.probe.observe(ip, codeParam, now, config.probeWindowMs);
-      if (distinct > config.pairingDistinctCodesPerWindow) {
-        app.log.warn(
-          { ip, distinct, window_ms: config.probeWindowMs, route: url },
-          "rate_limit_block_probe"
-        );
-        return rejectRate(
-          reply,
-          config.probeWindowMs / 1000,
-          "PROBE_DETECTED",
-          `Too many distinct pairing codes probed from this IP; try again later.`
-        );
-      }
-
+      // 1) Per-IP request-rate cap on the claim endpoint first. This
+      //    bounds how fast an attacker can grow the probe map below,
+      //    so even the worst-case scanner can only add
+      //    pairingClaimRpm entries per windowMs into the probe set.
       const hits = state.claim.hit(ip, now, config.windowMs);
       if (hits > config.pairingClaimRpm) {
         app.log.warn(
@@ -250,6 +248,27 @@ export function registerRateLimits(app: FastifyInstance, state: RateLimitState):
           config.windowMs / 1000,
           "RATE_LIMITED",
           `Too many pairing claims from this IP.`
+        );
+      }
+
+      // 2) Distinct-code probe detector. The map is capped at
+      //    pairingDistinctCodesPerWindow + 1 (one past the threshold)
+      //    so an IP that has tripped the detector cannot grow the
+      //    map further. Beyond the cap, observe() still returns the
+      //    saturated size so `> threshold` keeps firing.
+      const codeParam = (req.params as { code?: string }).code ?? "";
+      const hardCap = config.pairingDistinctCodesPerWindow + 1;
+      const distinct = state.probe.observe(ip, codeParam, now, config.probeWindowMs, hardCap);
+      if (distinct > config.pairingDistinctCodesPerWindow) {
+        app.log.warn(
+          { ip, distinct, window_ms: config.probeWindowMs, route: url },
+          "rate_limit_block_probe"
+        );
+        return rejectRate(
+          reply,
+          config.probeWindowMs / 1000,
+          "PROBE_DETECTED",
+          `Too many distinct pairing codes probed from this IP; try again later.`
         );
       }
       return;
