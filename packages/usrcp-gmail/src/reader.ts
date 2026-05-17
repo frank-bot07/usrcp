@@ -74,7 +74,13 @@ export async function fetchSentMessages(
 ): Promise<GmailActivity[]> {
   const out: GmailActivity[] = [];
   const pageSize = opts.pageSize ?? 100;
-  const afterSeconds = Math.floor(opts.sentAfter.getTime() / 1000);
+  // Gmail search timestamps have 1-second resolution and `after:` is
+  // strict (does NOT include messages sent in that exact second). If
+  // we passed Math.floor(cursor / 1000), a message sent later in the
+  // same second as our previous cursor would be skipped forever.
+  // Overlap by one second and rely on the gmail:message:<hash>
+  // idempotency key to dedupe the messages we already saw.
+  const afterSeconds = Math.floor(opts.sentAfter.getTime() / 1000) - 1;
   // Gmail's search query syntax. `in:sent` is more reliable than
   // `from:me` (the latter falls through to the broader From-header
   // alias system); combined with the negative label filters to skip
@@ -161,8 +167,11 @@ export function normaliseMessage(msg: gmail_v1.Schema$Message): GmailActivity | 
 }
 
 function extractBody(payload: gmail_v1.Schema$MessagePart): string {
-  // Walk the MIME tree depth-first; prefer text/plain. If we only find
-  // text/html, strip tags as a fallback.
+  // Walk the MIME tree depth-first; prefer text/plain over text/html.
+  // For multipart/alternative messages where Gmail attaches an
+  // empty/whitespace-only text/plain "decoy" and the real content
+  // lives in text/html, we'd lose the body unless we also keep
+  // accumulating the first non-empty plain part. Same idea for HTML.
   const parts: gmail_v1.Schema$MessagePart[] = [payload];
   let plain: string | null = null;
   let html: string | null = null;
@@ -174,15 +183,17 @@ function extractBody(payload: gmail_v1.Schema$MessagePart): string {
     }
     if (!p.body?.data) continue;
     const decoded = Buffer.from(p.body.data, "base64url").toString("utf8");
-    if (p.mimeType === "text/plain" && plain === null) {
+    const nonEmpty = decoded.trim().length > 0;
+    if (p.mimeType === "text/plain" && (plain === null || (plain.trim().length === 0 && nonEmpty))) {
       plain = decoded;
-    } else if (p.mimeType === "text/html" && html === null) {
+    } else if (p.mimeType === "text/html" && (html === null || (html.trim().length === 0 && nonEmpty))) {
       html = decoded;
     }
   }
-  if (plain !== null) return plain;
-  if (html !== null) return stripTags(html);
-  return "";
+  if (plain !== null && plain.trim().length > 0) return plain;
+  if (html !== null && html.trim().length > 0) return stripTags(html);
+  // Last resort: an all-whitespace plain part with no HTML at all.
+  return plain ?? "";
 }
 
 function stripTags(html: string): string {

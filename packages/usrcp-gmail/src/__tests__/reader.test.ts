@@ -74,6 +74,36 @@ describe("normaliseMessage", () => {
     expect(out!.body).toBe("plain body content");
   });
 
+  it("falls back to text/html when text/plain part is empty/whitespace (Gmail decoy)", () => {
+    // Some clients emit a multipart/alternative with an empty text/plain
+    // and the real content in text/html. Without this fallback the body
+    // would be discarded and the message could be filtered as
+    // no_subject_no_body.
+    const raw = mkRaw({
+      payload: {
+        headers: [
+          { name: "Subject", value: "" }, // also no subject so we exercise the worst case
+          { name: "From", value: "alice@example.com" },
+          { name: "To", value: "bob@example.com" },
+        ],
+        mimeType: "multipart/alternative",
+        parts: [
+          {
+            mimeType: "text/plain",
+            body: { data: b64("   \n\t  \n") },
+          },
+          {
+            mimeType: "text/html",
+            body: { data: b64("<p>Real content here</p>") },
+          },
+        ],
+      },
+    });
+    const out = normaliseMessage(raw);
+    expect(out).not.toBeNull();
+    expect(out!.body).toBe("Real content here");
+  });
+
   it("falls back to stripped HTML when no text/plain part exists", () => {
     const raw = mkRaw({
       payload: {
