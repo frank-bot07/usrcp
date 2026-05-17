@@ -11,6 +11,8 @@
  *   https://www.googleapis.com/auth/gmail.readonly
  */
 
+import { OAuth2Client } from "google-auth-library";
+import { runLocalhostOauthFlow } from "usrcp-local/dist/adapters/google-oauth/index.js";
 import {
   getConfigPath,
   writeGmailConfig,
@@ -18,6 +20,8 @@ import {
   type GmailConfig,
 } from "./config.js";
 import { validateCredentials } from "./reader.js";
+
+const GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
 
 function readPlainLine(prompt: string): Promise<string> {
   return new Promise((resolve) => {
@@ -121,10 +125,66 @@ export async function runGmailSetup(): Promise<GmailConfig> {
   // ── Step 3 - refresh_token ───────────────────────────────────────────────
   process.stderr.write("\n  Step 3 - OAuth refresh_token\n");
   process.stderr.write("  ─────────────────────────────\n");
+  // The localhost browser flow is the default; the manual
+  // OAuth-Playground path is the fallback for users who can't open a
+  // browser from this machine (remote shell, CI, etc.).
+  const useBrowserFlow = await readYN(
+    "  Authorise via browser on this machine? (recommended)",
+    true
+  );
+
   let refresh_token = "";
   let userEmail = "";
   let messageTotal = 0;
-  while (true) {
+
+  if (useBrowserFlow) {
+    while (true) {
+      try {
+        const flow = await runLocalhostOauthFlow({
+          buildAuthUrl: (redirectUri) => {
+            const oauth = new OAuth2Client({
+              clientId: oauth_client_id,
+              clientSecret: oauth_client_secret,
+              redirectUri,
+            });
+            return oauth.generateAuthUrl({
+              access_type: "offline",
+              prompt: "consent",
+              scope: [GMAIL_READONLY_SCOPE],
+              redirect_uri: redirectUri,
+            });
+          },
+          exchangeCode: async (code, redirectUri) => {
+            const oauth = new OAuth2Client({
+              clientId: oauth_client_id,
+              clientSecret: oauth_client_secret,
+              redirectUri,
+            });
+            const { tokens } = await oauth.getToken(code);
+            return {
+              refresh_token: tokens.refresh_token ?? "",
+              access_token: tokens.access_token ?? undefined,
+            };
+          },
+        });
+        refresh_token = flow.refresh_token;
+        break;
+      } catch (err) {
+        process.stderr.write(`  ✗ Browser flow failed: ${err instanceof Error ? err.message : String(err)}\n`);
+        const retry = await readYN("  Try again?", true);
+        if (!retry) process.exit(1);
+      }
+    }
+    process.stderr.write("  Validating against Gmail API...\n");
+    const result = await validateCredentials({ oauth_client_id, oauth_client_secret, refresh_token });
+    if (!result.ok) {
+      process.stderr.write(`  ✗ Validation failed: ${result.error}\n`);
+      process.exit(1);
+    }
+    userEmail = result.email;
+    messageTotal = result.total_messages;
+    process.stderr.write(`  ✓ Authenticated as ${userEmail} (${messageTotal} messages total)\n\n`);
+  } else while (true) {
     const suffix = existing.refresh_token ? ` (Enter to keep ${maskSecret(existing.refresh_token)})` : "";
     const raw = await readSecret(`  refresh_token${suffix}:\n  > `);
     const trimmed = raw.trim();
@@ -148,9 +208,9 @@ export async function runGmailSetup(): Promise<GmailConfig> {
     refresh_token = candidate;
     userEmail = result.email;
     messageTotal = result.total_messages;
+    process.stderr.write(`  ✓ Authenticated as ${userEmail} (${messageTotal} messages total)\n\n`);
     break;
   }
-  process.stderr.write(`  ✓ Authenticated as ${userEmail} (${messageTotal} messages total)\n\n`);
 
   // ── Step 4 - Polling interval ────────────────────────────────────────────
   process.stderr.write("  Step 4 - Polling interval\n");

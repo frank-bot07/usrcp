@@ -46,17 +46,7 @@ three secrets the user gets out-of-band.
 4. **APIs & Services > Credentials > Create credentials > OAuth client ID**:
    choose **Desktop app**. Copy the **client ID** and **client secret**.
 
-### 2. Get a refresh token
-
-1. Visit [developers.google.com/oauthplayground](https://developers.google.com/oauthplayground).
-2. Click the gear icon, tick **Use your own OAuth credentials**, paste
-   the client ID + secret.
-3. In the left panel, scroll to **Gmail API v1** and tick
-   `https://www.googleapis.com/auth/gmail.readonly`.
-4. **Authorize APIs** -> sign in -> **Exchange authorization code for tokens**.
-5. Copy `refresh_token`.
-
-### 3. Run the wizard
+### 2. Run the wizard
 
 ```bash
 cd packages/usrcp-gmail
@@ -64,9 +54,25 @@ npm install
 npm run build
 
 usrcp setup --adapter=gmail
-# prompts for client_id, client_secret, refresh_token, poll interval,
-# and the USRCP domain to write under.
 ```
+
+The wizard prompts for `client_id` + `client_secret` and then asks
+whether to authorise via browser (default Yes). The browser flow
+opens a localhost listener, prints the Google sign-in URL, captures
+the redirect, and persists the refresh token automatically; no copy /
+paste from the OAuth Playground.
+
+If you can't open a browser from this machine (remote shell, CI,
+etc.), answer "no" and the wizard falls back to the manual
+OAuth-Playground path:
+
+1. Visit [developers.google.com/oauthplayground](https://developers.google.com/oauthplayground).
+2. Click the gear icon, tick **Use your own OAuth credentials**, paste
+   the client ID + secret.
+3. In the left panel, scroll to **Gmail API v1** and tick
+   `https://www.googleapis.com/auth/gmail.readonly`.
+4. **Authorize APIs** -> sign in -> **Exchange authorization code for tokens**.
+5. Copy the `refresh_token` and paste it into the wizard.
 
 The wizard validates the credentials against `users.getProfile`
 before persisting, so a bad value fails fast.
