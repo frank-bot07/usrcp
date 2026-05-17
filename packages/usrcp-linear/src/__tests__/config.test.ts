@@ -10,6 +10,7 @@ import {
   readPartialDecryptedConfig,
   loadConfig,
   preflightConfig,
+  reencryptConfigUnderNewKey,
   saveLastSyncedAt,
   flushLastSyncedAt,
   type LinearConfig,
@@ -303,5 +304,61 @@ describe("preflightConfig (no master key required)", () => {
 
     fs.writeFileSync(getConfigPath(), JSON.stringify(GOOD_CONFIG, null, 2), { mode: 0o600 });
     expect(() => preflightConfig()).not.toThrow();
+  });
+});
+
+describe("reencryptConfigUnderNewKey (rotate-key hook)", () => {
+  const oldKey = Buffer.alloc(32, 0x11);
+  const newKey = Buffer.alloc(32, 0x22);
+
+  it("returns 'absent' when no config exists", () => {
+    expect(reencryptConfigUnderNewKey(oldKey, newKey)).toBe("absent");
+  });
+
+  it("rewrites an encrypted config so the new key (and only the new key) can decrypt it", () => {
+    writeLinearConfig(GOOD_CONFIG, oldKey);
+    expect(reencryptConfigUnderNewKey(oldKey, newKey)).toBe("rotated");
+
+    const reloaded = loadConfig(newKey);
+    expect(reloaded.linear_api_key).toBe(GOOD_CONFIG.linear_api_key);
+
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((_code?: number) => {
+      throw new Error("process.exit called");
+    });
+    expect(() => loadConfig(oldKey)).toThrow("process.exit called");
+    exitSpy.mockRestore();
+  });
+
+  it("migrates a legacy plaintext config to encrypted under the new key", () => {
+    const p = getConfigPath();
+    fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(p, JSON.stringify(GOOD_CONFIG, null, 2), { mode: 0o600 });
+
+    expect(reencryptConfigUnderNewKey(oldKey, newKey)).toBe("rotated");
+    const raw = JSON.parse(fs.readFileSync(p, "utf8"));
+    expect(raw.linear_api_key.startsWith("enc:")).toBe(true);
+    expect(loadConfig(newKey).linear_api_key).toBe(GOOD_CONFIG.linear_api_key);
+  });
+
+  it("preserves mode 0600 after rotation", () => {
+    writeLinearConfig(GOOD_CONFIG, oldKey);
+    reencryptConfigUnderNewKey(oldKey, newKey);
+    expect(fs.statSync(getConfigPath()).mode & 0o777).toBe(0o600);
+  });
+
+  it("throws when the on-disk config is missing required secret fields", () => {
+    const p = getConfigPath();
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const { linear_api_key: _omit, ...incomplete } = GOOD_CONFIG;
+    fs.writeFileSync(p, JSON.stringify(incomplete), { mode: 0o600 });
+    expect(() => reencryptConfigUnderNewKey(oldKey, newKey)).toThrow(/incomplete linear config/);
+  });
+
+  it("leaves no .rotate-tmp.* leftovers after a successful rotation", () => {
+    writeLinearConfig(GOOD_CONFIG, oldKey);
+    reencryptConfigUnderNewKey(oldKey, newKey);
+    const configDir = path.dirname(getConfigPath());
+    const leftovers = fs.readdirSync(configDir).filter((n) => n.includes(".rotate-tmp."));
+    expect(leftovers).toEqual([]);
   });
 });

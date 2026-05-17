@@ -87,6 +87,52 @@ export function readPartialDecryptedConfig(masterKey: Buffer): Partial<GmailConf
   return out;
 }
 
+/**
+ * Re-encrypt the on-disk config under a new master key. Used during
+ * `usrcp_rotate_key` so the rotation doesn't leave this adapter
+ * unable to decrypt its OAuth tokens on next boot.
+ *
+ * Returns "absent" if no config exists; "rotated" if successfully
+ * re-encrypted. Throws on parse / decrypt failure - the dispatcher
+ * logs the adapter as needing manual re-setup. Atomic per-file
+ * (tmp + rename) so the file is either fully old-key or fully new-key.
+ */
+export function reencryptConfigUnderNewKey(
+  oldKey: Buffer,
+  newKey: Buffer,
+): "absent" | "rotated" {
+  const p = getConfigPath();
+  if (!fs.existsSync(p)) return "absent";
+
+  const raw = fs.readFileSync(p, "utf8");
+  const partial = JSON.parse(raw) as Partial<GmailConfig>;
+  if (!partial.oauth_client_secret || !partial.refresh_token) {
+    throw new Error(`incomplete gmail config at ${p}; cannot re-encrypt`);
+  }
+
+  const oldGlobal = deriveGlobalEncryptionKey(oldKey);
+  const newGlobal = deriveGlobalEncryptionKey(newKey);
+  try {
+    const passthrough = (v: string) =>
+      v.startsWith("enc:") ? decrypt(v, oldGlobal) : v;
+    const onDisk = {
+      ...partial,
+      oauth_client_secret: encrypt(passthrough(partial.oauth_client_secret), newGlobal),
+      refresh_token: encrypt(passthrough(partial.refresh_token), newGlobal),
+    };
+    const body = JSON.stringify(onDisk, null, 2);
+    const tmp = `${p}.rotate-tmp.${process.pid}.${Date.now()}`;
+    const fd = fs.openSync(tmp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC, 0o600);
+    try { fs.writeSync(fd, body); } finally { fs.closeSync(fd); }
+    fs.chmodSync(tmp, 0o600);
+    fs.renameSync(tmp, p);
+    return "rotated";
+  } finally {
+    zeroBuffer(oldGlobal);
+    zeroBuffer(newGlobal);
+  }
+}
+
 export function writeGmailConfig(cfg: GmailConfig, masterKey: Buffer): void {
   const p = getConfigPath();
   fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });

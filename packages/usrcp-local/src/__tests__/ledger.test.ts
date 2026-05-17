@@ -546,6 +546,59 @@ describe("Key Rotation", () => {
     recoveredLedger.close();
   });
 
+  it("invokes onKeysReady with both keys after commit, before in-memory swap", () => {
+    let observed: { oldKey: Buffer; newKey: Buffer; oldSameAsCurrent: boolean } | null = null;
+
+    const currentBefore = Buffer.from((ledger as any).masterKey);
+
+    ledger.rotateKey(undefined, {
+      onKeysReady: (oldKey, newKey) => {
+        // Capture state from inside the hook: oldKey must still match
+        // the ledger's current masterKey buffer (the swap happens
+        // AFTER the hook so adapter re-encryption can decrypt with
+        // the old key it knows about). newKey is the rotation target.
+        observed = {
+          oldKey: Buffer.from(oldKey),
+          newKey: Buffer.from(newKey),
+          oldSameAsCurrent: Buffer.compare(oldKey, (ledger as any).masterKey) === 0,
+        };
+      },
+    });
+
+    expect(observed).not.toBeNull();
+    expect(observed!.oldKey.length).toBe(32);
+    expect(observed!.newKey.length).toBe(32);
+    expect(Buffer.compare(observed!.oldKey, currentBefore)).toBe(0);
+    expect(observed!.oldSameAsCurrent).toBe(true);
+
+    // After rotateKey returns, the in-memory key is the new one.
+    expect(Buffer.compare((ledger as any).masterKey, observed!.newKey)).toBe(0);
+  });
+
+  it("treats onKeysReady throw as non-fatal (rotation still completes)", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    expect(() =>
+      ledger.rotateKey(undefined, {
+        onKeysReady: () => {
+          throw new Error("simulated adapter re-encryption blew up");
+        },
+      }),
+    ).not.toThrow();
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("simulated adapter re-encryption blew up"),
+    );
+
+    // pending_key should still be cleared (rotation considered complete).
+    const rotation = (ledger as any).db
+      .prepare("SELECT pending_key FROM rotation_state")
+      .get() as any;
+    expect(rotation.pending_key).toBe(null);
+
+    warnSpy.mockRestore();
+  });
+
   it("resets tamper counter after rotation", () => {
     // Simulate tampers to set count > 0
     for (let i = 0; i < 3; i++) {

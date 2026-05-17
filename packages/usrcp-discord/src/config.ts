@@ -95,6 +95,56 @@ export function readPartialDecryptedConfig(masterKey: Buffer): Partial<DiscordCo
   return out;
 }
 
+/**
+ * Re-encrypt the on-disk config under a new master key. Used during
+ * `usrcp_rotate_key` so the rotation doesn't leave this adapter
+ * unable to decrypt its bot token / Anthropic key on next boot.
+ *
+ * Returns "absent" if no config exists; "rotated" if successfully
+ * re-encrypted under the new key. Throws on parse / decrypt failure
+ * - the dispatcher logs the adapter as needing manual re-setup.
+ *
+ * Bypasses loadConfig (which calls process.exit on failures - bad
+ * during rotation) and writeDiscordConfig (which truncates the file
+ * before writing - non-atomic). Writes to a tmp file + rename so
+ * the on-disk file is either fully old-key or fully new-key.
+ */
+export function reencryptConfigUnderNewKey(
+  oldKey: Buffer,
+  newKey: Buffer,
+): "absent" | "rotated" {
+  const p = getConfigPath();
+  if (!fs.existsSync(p)) return "absent";
+
+  const raw = fs.readFileSync(p, "utf8");
+  const partial = JSON.parse(raw) as Partial<DiscordConfig>;
+  if (!partial.discord_bot_token || !partial.anthropic_api_key) {
+    throw new Error(`incomplete discord config at ${p}; cannot re-encrypt`);
+  }
+
+  const oldGlobal = deriveGlobalEncryptionKey(oldKey);
+  const newGlobal = deriveGlobalEncryptionKey(newKey);
+  try {
+    const passthrough = (v: string) =>
+      v.startsWith("enc:") ? decrypt(v, oldGlobal) : v;
+    const onDisk = {
+      ...partial,
+      discord_bot_token: encrypt(passthrough(partial.discord_bot_token), newGlobal),
+      anthropic_api_key: encrypt(passthrough(partial.anthropic_api_key), newGlobal),
+    };
+    const body = JSON.stringify(onDisk, null, 2);
+    const tmp = `${p}.rotate-tmp.${process.pid}.${Date.now()}`;
+    const fd = fs.openSync(tmp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC, 0o600);
+    try { fs.writeSync(fd, body); } finally { fs.closeSync(fd); }
+    fs.chmodSync(tmp, 0o600);
+    fs.renameSync(tmp, p);
+    return "rotated";
+  } finally {
+    zeroBuffer(oldGlobal);
+    zeroBuffer(newGlobal);
+  }
+}
+
 export function writeDiscordConfig(cfg: DiscordConfig, masterKey: Buffer): void {
   const p = getConfigPath();
   fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });
