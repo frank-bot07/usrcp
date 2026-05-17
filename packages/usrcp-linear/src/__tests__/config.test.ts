@@ -7,6 +7,7 @@ import {
   getConfigPath,
   writeLinearConfig,
   readPartialConfig,
+  readPartialDecryptedConfig,
   loadConfig,
   saveLastSyncedAt,
   flushLastSyncedAt,
@@ -247,5 +248,26 @@ describe("saveLastSyncedAt / flushLastSyncedAt", () => {
     });
     expect(() => loadConfig(wrongKey)).toThrow("process.exit called");
     expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+});
+
+describe("readPartialDecryptedConfig (setup-wizard defaults)", () => {
+  it("returns decrypted plaintext linear_api_key for the wizard's 'Enter to keep' path", () => {
+    writeLinearConfig(GOOD_CONFIG, masterKey);
+    const decrypted = readPartialDecryptedConfig(masterKey);
+    expect(decrypted.linear_api_key).toBe(GOOD_CONFIG.linear_api_key);
+    expect(decrypted.allowlisted_team_ids).toEqual(GOOD_CONFIG.allowlisted_team_ids);
+  });
+
+  it("returns empty object when no config exists", () => {
+    expect(readPartialDecryptedConfig(masterKey)).toEqual({});
+  });
+
+  it("passes through legacy plaintext linear_api_key unchanged", () => {
+    const p = getConfigPath();
+    fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(p, JSON.stringify(GOOD_CONFIG, null, 2), { mode: 0o600 });
+    const decrypted = readPartialDecryptedConfig(masterKey);
+    expect(decrypted.linear_api_key).toBe(GOOD_CONFIG.linear_api_key);
   });
 });

@@ -54,6 +54,25 @@ export function readPartialConfig(): Partial<LinearConfig> {
   }
 }
 
+/**
+ * Like readPartialConfig, but decrypts any `enc:<base64>` envelope on
+ * linear_api_key back to plaintext. The setup wizard uses this so
+ * "Enter to keep existing key" defaults are the actual key the user
+ * pasted, not the encrypted envelope on disk.
+ */
+export function readPartialDecryptedConfig(masterKey: Buffer): Partial<LinearConfig> {
+  const partial = readPartialConfig();
+  const out: Partial<LinearConfig> = { ...partial };
+  try {
+    if (partial.linear_api_key) {
+      out.linear_api_key = maybeDecryptSecret(partial.linear_api_key, masterKey);
+    }
+  } catch {
+    /* Best effort: wizard validation will catch decrypt failures. */
+  }
+  return out;
+}
+
 export function writeLinearConfig(cfg: LinearConfig, masterKey: Buffer): void {
   const p = getConfigPath();
   fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });

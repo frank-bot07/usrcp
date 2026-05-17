@@ -79,6 +79,33 @@ export function readPartialConfig(): Partial<GoogleCalendarConfig> {
   }
 }
 
+/**
+ * Like readPartialConfig, but decrypts any `enc:<base64>` envelopes
+ * back to plaintext using the supplied master key. The setup wizard
+ * uses this to offer "Enter to keep existing X" defaults that are the
+ * actual values the user typed, not the encrypted envelopes that
+ * landed on disk.
+ *
+ * Returns an empty object if no config exists. Falls back to raw
+ * partial on decrypt failure (the wizard will reject the value at
+ * validation time and surface a clear error).
+ */
+export function readPartialDecryptedConfig(masterKey: Buffer): Partial<GoogleCalendarConfig> {
+  const partial = readPartialConfig();
+  const out: Partial<GoogleCalendarConfig> = { ...partial };
+  try {
+    if (partial.oauth_client_secret) {
+      out.oauth_client_secret = maybeDecryptSecret(partial.oauth_client_secret, masterKey);
+    }
+    if (partial.refresh_token) {
+      out.refresh_token = maybeDecryptSecret(partial.refresh_token, masterKey);
+    }
+  } catch {
+    /* Best effort: defaults stay as envelopes; wizard validation will catch it. */
+  }
+  return out;
+}
+
 export function writeGoogleCalendarConfig(cfg: GoogleCalendarConfig, masterKey: Buffer): void {
   const p = getConfigPath();
   fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });

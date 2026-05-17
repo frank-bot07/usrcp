@@ -17,7 +17,7 @@ import { runLocalhostOauthFlow } from "usrcp-local/dist/adapters/google-oauth/in
 import {
   getConfigPath,
   writeGoogleCalendarConfig,
-  readPartialConfig,
+  readPartialDecryptedConfig,
   type GoogleCalendarConfig,
 } from "./config.js";
 import { validateCredentials } from "./reader.js";
@@ -79,7 +79,10 @@ export async function runGoogleCalendarSetup(
     process.exit(1);
   }
 
-  const existing = readPartialConfig();
+  // Decrypted defaults so "Enter to keep existing X" actually uses
+  // the plaintext value the user originally typed, not the
+  // enc:<base64> envelope that lives on disk.
+  const existing = readPartialDecryptedConfig(masterKey);
 
   process.stderr.write("\n");
   process.stderr.write("  ┌─ Google Calendar adapter setup ────────────────────────────┐\n");

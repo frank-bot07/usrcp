@@ -6,6 +6,7 @@ import {
   getConfigPath,
   writeGoogleCalendarConfig,
   readPartialConfig,
+  readPartialDecryptedConfig,
   loadConfig,
   saveLastSyncedAt,
   flushLastSyncedAt,
@@ -70,6 +71,32 @@ describe("round-trip encryption", () => {
     });
     expect(() => loadConfig(wrongKey)).toThrow("process.exit called");
     expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+});
+
+describe("readPartialDecryptedConfig (setup-wizard defaults)", () => {
+  it("returns decrypted plaintext values so wizard 'Enter to keep' works on encrypted configs", () => {
+    writeGoogleCalendarConfig(GOOD_CONFIG, masterKey);
+    const decrypted = readPartialDecryptedConfig(masterKey);
+    expect(decrypted.oauth_client_secret).toBe(GOOD_CONFIG.oauth_client_secret);
+    expect(decrypted.refresh_token).toBe(GOOD_CONFIG.refresh_token);
+    // Plaintext envelope-free values come through too.
+    expect(decrypted.oauth_client_id).toBe(GOOD_CONFIG.oauth_client_id);
+    expect(decrypted.domain).toBe(GOOD_CONFIG.domain);
+  });
+
+  it("returns empty object when no config exists", () => {
+    expect(readPartialDecryptedConfig(masterKey)).toEqual({});
+  });
+
+  it("passes through legacy plaintext values unchanged", () => {
+    // Pre-PR config (plaintext secrets).
+    const p = getConfigPath();
+    fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(p, JSON.stringify(GOOD_CONFIG, null, 2), { mode: 0o600 });
+    const decrypted = readPartialDecryptedConfig(masterKey);
+    expect(decrypted.oauth_client_secret).toBe(GOOD_CONFIG.oauth_client_secret);
+    expect(decrypted.refresh_token).toBe(GOOD_CONFIG.refresh_token);
   });
 });
 

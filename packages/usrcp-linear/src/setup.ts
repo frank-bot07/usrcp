@@ -7,7 +7,7 @@ import { LinearClient } from "@linear/sdk";
 import {
   getConfigPath,
   writeLinearConfig,
-  readPartialConfig,
+  readPartialDecryptedConfig,
   type LinearConfig,
 } from "./config.js";
 
@@ -103,7 +103,10 @@ export async function runLinearSetup(
     process.exit(1);
   }
 
-  const existing = readPartialConfig();
+  // Decrypted defaults so "Enter to keep existing key" actually uses
+  // the plaintext API key the user originally pasted, not the
+  // enc:<base64> envelope that lives on disk.
+  const existing = readPartialDecryptedConfig(masterKey);
 
   process.stderr.write("\n");
   process.stderr.write("  ┌─ Linear adapter setup ─────────────────────────────────────┐\n");

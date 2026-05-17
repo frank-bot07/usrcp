@@ -65,6 +65,28 @@ export function readPartialConfig(): Partial<GmailConfig> {
   }
 }
 
+/**
+ * Like readPartialConfig, but decrypts any `enc:<base64>` envelopes
+ * back to plaintext. The wizard uses this so "Enter to keep existing
+ * X" defaults are the actual values the user typed, not the
+ * encrypted envelope strings that landed on disk.
+ */
+export function readPartialDecryptedConfig(masterKey: Buffer): Partial<GmailConfig> {
+  const partial = readPartialConfig();
+  const out: Partial<GmailConfig> = { ...partial };
+  try {
+    if (partial.oauth_client_secret) {
+      out.oauth_client_secret = maybeDecryptSecret(partial.oauth_client_secret, masterKey);
+    }
+    if (partial.refresh_token) {
+      out.refresh_token = maybeDecryptSecret(partial.refresh_token, masterKey);
+    }
+  } catch {
+    /* Best effort: wizard validation will catch decrypt failures. */
+  }
+  return out;
+}
+
 export function writeGmailConfig(cfg: GmailConfig, masterKey: Buffer): void {
   const p = getConfigPath();
   fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });
