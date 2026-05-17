@@ -118,20 +118,46 @@ describe("runLocalhostOauthFlow", () => {
     expect(exchangeCode).toHaveBeenCalledOnce();
   });
 
-  it("rejects when the redirect carries ?error= and serves an error page", async () => {
+  it("rejects when the redirect carries ?error= AND matching state", async () => {
     const exchangeCode = vi.fn(async () => ({ refresh_token: "should-not-mint" }));
     const { log, ready } = readySignal();
-    const buildAuthUrl = (redirectUri: string, _state: string): string => {
-      // The error path doesn't need to carry a valid state - errors
-      // are surfaced regardless. (Google's real redirect would still
-      // include state on errors; we just don't validate it then.)
-      void ready.then(() => driveRedirect(redirectUri, { error: "access_denied" }).catch(() => { /* */ }));
+    const buildAuthUrl = (redirectUri: string, state: string): string => {
+      // Google echoes state on error redirects too; the helper requires
+      // a matching state before treating ?error= as a legitimate
+      // abort. A bare ?error= without state would be treated as a
+      // forged redirect (covered separately below).
+      void ready.then(() =>
+        driveRedirect(redirectUri, { error: "access_denied", state }).catch(() => { /* */ })
+      );
       return "https://accounts.google.com/o/oauth2/v2/auth";
     };
 
     await expect(
       runLocalhostOauthFlow({ buildAuthUrl, exchangeCode, timeoutMs: 5000, log })
     ).rejects.toThrow(/access_denied/);
+    expect(exchangeCode).not.toHaveBeenCalled();
+  });
+
+  it("ignores a forged ?error= without matching state (state guards the error path too)", async () => {
+    // A local attacker firing /oauth2callback?error=access_denied at
+    // the listener without the right state must NOT kill the flow -
+    // otherwise they could grief setup just by hitting the port.
+    const exchangeCode = vi.fn(async () => ({ refresh_token: "stub" }));
+    const { log, ready } = readySignal();
+    const buildAuthUrl = (redirectUri: string, _state: string): string => {
+      void ready.then(async () => {
+        const a = await driveRedirect(redirectUri, { error: "access_denied" }); // no state
+        expect(a.status).toBe(400);
+        expect(a.body).toContain("state mismatch");
+        const b = await driveRedirect(redirectUri, { error: "access_denied", state: "ff".repeat(16) });
+        expect(b.status).toBe(400);
+        expect(b.body).toContain("state mismatch");
+      });
+      return "https://accounts.google.com/o/oauth2/v2/auth";
+    };
+    await expect(
+      runLocalhostOauthFlow({ buildAuthUrl, exchangeCode, timeoutMs: 250, log })
+    ).rejects.toThrow(/timed out/i);
     expect(exchangeCode).not.toHaveBeenCalled();
   });
 

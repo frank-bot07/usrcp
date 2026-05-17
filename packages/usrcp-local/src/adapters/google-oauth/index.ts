@@ -154,21 +154,13 @@ export async function runLocalhostOauthFlow(opts: OAuthFlowOpts): Promise<OAuthF
           res.end();
           return;
         }
-        if (parsed.error) {
-          res.setHeader("content-type", "text/html; charset=utf-8");
-          res.statusCode = 400;
-          res.end(ERROR_PAGE(parsed.error));
-          cleanup();
-          reject(new Error(`Google authorization returned error: ${parsed.error}`));
-          return;
-        }
-        // CSRF guard: any redirect whose state does not match the one
-        // we generated is rejected. A real Google redirect always
-        // echoes the state we passed in &state=. A redirect missing
-        // state (or with the wrong state) is either a misconfigured
-        // client OR an attacker on the same machine trying to race
-        // the real redirect with their own code; either way we don't
-        // exchange it.
+        // CSRF guard runs FIRST, before the error/code branches.
+        // Google echoes `state` on every redirect including error
+        // redirects, so a missing-or-wrong state means this request
+        // is NOT from Google. Treating it as a 400 + keep waiting
+        // stops a local attacker from killing the flow by firing a
+        // forged ?error=access_denied at the listener, which would
+        // otherwise hit the reject() branch and abort the wizard.
         if (!parsed.state || !timingSafeEqualHex(parsed.state, state)) {
           res.setHeader("content-type", "text/html; charset=utf-8");
           res.statusCode = 400;
@@ -176,6 +168,14 @@ export async function runLocalhostOauthFlow(opts: OAuthFlowOpts): Promise<OAuthF
           // Don't reject - keep waiting for the legitimate redirect.
           // A real attacker can keep firing forged redirects, but the
           // 5-min timeout bounds the window.
+          return;
+        }
+        if (parsed.error) {
+          res.setHeader("content-type", "text/html; charset=utf-8");
+          res.statusCode = 400;
+          res.end(ERROR_PAGE(parsed.error));
+          cleanup();
+          reject(new Error(`Google authorization returned error: ${parsed.error}`));
           return;
         }
         if (!parsed.code) {
