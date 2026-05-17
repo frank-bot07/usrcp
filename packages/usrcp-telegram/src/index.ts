@@ -26,7 +26,7 @@ import { execSync } from "node:child_process";
 import { Bot, type Context } from "grammy";
 import { Ledger } from "usrcp-local/dist/ledger/index.js";
 import { getUserDir } from "usrcp-local/dist/encryption.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, preflightConfig } from "./config.js";
 import { captureMessage, type CaptureMessage } from "./capture.js";
 import { captureMessageToStream } from "./stream-capture.js";
 import { composeAndReply } from "./reader.js";
@@ -160,10 +160,17 @@ async function main() {
     process.exit(0);
   }
 
-  const config = loadConfig();
-
+  // Validate config exists + is complete BEFORE constructing the
+  // Ledger. `new Ledger(...)` would silently auto-initialize a
+  // dev-mode ledger if none exists yet, which would poison a
+  // subsequent `usrcp setup` run (it skips the passphrase prompt
+  // when a dev-mode ledger is already present).
+  preflightConfig();
   const passphrase = process.env.USRCP_PASSPHRASE;
   const ledger = new Ledger(undefined, passphrase);
+  const masterKey = ledger.getMasterKey();
+
+  const config = loadConfig(masterKey);
   const llm = new AnthropicLlm({ apiKey: config.anthropic_api_key });
 
   const mode = resolveMode(getArg("mode"), streamInstalled());

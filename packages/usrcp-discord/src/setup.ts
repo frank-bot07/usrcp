@@ -222,7 +222,9 @@ function isValidSnowflake(id: string): boolean {
 // Main wizard flow
 // ---------------------------------------------------------------------------
 
-export async function runDiscordSetup(): Promise<DiscordConfig> {
+export async function runDiscordSetup(
+  opts: { masterKey?: Buffer } = {},
+): Promise<DiscordConfig> {
   if (!process.stdin.isTTY) {
     const p = getConfigPath();
     console.error(
@@ -231,6 +233,13 @@ export async function runDiscordSetup(): Promise<DiscordConfig> {
     );
     process.exit(1);
   }
+  if (!opts.masterKey) {
+    console.error(
+      `usrcp-discord setup: master key not provided. Run 'usrcp setup' (no --adapter) to initialize the ledger first, or set USRCP_PASSPHRASE before re-running 'usrcp setup --adapter=discord'.`
+    );
+    process.exit(1);
+  }
+  const masterKey = opts.masterKey;
 
   process.stderr.write("\n");
   process.stderr.write("  ┌─ Discord adapter setup ─────────────────────────────────────┐\n");
@@ -397,8 +406,8 @@ export async function runDiscordSetup(): Promise<DiscordConfig> {
     user_id,
   };
 
-  writeDiscordConfig(cfg);
-  process.stderr.write(`\n  ✓ Config saved to ${getConfigPath()} (mode 0600)\n`);
+  writeDiscordConfig(cfg, masterKey);
+  process.stderr.write(`\n  ✓ Config saved to ${getConfigPath()} (mode 0600, secrets encrypted)\n`);
 
   return cfg;
 }

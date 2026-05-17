@@ -1,20 +1,35 @@
 /**
  * Configuration I/O for the USRCP Telegram adapter.
  *
- * Exports:
- *   getConfigPath()        — path to ~/.usrcp/telegram-config.json
- *   writeTelegramConfig()  — write config at mode 0600
- *   readPartialConfig()    — read whatever fields are present on disk
- *   loadConfig()           — read-or-throw (non-interactive)
- *   loadOrInitConfig()     — legacy interactive flow (kept for back-compat)
- *   runTelegramSetup       — re-exported from ./setup.ts (alias)
+ * Sensitive secrets (`telegram_bot_token`, `anthropic_api_key`) are
+ * encrypted at rest under the USRCP global encryption key derived
+ * from the master key, same envelope (`enc:<base64>`) as private.pem
+ * and the ledger's encrypted columns. The file lives at mode 0600
+ * either way; encryption is defense in depth against an attacker
+ * who reads disk without unlocking the master key.
  *
- * Interactive setup has moved to ./setup.ts → runTelegramSetup().
+ * Legacy plaintext configs (pre-#55) load transparently and are
+ * re-encrypted the moment loadConfig runs.
+ *
+ * Exports:
+ *   getConfigPath()              path to ~/.usrcp/telegram-config.json
+ *   writeTelegramConfig()        write encrypted, mode 0600
+ *   readPartialConfig()          raw partial read (still-encrypted)
+ *   readPartialDecryptedConfig() partial read with envelopes decrypted
+ *   loadConfig(masterKey)        read-or-throw non-interactive loader
+ *
+ * Interactive setup lives in ./setup.ts -> runTelegramSetup().
  */
 
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import {
+  encrypt,
+  decrypt,
+  deriveGlobalEncryptionKey,
+  zeroBuffer,
+} from "usrcp-local/dist/encryption.js";
 
 export interface TelegramConfig {
   telegram_bot_token: string;
@@ -31,7 +46,26 @@ export function getConfigPath(): string {
   return path.join(os.homedir(), ".usrcp", CONFIG_FILENAME);
 }
 
-function readPartialConfig(): Partial<TelegramConfig> {
+function encryptSecret(plaintext: string, masterKey: Buffer): string {
+  const key = deriveGlobalEncryptionKey(masterKey);
+  try {
+    return encrypt(plaintext, key);
+  } finally {
+    zeroBuffer(key);
+  }
+}
+
+function maybeDecryptSecret(value: string, masterKey: Buffer): string {
+  if (!value.startsWith("enc:")) return value;
+  const key = deriveGlobalEncryptionKey(masterKey);
+  try {
+    return decrypt(value, key);
+  } finally {
+    zeroBuffer(key);
+  }
+}
+
+export function readPartialConfig(): Partial<TelegramConfig> {
   const p = getConfigPath();
   if (!fs.existsSync(p)) return {};
   try {
@@ -41,180 +75,51 @@ function readPartialConfig(): Partial<TelegramConfig> {
   }
 }
 
-/** @internal — use writeTelegramConfig externally */
-function writeConfig(cfg: TelegramConfig): void {
+/**
+ * Like readPartialConfig, but decrypts any `enc:<base64>` envelopes
+ * back to plaintext. The setup wizard uses this so "Enter to keep
+ * existing X" defaults are the actual values the user typed, not the
+ * encrypted envelope strings that landed on disk.
+ */
+export function readPartialDecryptedConfig(masterKey: Buffer): Partial<TelegramConfig> {
+  const partial = readPartialConfig();
+  const out: Partial<TelegramConfig> = { ...partial };
+  try {
+    if (partial.telegram_bot_token) {
+      out.telegram_bot_token = maybeDecryptSecret(partial.telegram_bot_token, masterKey);
+    }
+    if (partial.anthropic_api_key) {
+      out.anthropic_api_key = maybeDecryptSecret(partial.anthropic_api_key, masterKey);
+    }
+  } catch {
+    /* Best effort: wizard validation will catch decrypt failures. */
+  }
+  return out;
+}
+
+export function writeTelegramConfig(cfg: TelegramConfig, masterKey: Buffer): void {
   const p = getConfigPath();
   fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });
-  const body = JSON.stringify(cfg, null, 2);
-  // Write with O_WRONLY | O_CREAT | O_TRUNC + 0600. Open via fs.openSync
-  // to guarantee the permission bits are honored regardless of umask.
+  const onDisk: TelegramConfig = {
+    ...cfg,
+    telegram_bot_token: encryptSecret(cfg.telegram_bot_token, masterKey),
+    anthropic_api_key: encryptSecret(cfg.anthropic_api_key, masterKey),
+  };
+  const body = JSON.stringify(onDisk, null, 2);
   const fd = fs.openSync(p, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC, 0o600);
   try {
     fs.writeSync(fd, body);
   } finally {
     fs.closeSync(fd);
   }
-  // Re-chmod defensively — openSync with mode only sets perms on creation.
-  // If the file already existed, O_CREAT is a no-op and perms may stay stale.
   fs.chmodSync(p, 0o600);
 }
 
 /**
- * Read a line with characters echoed as '*'. Returns on \n/\r/EOF.
- * Ctrl-C exits with 130. Backspace / DEL erases one character.
- *
- * Only callable when stdin is a TTY. Caller must check.
+ * Read + validate the config without decrypting. See
+ * usrcp-discord/src/config.ts:readValidatedPartial for rationale.
  */
-function readMaskedLine(prompt: string): Promise<string> {
-  return new Promise((resolve) => {
-    process.stderr.write(prompt);
-    const stdin = process.stdin;
-    stdin.resume();
-    stdin.setEncoding("utf8");
-    stdin.setRawMode(true);
-
-    let buf = "";
-    const CODE_NL = 10;
-    const CODE_CR = 13;
-    const CODE_EOT = 4;
-    const CODE_ETX = 3;
-    const CODE_BS = 8;
-    const CODE_DEL = 127;
-
-    const onData = (chunk: string) => {
-      for (const ch of chunk) {
-        const code = ch.charCodeAt(0);
-        if (code === CODE_NL || code === CODE_CR || code === CODE_EOT) {
-          stdin.removeListener("data", onData);
-          stdin.setRawMode(false);
-          stdin.pause();
-          process.stderr.write("\n");
-          resolve(buf);
-          return;
-        }
-        if (code === CODE_ETX) {
-          stdin.setRawMode(false);
-          process.stderr.write("\n");
-          process.exit(130);
-        }
-        if (code === CODE_BS || code === CODE_DEL) {
-          if (buf.length > 0) {
-            buf = buf.slice(0, -1);
-            // Erase one character from the display: cursor-back, space, cursor-back
-            process.stderr.write("\b \b");
-          }
-        } else {
-          buf += ch;
-          process.stderr.write("*");
-        }
-      }
-    };
-    stdin.on("data", onData);
-  });
-}
-
-function readPlainLine(prompt: string): Promise<string> {
-  return new Promise((resolve) => {
-    process.stderr.write(prompt);
-    const stdin = process.stdin;
-    stdin.resume();
-    stdin.setEncoding("utf8");
-    const onData = (chunk: string) => {
-      stdin.removeListener("data", onData);
-      stdin.pause();
-      resolve(chunk.replace(/\r?\n$/, ""));
-    };
-    stdin.on("data", onData);
-  });
-}
-
-function parseChatList(raw: string): string[] {
-  return raw
-    .split(/[,\s]+/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-}
-
-/**
- * Load the config, running the interactive first-run prompt if needed.
- * Pass `reset: true` to force re-prompting for all fields.
- */
-export async function loadOrInitConfig(opts: { reset?: boolean } = {}): Promise<TelegramConfig> {
-  const existing = opts.reset ? {} : readPartialConfig();
-
-  const needsBotToken = !existing.telegram_bot_token;
-  const needsAnthropicKey = !existing.anthropic_api_key;
-  const needsChats = !existing.allowlisted_chats || existing.allowlisted_chats.length === 0;
-  const needsUserId = !existing.user_id;
-
-  const missingAny = needsBotToken || needsAnthropicKey || needsChats || needsUserId;
-
-  if (!missingAny) {
-    return existing as TelegramConfig;
-  }
-
-  if (!process.stdin.isTTY) {
-    const missing: string[] = [];
-    if (needsBotToken) missing.push("telegram_bot_token");
-    if (needsAnthropicKey) missing.push("anthropic_api_key");
-    if (needsChats) missing.push("allowlisted_chats");
-    if (needsUserId) missing.push("user_id");
-    console.error(
-      `usrcp-telegram: missing required config fields (${missing.join(", ")}) ` +
-      `and stdin is not a TTY. Pre-populate ${getConfigPath()} with mode 0600 and re-run.`
-    );
-    process.exit(1);
-  }
-
-  process.stderr.write("\n  USRCP Telegram — first-run setup\n");
-  process.stderr.write(`  Config will be saved to ${getConfigPath()} (mode 0600).\n\n`);
-
-  const telegram_bot_token = needsBotToken
-    ? await readMaskedLine("  Telegram bot token (from https://t.me/BotFather → /newbot): ")
-    : existing.telegram_bot_token!;
-
-  const anthropic_api_key = needsAnthropicKey
-    ? await readMaskedLine("  Anthropic API key (from console.anthropic.com → API Keys): ")
-    : existing.anthropic_api_key!;
-
-  const allowlisted_chats = needsChats
-    ? parseChatList(
-        await readPlainLine(
-          "  Allowlisted chat IDs (comma-separated; groups are negative numbers — use @userinfobot to find them): "
-        )
-      )
-    : existing.allowlisted_chats!;
-
-  const user_id = needsUserId
-    ? (await readPlainLine("  Your Telegram user ID (send any message to @userinfobot to get it): ")).trim()
-    : existing.user_id!;
-
-  if (!telegram_bot_token || !anthropic_api_key || allowlisted_chats.length === 0 || !user_id) {
-    console.error("  Error: all fields are required. Re-run with --reset-config to retry.");
-    process.exit(1);
-  }
-
-  const cfg: TelegramConfig = {
-    telegram_bot_token,
-    anthropic_api_key,
-    allowlisted_chats,
-    user_id,
-  };
-  writeConfig(cfg);
-  process.stderr.write(`\n  Config saved to ${getConfigPath()}\n\n`);
-  return cfg;
-}
-
-/**
- * Public alias for writeConfig — used by setup.ts.
- */
-export const writeTelegramConfig: (cfg: TelegramConfig) => void = writeConfig;
-
-/**
- * Non-interactive loader — read-or-throw. Called by the adapter's main() on
- * every boot. Exits with a clear message pointing the user at 'usrcp setup'.
- */
-export function loadConfig(): TelegramConfig {
+function readValidatedPartial(): Partial<TelegramConfig> {
   const p = getConfigPath();
   if (!fs.existsSync(p)) {
     console.error(
@@ -245,7 +150,48 @@ export function loadConfig(): TelegramConfig {
     );
     process.exit(1);
   }
-  return partial as TelegramConfig;
+  return partial;
 }
 
-// loadOrInitConfig is already exported above as a named function declaration.
+/**
+ * Validate the on-disk config without needing the master key. Daemons
+ * MUST call this before constructing the Ledger to avoid silently
+ * auto-initializing a dev-mode ledger on a fresh install that hasn't
+ * run `usrcp setup` yet.
+ */
+export function preflightConfig(): void {
+  readValidatedPartial();
+}
+
+/**
+ * Read-or-throw non-interactive loader. Called by the adapter's main()
+ * after the Ledger is unlocked. If config is missing or incomplete,
+ * exits with a clear message pointing the user at 'usrcp setup'.
+ */
+export function loadConfig(masterKey: Buffer): TelegramConfig {
+  const partial = readValidatedPartial();
+  let decrypted: TelegramConfig;
+  try {
+    decrypted = {
+      ...(partial as TelegramConfig),
+      telegram_bot_token: maybeDecryptSecret(partial.telegram_bot_token!, masterKey),
+      anthropic_api_key: maybeDecryptSecret(partial.anthropic_api_key!, masterKey),
+    };
+  } catch (err) {
+    console.error(
+      `usrcp-telegram: failed to decrypt config secrets (wrong passphrase or corrupt file): ${err instanceof Error ? err.message : String(err)}`
+    );
+    process.exit(1);
+  }
+  const wasLegacyPlaintext =
+    !partial.telegram_bot_token!.startsWith("enc:") ||
+    !partial.anthropic_api_key!.startsWith("enc:");
+  if (wasLegacyPlaintext) {
+    try {
+      writeTelegramConfig(decrypted, masterKey);
+    } catch {
+      /* Non-fatal; the next setup-wizard save will retry. */
+    }
+  }
+  return decrypted;
+}

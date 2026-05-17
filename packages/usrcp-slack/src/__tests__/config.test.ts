@@ -4,14 +4,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
   getConfigPath,
-  writeGoogleCalendarConfig,
+  writeSlackConfig,
   readPartialConfig,
   readPartialDecryptedConfig,
   loadConfig,
   preflightConfig,
-  saveLastSyncedAt,
-  flushLastSyncedAt,
-  type GoogleCalendarConfig,
+  type SlackConfig,
 } from "../config.js";
 
 let tmpHome: string;
@@ -20,7 +18,7 @@ const masterKey = Buffer.alloc(32, 0x42);
 
 beforeEach(() => {
   origHome = process.env.HOME;
-  tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-gcal-config-"));
+  tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-slack-config-"));
   process.env.HOME = tmpHome;
 });
 
@@ -30,42 +28,47 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const GOOD_CONFIG: GoogleCalendarConfig = {
-  oauth_client_id: "stub.apps.googleusercontent.com",
-  oauth_client_secret: "GOCSPX-test-secret-xxx",
-  refresh_token: "1//04stubrefreshtoken",
-  poll_interval_s: 300,
-  domain: "calendar",
+const GOOD_CONFIG: SlackConfig = {
+  slack_bot_token: "xoxb-SAMPLE-BOT-TOKEN",
+  slack_app_token: "xapp-SAMPLE-APP-TOKEN",
+  anthropic_api_key: "sk-ant-api03-SAMPLE-ANTHROPIC-KEY",
+  allowlisted_channels: ["C01234567", "D89012345"],
+  user_id: "U0123ABCD",
 };
 
 describe("round-trip encryption", () => {
-  it("writes encrypted oauth_client_secret + refresh_token; loadConfig decrypts back to plaintext", () => {
-    writeGoogleCalendarConfig(GOOD_CONFIG, masterKey);
+  it("writes encrypted slack_bot_token + slack_app_token + anthropic_api_key; loadConfig decrypts back", () => {
+    writeSlackConfig(GOOD_CONFIG, masterKey);
     const raw = JSON.parse(fs.readFileSync(getConfigPath(), "utf8"));
-    expect(raw.oauth_client_id).toBe(GOOD_CONFIG.oauth_client_id); // not encrypted
-    expect(raw.oauth_client_secret.startsWith("enc:")).toBe(true);
-    expect(raw.refresh_token.startsWith("enc:")).toBe(true);
+    expect(raw.slack_bot_token.startsWith("enc:")).toBe(true);
+    expect(raw.slack_app_token.startsWith("enc:")).toBe(true);
+    expect(raw.anthropic_api_key.startsWith("enc:")).toBe(true);
+    expect(raw.user_id).toBe(GOOD_CONFIG.user_id);
+    expect(raw.allowlisted_channels).toEqual(GOOD_CONFIG.allowlisted_channels);
 
     const loaded = loadConfig(masterKey);
-    expect(loaded.oauth_client_secret).toBe(GOOD_CONFIG.oauth_client_secret);
-    expect(loaded.refresh_token).toBe(GOOD_CONFIG.refresh_token);
-    expect(loaded.oauth_client_id).toBe(GOOD_CONFIG.oauth_client_id);
+    expect(loaded.slack_bot_token).toBe(GOOD_CONFIG.slack_bot_token);
+    expect(loaded.slack_app_token).toBe(GOOD_CONFIG.slack_app_token);
+    expect(loaded.anthropic_api_key).toBe(GOOD_CONFIG.anthropic_api_key);
+    expect(loaded.user_id).toBe(GOOD_CONFIG.user_id);
+    expect(loaded.allowlisted_channels).toEqual(GOOD_CONFIG.allowlisted_channels);
   });
 
   it("file is mode 0600 after write", () => {
-    writeGoogleCalendarConfig(GOOD_CONFIG, masterKey);
+    writeSlackConfig(GOOD_CONFIG, masterKey);
     expect(fs.statSync(getConfigPath()).mode & 0o777).toBe(0o600);
   });
 
   it("readPartialConfig returns raw on-disk values (encrypted envelopes)", () => {
-    writeGoogleCalendarConfig(GOOD_CONFIG, masterKey);
+    writeSlackConfig(GOOD_CONFIG, masterKey);
     const partial = readPartialConfig();
-    expect(partial.oauth_client_secret?.startsWith("enc:")).toBe(true);
-    expect(partial.refresh_token?.startsWith("enc:")).toBe(true);
+    expect(partial.slack_bot_token?.startsWith("enc:")).toBe(true);
+    expect(partial.slack_app_token?.startsWith("enc:")).toBe(true);
+    expect(partial.anthropic_api_key?.startsWith("enc:")).toBe(true);
   });
 
   it("loadConfig errors out when the master key cannot decrypt the on-disk envelope", () => {
-    writeGoogleCalendarConfig(GOOD_CONFIG, masterKey);
+    writeSlackConfig(GOOD_CONFIG, masterKey);
     const wrongKey = Buffer.alloc(32, 0xff);
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((_code?: number) => {
       throw new Error("process.exit called");
@@ -75,15 +78,14 @@ describe("round-trip encryption", () => {
   });
 });
 
-describe("readPartialDecryptedConfig (setup-wizard defaults)", () => {
+describe("readPartialDecryptedConfig", () => {
   it("returns decrypted plaintext values so wizard 'Enter to keep' works on encrypted configs", () => {
-    writeGoogleCalendarConfig(GOOD_CONFIG, masterKey);
+    writeSlackConfig(GOOD_CONFIG, masterKey);
     const decrypted = readPartialDecryptedConfig(masterKey);
-    expect(decrypted.oauth_client_secret).toBe(GOOD_CONFIG.oauth_client_secret);
-    expect(decrypted.refresh_token).toBe(GOOD_CONFIG.refresh_token);
-    // Plaintext envelope-free values come through too.
-    expect(decrypted.oauth_client_id).toBe(GOOD_CONFIG.oauth_client_id);
-    expect(decrypted.domain).toBe(GOOD_CONFIG.domain);
+    expect(decrypted.slack_bot_token).toBe(GOOD_CONFIG.slack_bot_token);
+    expect(decrypted.slack_app_token).toBe(GOOD_CONFIG.slack_app_token);
+    expect(decrypted.anthropic_api_key).toBe(GOOD_CONFIG.anthropic_api_key);
+    expect(decrypted.user_id).toBe(GOOD_CONFIG.user_id);
   });
 
   it("returns empty object when no config exists", () => {
@@ -91,13 +93,13 @@ describe("readPartialDecryptedConfig (setup-wizard defaults)", () => {
   });
 
   it("passes through legacy plaintext values unchanged", () => {
-    // Pre-PR config (plaintext secrets).
     const p = getConfigPath();
     fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });
     fs.writeFileSync(p, JSON.stringify(GOOD_CONFIG, null, 2), { mode: 0o600 });
     const decrypted = readPartialDecryptedConfig(masterKey);
-    expect(decrypted.oauth_client_secret).toBe(GOOD_CONFIG.oauth_client_secret);
-    expect(decrypted.refresh_token).toBe(GOOD_CONFIG.refresh_token);
+    expect(decrypted.slack_bot_token).toBe(GOOD_CONFIG.slack_bot_token);
+    expect(decrypted.slack_app_token).toBe(GOOD_CONFIG.slack_app_token);
+    expect(decrypted.anthropic_api_key).toBe(GOOD_CONFIG.anthropic_api_key);
   });
 });
 
@@ -113,7 +115,7 @@ describe("preflightConfig (no master key required)", () => {
   it("exits when a required field is missing", () => {
     const p = getConfigPath();
     fs.mkdirSync(path.dirname(p), { recursive: true });
-    const { refresh_token: _omit, ...bad } = GOOD_CONFIG;
+    const { user_id: _omit, ...bad } = GOOD_CONFIG;
     fs.writeFileSync(p, JSON.stringify(bad), { mode: 0o600 });
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((_code?: number) => {
       throw new Error("process.exit called");
@@ -122,41 +124,38 @@ describe("preflightConfig (no master key required)", () => {
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
-  it("returns normally on encrypted and on legacy-plaintext configs (no decryption performed)", () => {
-    writeGoogleCalendarConfig(GOOD_CONFIG, masterKey);
+  it("returns normally when an encrypted config is on disk", () => {
+    writeSlackConfig(GOOD_CONFIG, masterKey);
     expect(() => preflightConfig()).not.toThrow();
+  });
 
-    // Replace with legacy plaintext on disk - preflight must still succeed.
-    fs.writeFileSync(getConfigPath(), JSON.stringify(GOOD_CONFIG, null, 2), { mode: 0o600 });
+  it("returns normally on a legacy plaintext config too (no decryption performed)", () => {
+    const p = getConfigPath();
+    fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(p, JSON.stringify(GOOD_CONFIG, null, 2), { mode: 0o600 });
     expect(() => preflightConfig()).not.toThrow();
   });
 });
 
 describe("legacy plaintext compat", () => {
-  it("auto-migrates a pre-PR plaintext config the moment loadConfig runs (idle adapter case)", () => {
-    // Simulate a pre-PR config: secrets in plaintext.
+  it("auto-migrates a pre-PR plaintext config the moment loadConfig runs", () => {
     const p = getConfigPath();
     fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });
     fs.writeFileSync(p, JSON.stringify(GOOD_CONFIG, null, 2), { mode: 0o600 });
 
-    // loadConfig itself re-writes the file as encrypted; we do NOT
-    // depend on saveLastSyncedAt firing (which only happens if the
-    // poll cursor advances - might never happen for an idle inbox /
-    // calendar).
     const loaded = loadConfig(masterKey);
-    expect(loaded.oauth_client_secret).toBe(GOOD_CONFIG.oauth_client_secret);
-    expect(loaded.refresh_token).toBe(GOOD_CONFIG.refresh_token);
+    expect(loaded.slack_bot_token).toBe(GOOD_CONFIG.slack_bot_token);
+    expect(loaded.slack_app_token).toBe(GOOD_CONFIG.slack_app_token);
+    expect(loaded.anthropic_api_key).toBe(GOOD_CONFIG.anthropic_api_key);
 
     const raw = JSON.parse(fs.readFileSync(p, "utf8"));
-    expect(raw.oauth_client_secret.startsWith("enc:")).toBe(true);
-    expect(raw.refresh_token.startsWith("enc:")).toBe(true);
+    expect(raw.slack_bot_token.startsWith("enc:")).toBe(true);
+    expect(raw.slack_app_token.startsWith("enc:")).toBe(true);
+    expect(raw.anthropic_api_key.startsWith("enc:")).toBe(true);
 
-    // Subsequent saves continue to round-trip cleanly.
-    saveLastSyncedAt("2026-05-17T16:00:00.000Z", masterKey);
-    flushLastSyncedAt();
     const reloaded = loadConfig(masterKey);
-    expect(reloaded.last_synced_at).toBe("2026-05-17T16:00:00.000Z");
-    expect(reloaded.oauth_client_secret).toBe(GOOD_CONFIG.oauth_client_secret);
-    expect(reloaded.refresh_token).toBe(GOOD_CONFIG.refresh_token);
+    expect(reloaded.slack_bot_token).toBe(GOOD_CONFIG.slack_bot_token);
+    expect(reloaded.slack_app_token).toBe(GOOD_CONFIG.slack_app_token);
+    expect(reloaded.anthropic_api_key).toBe(GOOD_CONFIG.anthropic_api_key);
   });
 });

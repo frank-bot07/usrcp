@@ -1,19 +1,35 @@
 /**
  * Configuration I/O for the USRCP Discord adapter.
  *
- * Exports:
- *   getConfigPath()       — path to ~/.usrcp/discord-config.json
- *   writeDiscordConfig()  — write config at mode 0600
- *   readPartialConfig()   — read whatever fields are present on disk
- *   loadConfig()          — read-or-throw (non-interactive)
- *   loadOrInitConfig()    — legacy interactive flow (kept for back-compat)
+ * Sensitive secrets (`discord_bot_token`, `anthropic_api_key`) are
+ * encrypted at rest under the USRCP global encryption key derived
+ * from the master key, same envelope (`enc:<base64>`) as private.pem
+ * and the ledger's encrypted columns. The file lives at mode 0600
+ * either way; encryption is defense in depth against an attacker
+ * who reads disk without unlocking the master key.
  *
- * Interactive setup has moved to ./setup.ts → runDiscordSetup().
+ * Legacy plaintext configs (pre-#55) load transparently and are
+ * re-encrypted the moment loadConfig runs.
+ *
+ * Exports:
+ *   getConfigPath()              path to ~/.usrcp/discord-config.json
+ *   writeDiscordConfig()         write encrypted, mode 0600
+ *   readPartialConfig()          raw partial read (still-encrypted)
+ *   readPartialDecryptedConfig() partial read with envelopes decrypted
+ *   loadConfig(masterKey)        read-or-throw non-interactive loader
+ *
+ * Interactive setup lives in ./setup.ts -> runDiscordSetup().
  */
 
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import {
+  encrypt,
+  decrypt,
+  deriveGlobalEncryptionKey,
+  zeroBuffer,
+} from "usrcp-local/dist/encryption.js";
 
 export interface DiscordConfig {
   discord_bot_token: string;
@@ -28,7 +44,26 @@ export function getConfigPath(): string {
   return path.join(os.homedir(), ".usrcp", CONFIG_FILENAME);
 }
 
-function readPartialConfig(): Partial<DiscordConfig> {
+function encryptSecret(plaintext: string, masterKey: Buffer): string {
+  const key = deriveGlobalEncryptionKey(masterKey);
+  try {
+    return encrypt(plaintext, key);
+  } finally {
+    zeroBuffer(key);
+  }
+}
+
+function maybeDecryptSecret(value: string, masterKey: Buffer): string {
+  if (!value.startsWith("enc:")) return value;
+  const key = deriveGlobalEncryptionKey(masterKey);
+  try {
+    return decrypt(value, key);
+  } finally {
+    zeroBuffer(key);
+  }
+}
+
+export function readPartialConfig(): Partial<DiscordConfig> {
   const p = getConfigPath();
   if (!fs.existsSync(p)) return {};
   try {
@@ -38,182 +73,58 @@ function readPartialConfig(): Partial<DiscordConfig> {
   }
 }
 
-/** @internal — use writeDiscordConfig externally */
-function writeConfig(cfg: DiscordConfig): void {
+/**
+ * Like readPartialConfig, but decrypts any `enc:<base64>` envelopes
+ * back to plaintext. The setup wizard uses this so "Enter to keep
+ * existing X" defaults are the actual values the user typed, not the
+ * encrypted envelope strings that landed on disk.
+ */
+export function readPartialDecryptedConfig(masterKey: Buffer): Partial<DiscordConfig> {
+  const partial = readPartialConfig();
+  const out: Partial<DiscordConfig> = { ...partial };
+  try {
+    if (partial.discord_bot_token) {
+      out.discord_bot_token = maybeDecryptSecret(partial.discord_bot_token, masterKey);
+    }
+    if (partial.anthropic_api_key) {
+      out.anthropic_api_key = maybeDecryptSecret(partial.anthropic_api_key, masterKey);
+    }
+  } catch {
+    /* Best effort: wizard validation will catch decrypt failures. */
+  }
+  return out;
+}
+
+export function writeDiscordConfig(cfg: DiscordConfig, masterKey: Buffer): void {
   const p = getConfigPath();
   fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });
-  const body = JSON.stringify(cfg, null, 2);
-  // Write with O_WRONLY | O_CREAT | O_TRUNC + 0600. Open via fs.openSync
-  // to guarantee the permission bits are honored regardless of umask.
+  const onDisk: DiscordConfig = {
+    ...cfg,
+    discord_bot_token: encryptSecret(cfg.discord_bot_token, masterKey),
+    anthropic_api_key: encryptSecret(cfg.anthropic_api_key, masterKey),
+  };
+  const body = JSON.stringify(onDisk, null, 2);
   const fd = fs.openSync(p, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC, 0o600);
   try {
     fs.writeSync(fd, body);
   } finally {
     fs.closeSync(fd);
   }
-  // Re-chmod defensively — openSync with mode only sets perms on creation.
-  // If the file already existed, O_CREAT is a no-op and perms may stay stale.
+  // O_CREAT mode is a no-op if the file already existed; re-chmod defensively.
   fs.chmodSync(p, 0o600);
 }
 
 /**
- * Read a line with characters echoed as '*'. Returns on \n/\r/EOF.
- * Ctrl-C exits with 130. Backspace / DEL erases one character.
+ * Read + validate the config without decrypting. Exits with a clear
+ * "run 'usrcp setup'" message if the file is missing, malformed, or
+ * incomplete. Returns the raw partial (with `enc:` envelopes intact)
+ * on success.
  *
- * Only callable when stdin is a TTY. Caller must check.
+ * Shared by `preflightConfig` (no masterKey) and `loadConfig`
+ * (decrypting variant) so the validation is identical and we don't
+ * read disk twice in production code paths that call only one.
  */
-function readMaskedLine(prompt: string): Promise<string> {
-  return new Promise((resolve) => {
-    process.stderr.write(prompt);
-    const stdin = process.stdin;
-    stdin.resume();
-    stdin.setEncoding("utf8");
-    stdin.setRawMode(true);
-
-    let buf = "";
-    const CODE_NL = 10;
-    const CODE_CR = 13;
-    const CODE_EOT = 4;
-    const CODE_ETX = 3;
-    const CODE_BS = 8;
-    const CODE_DEL = 127;
-
-    const onData = (chunk: string) => {
-      for (const ch of chunk) {
-        const code = ch.charCodeAt(0);
-        if (code === CODE_NL || code === CODE_CR || code === CODE_EOT) {
-          stdin.removeListener("data", onData);
-          stdin.setRawMode(false);
-          stdin.pause();
-          process.stderr.write("\n");
-          resolve(buf);
-          return;
-        }
-        if (code === CODE_ETX) {
-          stdin.setRawMode(false);
-          process.stderr.write("\n");
-          process.exit(130);
-        }
-        if (code === CODE_BS || code === CODE_DEL) {
-          if (buf.length > 0) {
-            buf = buf.slice(0, -1);
-            // Erase one character from the display: cursor-back, space, cursor-back
-            process.stderr.write("\b \b");
-          }
-        } else {
-          buf += ch;
-          process.stderr.write("*");
-        }
-      }
-    };
-    stdin.on("data", onData);
-  });
-}
-
-function readPlainLine(prompt: string): Promise<string> {
-  return new Promise((resolve) => {
-    process.stderr.write(prompt);
-    const stdin = process.stdin;
-    stdin.resume();
-    stdin.setEncoding("utf8");
-    const onData = (chunk: string) => {
-      stdin.removeListener("data", onData);
-      stdin.pause();
-      resolve(chunk.replace(/\r?\n$/, ""));
-    };
-    stdin.on("data", onData);
-  });
-}
-
-function parseChannelList(raw: string): string[] {
-  return raw
-    .split(/[,\s]+/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-}
-
-/**
- * Load the config, running the interactive first-run prompt if needed.
- * Pass `reset: true` to force re-prompting for all fields.
- */
-export async function loadOrInitConfig(opts: { reset?: boolean } = {}): Promise<DiscordConfig> {
-  const existing = opts.reset ? {} : readPartialConfig();
-
-  const needsDiscordToken = !existing.discord_bot_token;
-  const needsAnthropicKey = !existing.anthropic_api_key;
-  const needsChannels = !existing.allowlisted_channels || existing.allowlisted_channels.length === 0;
-  const needsUserId = !existing.user_id;
-
-  const missingAny = needsDiscordToken || needsAnthropicKey || needsChannels || needsUserId;
-
-  if (!missingAny) {
-    return existing as DiscordConfig;
-  }
-
-  if (!process.stdin.isTTY) {
-    const missing: string[] = [];
-    if (needsDiscordToken) missing.push("discord_bot_token");
-    if (needsAnthropicKey) missing.push("anthropic_api_key");
-    if (needsChannels) missing.push("allowlisted_channels");
-    if (needsUserId) missing.push("user_id");
-    console.error(
-      `usrcp-discord: missing required config fields (${missing.join(", ")}) ` +
-      `and stdin is not a TTY. Pre-populate ${getConfigPath()} with mode 0600 and re-run.`
-    );
-    process.exit(1);
-  }
-
-  process.stderr.write("\n  USRCP Discord — first-run setup\n");
-  process.stderr.write(`  Config will be saved to ${getConfigPath()} (mode 0600).\n\n`);
-
-  const discord_bot_token = needsDiscordToken
-    ? await readMaskedLine("  Discord bot token (from Discord Developer Portal → Applications → your app → Bot): ")
-    : existing.discord_bot_token!;
-
-  const anthropic_api_key = needsAnthropicKey
-    ? await readMaskedLine("  Anthropic API key (from console.anthropic.com → API Keys): ")
-    : existing.anthropic_api_key!;
-
-  const allowlisted_channels = needsChannels
-    ? parseChannelList(
-        await readPlainLine(
-          "  Allowlisted channel IDs (comma-separated; right-click a Discord channel → Copy Channel ID with Developer Mode on): "
-        )
-      )
-    : existing.allowlisted_channels!;
-
-  const user_id = needsUserId
-    ? (await readPlainLine("  Your Discord user ID (right-click your name → Copy User ID): ")).trim()
-    : existing.user_id!;
-
-  if (!discord_bot_token || !anthropic_api_key || allowlisted_channels.length === 0 || !user_id) {
-    console.error("  Error: all fields are required. Re-run with --reset-config to retry.");
-    process.exit(1);
-  }
-
-  const cfg: DiscordConfig = {
-    discord_bot_token,
-    anthropic_api_key,
-    allowlisted_channels,
-    user_id,
-  };
-  writeConfig(cfg);
-  process.stderr.write(`\n  ✓ Config saved to ${getConfigPath()}\n\n`);
-  return cfg;
-}
-
-/**
- * Public alias for writeConfig — used by setup.ts so it doesn't need to
- * re-implement the secure write logic.
- */
-export const writeDiscordConfig: (cfg: DiscordConfig) => void = writeConfig;
-
-/**
- * Read-or-throw non-interactive loader. Called by the adapter's main() on
- * every boot. If config is missing or incomplete, exits with a clear message
- * pointing the user at 'usrcp setup'.
- */
-export function loadConfig(): DiscordConfig {
+function readValidatedPartial(): Partial<DiscordConfig> {
   const p = getConfigPath();
   if (!fs.existsSync(p)) {
     console.error(
@@ -244,5 +155,56 @@ export function loadConfig(): DiscordConfig {
     );
     process.exit(1);
   }
-  return partial as DiscordConfig;
+  return partial;
+}
+
+/**
+ * Validate that the on-disk config exists and is complete, without
+ * needing the master key. Daemons MUST call this before constructing
+ * the Ledger: `new Ledger(...)` will silently auto-initialize a
+ * dev-mode ledger if none exists, which would then poison a later
+ * `usrcp setup` run (it'd skip the passphrase prompt because a
+ * dev-mode ledger is already there). Preflighting the config first
+ * means a missing/incomplete config exits cleanly with no side
+ * effects on the user's identity store.
+ */
+export function preflightConfig(): void {
+  readValidatedPartial();
+}
+
+/**
+ * Read-or-throw non-interactive loader. Called by the adapter's main()
+ * after the Ledger is unlocked. If config is missing or incomplete,
+ * exits with a clear message pointing the user at 'usrcp setup'.
+ */
+export function loadConfig(masterKey: Buffer): DiscordConfig {
+  const partial = readValidatedPartial();
+  let decrypted: DiscordConfig;
+  try {
+    decrypted = {
+      ...(partial as DiscordConfig),
+      discord_bot_token: maybeDecryptSecret(partial.discord_bot_token!, masterKey),
+      anthropic_api_key: maybeDecryptSecret(partial.anthropic_api_key!, masterKey),
+    };
+  } catch (err) {
+    console.error(
+      `usrcp-discord: failed to decrypt config secrets (wrong passphrase or corrupt file): ${err instanceof Error ? err.message : String(err)}`
+    );
+    process.exit(1);
+  }
+  // Auto-migrate legacy plaintext configs the moment we see them, not
+  // only when a future setup-wizard run rewrites the file. Discord/
+  // Slack/Telegram have no cursor flush path, so without this hook a
+  // legacy config would stay plaintext indefinitely after the upgrade.
+  const wasLegacyPlaintext =
+    !partial.discord_bot_token!.startsWith("enc:") ||
+    !partial.anthropic_api_key!.startsWith("enc:");
+  if (wasLegacyPlaintext) {
+    try {
+      writeDiscordConfig(decrypted, masterKey);
+    } catch {
+      /* Non-fatal; the next setup-wizard save will retry. */
+    }
+  }
+  return decrypted;
 }

@@ -124,7 +124,12 @@ export function writeGoogleCalendarConfig(cfg: GoogleCalendarConfig, masterKey: 
   fs.chmodSync(p, 0o600);
 }
 
-export function loadConfig(masterKey: Buffer): GoogleCalendarConfig {
+/**
+ * Read + validate the config without decrypting. Exits cleanly if the
+ * file is missing, malformed, or incomplete. Shared by preflightConfig
+ * (called before the Ledger is constructed) and loadConfig.
+ */
+function readValidatedPartial(): Partial<GoogleCalendarConfig> {
   const p = getConfigPath();
   let raw: string;
   try {
@@ -159,6 +164,22 @@ export function loadConfig(masterKey: Buffer): GoogleCalendarConfig {
     );
     process.exit(1);
   }
+  return partial;
+}
+
+/**
+ * Validate the on-disk config without needing the master key. Daemons
+ * MUST call this before constructing the Ledger - `new Ledger(...)`
+ * silently auto-initializes a dev-mode ledger if none exists, which
+ * would poison a later `usrcp setup` run (it'd skip the passphrase
+ * prompt because a dev-mode ledger is already there).
+ */
+export function preflightConfig(): void {
+  readValidatedPartial();
+}
+
+export function loadConfig(masterKey: Buffer): GoogleCalendarConfig {
+  const partial = readValidatedPartial();
   // Decrypt the two sensitive fields. Legacy plaintext configs (no
   // enc: prefix) pass through unchanged - the next saveLastSyncedAt
   // tick re-encrypts them.

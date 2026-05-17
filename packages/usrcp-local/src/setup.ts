@@ -503,10 +503,9 @@ export async function runSetup(opts: SetupOptions = {}): Promise<void> {
     try {
       // Only acquire the master key for adapters whose wizards encrypt
       // config secrets at rest. Forcing a passphrase prompt for
-      // terminal / discord / slack / telegram / etc. (where the wizard
-      // ignores the key arg) would regress the standalone --adapter
-      // path for users with passphrase-protected ledgers who haven't
-      // set USRCP_PASSPHRASE.
+      // terminal / etc. (where the wizard ignores the key arg) would
+      // regress the standalone --adapter path for users with
+      // passphrase-protected ledgers who haven't set USRCP_PASSPHRASE.
       let masterKey: Buffer | undefined;
       if (ADAPTERS_REQUIRING_MASTER_KEY.has(a)) {
         masterKey = await acquireMasterKeyForStandaloneAdapter();
@@ -548,8 +547,8 @@ export async function runSetup(opts: SetupOptions = {}): Promise<void> {
  * Adapter names whose setup wizards encrypt config secrets at rest
  * under the master key. The standalone `usrcp setup --adapter=<name>`
  * path only acquires the master key for these adapters so it doesn't
- * regress simpler wizards (terminal / discord / slack / telegram /
- * etc.) that don't touch encrypted config.
+ * regress simpler wizards (terminal / etc.) that don't touch
+ * encrypted config.
  *
  * Adapters added here MUST accept `{ masterKey }` in their runXxxSetup
  * signature.
@@ -558,6 +557,9 @@ const ADAPTERS_REQUIRING_MASTER_KEY: ReadonlySet<string> = new Set([
   "google-calendar",
   "gmail",
   "linear",
+  "discord",
+  "slack",
+  "telegram",
 ]);
 
 /**
