@@ -120,11 +120,10 @@ export function writeSlackConfig(cfg: SlackConfig, masterKey: Buffer): void {
 }
 
 /**
- * Read-or-throw non-interactive loader. Called by the adapter's main()
- * on every boot. If config is missing or incomplete, exits with a
- * clear message pointing the user at 'usrcp setup'.
+ * Read + validate the config without decrypting. See
+ * usrcp-discord/src/config.ts:readValidatedPartial for rationale.
  */
-export function loadConfig(masterKey: Buffer): SlackConfig {
+function readValidatedPartial(): Partial<SlackConfig> {
   const p = getConfigPath();
   if (!fs.existsSync(p)) {
     console.error(
@@ -156,6 +155,26 @@ export function loadConfig(masterKey: Buffer): SlackConfig {
     );
     process.exit(1);
   }
+  return partial;
+}
+
+/**
+ * Validate the on-disk config without needing the master key. Daemons
+ * MUST call this before constructing the Ledger to avoid silently
+ * auto-initializing a dev-mode ledger on a fresh install that hasn't
+ * run `usrcp setup` yet.
+ */
+export function preflightConfig(): void {
+  readValidatedPartial();
+}
+
+/**
+ * Read-or-throw non-interactive loader. Called by the adapter's main()
+ * after the Ledger is unlocked. If config is missing or incomplete,
+ * exits with a clear message pointing the user at 'usrcp setup'.
+ */
+export function loadConfig(masterKey: Buffer): SlackConfig {
+  const partial = readValidatedPartial();
   let decrypted: SlackConfig;
   try {
     decrypted = {

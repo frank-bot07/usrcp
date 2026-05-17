@@ -8,6 +8,7 @@ import {
   readPartialConfig,
   readPartialDecryptedConfig,
   loadConfig,
+  preflightConfig,
   saveLastSyncedAt,
   flushLastSyncedAt,
   type GmailConfig,
@@ -93,6 +94,36 @@ describe("readPartialDecryptedConfig (setup-wizard defaults)", () => {
     const decrypted = readPartialDecryptedConfig(masterKey);
     expect(decrypted.oauth_client_secret).toBe(GOOD_CONFIG.oauth_client_secret);
     expect(decrypted.refresh_token).toBe(GOOD_CONFIG.refresh_token);
+  });
+});
+
+describe("preflightConfig (no master key required)", () => {
+  it("exits when no config file exists", () => {
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((_code?: number) => {
+      throw new Error("process.exit called");
+    });
+    expect(() => preflightConfig()).toThrow("process.exit called");
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("exits when a required field is missing", () => {
+    const p = getConfigPath();
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const { refresh_token: _omit, ...bad } = GOOD_CONFIG;
+    fs.writeFileSync(p, JSON.stringify(bad), { mode: 0o600 });
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((_code?: number) => {
+      throw new Error("process.exit called");
+    });
+    expect(() => preflightConfig()).toThrow("process.exit called");
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("returns normally on encrypted and on legacy-plaintext configs (no decryption performed)", () => {
+    writeGmailConfig(GOOD_CONFIG, masterKey);
+    expect(() => preflightConfig()).not.toThrow();
+
+    fs.writeFileSync(getConfigPath(), JSON.stringify(GOOD_CONFIG, null, 2), { mode: 0o600 });
+    expect(() => preflightConfig()).not.toThrow();
   });
 });
 

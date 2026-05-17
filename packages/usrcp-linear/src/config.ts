@@ -91,7 +91,12 @@ export function writeLinearConfig(cfg: LinearConfig, masterKey: Buffer): void {
   fs.chmodSync(p, 0o600);
 }
 
-export function loadConfig(masterKey: Buffer): LinearConfig {
+/**
+ * Read + validate the config without decrypting. Exits cleanly if the
+ * file is missing, malformed, or incomplete. Shared by preflightConfig
+ * (called before the Ledger is constructed) and loadConfig.
+ */
+function readValidatedPartial(): Partial<LinearConfig> {
   const p = getConfigPath();
   let raw: string;
   try {
@@ -127,6 +132,20 @@ export function loadConfig(masterKey: Buffer): LinearConfig {
     );
     process.exit(1);
   }
+  return partial;
+}
+
+/**
+ * Validate the on-disk config without needing the master key. Daemons
+ * MUST call this before constructing the Ledger to avoid silently
+ * auto-initializing a dev-mode ledger on a fresh install.
+ */
+export function preflightConfig(): void {
+  readValidatedPartial();
+}
+
+export function loadConfig(masterKey: Buffer): LinearConfig {
+  const partial = readValidatedPartial();
   let decrypted: LinearConfig;
   try {
     decrypted = {

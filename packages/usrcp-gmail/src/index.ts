@@ -15,6 +15,7 @@ import { gmail } from "@googleapis/gmail";
 import { Ledger } from "usrcp-local/dist/ledger/index.js";
 import {
   loadConfig,
+  preflightConfig,
   saveLastSyncedAt,
   flushLastSyncedAt,
   type GmailConfig,
@@ -70,6 +71,12 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  // Validate config exists + is complete BEFORE constructing the
+  // Ledger. `new Ledger(...)` would silently auto-initialize a
+  // dev-mode ledger on a fresh install, which would poison a later
+  // `usrcp setup` run (it'd skip the passphrase prompt because a
+  // dev-mode ledger is already there).
+  preflightConfig();
   const passphrase = process.env.USRCP_PASSPHRASE;
   const ledger = new Ledger(undefined, passphrase);
   const masterKey = ledger.getMasterKey();

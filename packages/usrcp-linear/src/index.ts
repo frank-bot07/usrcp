@@ -18,7 +18,7 @@ import { execSync } from "node:child_process";
 import { LinearClient } from "@linear/sdk";
 import type { Issue, IssueConnection, CommentConnection } from "@linear/sdk";
 import { Ledger } from "usrcp-local/dist/ledger/index.js";
-import { loadConfig, saveLastSyncedAt, flushLastSyncedAt, type LinearConfig } from "./config.js";
+import { loadConfig, preflightConfig, saveLastSyncedAt, flushLastSyncedAt, type LinearConfig } from "./config.js";
 import { captureLinearActivity, type LinearActivity } from "./capture.js";
 
 function hasFlag(name: string): boolean {
@@ -137,6 +137,12 @@ async function main() {
     process.exit(0);
   }
 
+  // Validate config exists + is complete BEFORE constructing the
+  // Ledger. `new Ledger(...)` would silently auto-initialize a
+  // dev-mode ledger on a fresh install, which would poison a later
+  // `usrcp setup` run (it'd skip the passphrase prompt because a
+  // dev-mode ledger is already there).
+  preflightConfig();
   const passphrase = process.env.USRCP_PASSPHRASE;
   const ledger = new Ledger(undefined, passphrase);
   const masterKey = ledger.getMasterKey();

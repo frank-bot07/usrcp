@@ -22,6 +22,7 @@ import { calendar } from "@googleapis/calendar";
 import { Ledger } from "usrcp-local/dist/ledger/index.js";
 import {
   loadConfig,
+  preflightConfig,
   saveLastSyncedAt,
   flushLastSyncedAt,
   type GoogleCalendarConfig,
@@ -82,6 +83,12 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  // Validate config exists + is complete BEFORE constructing the
+  // Ledger. `new Ledger(...)` would silently auto-initialize a
+  // dev-mode ledger on a fresh install, which would poison a later
+  // `usrcp setup` run (it'd skip the passphrase prompt because a
+  // dev-mode ledger is already there).
+  preflightConfig();
   const passphrase = process.env.USRCP_PASSPHRASE;
   // The Ledger constructor derives + caches the master key; pull it
   // back out via getMasterKey() so the config-decrypt path uses the

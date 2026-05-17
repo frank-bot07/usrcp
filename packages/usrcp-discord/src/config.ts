@@ -115,11 +115,16 @@ export function writeDiscordConfig(cfg: DiscordConfig, masterKey: Buffer): void 
 }
 
 /**
- * Read-or-throw non-interactive loader. Called by the adapter's main()
- * on every boot. If config is missing or incomplete, exits with a
- * clear message pointing the user at 'usrcp setup'.
+ * Read + validate the config without decrypting. Exits with a clear
+ * "run 'usrcp setup'" message if the file is missing, malformed, or
+ * incomplete. Returns the raw partial (with `enc:` envelopes intact)
+ * on success.
+ *
+ * Shared by `preflightConfig` (no masterKey) and `loadConfig`
+ * (decrypting variant) so the validation is identical and we don't
+ * read disk twice in production code paths that call only one.
  */
-export function loadConfig(masterKey: Buffer): DiscordConfig {
+function readValidatedPartial(): Partial<DiscordConfig> {
   const p = getConfigPath();
   if (!fs.existsSync(p)) {
     console.error(
@@ -150,6 +155,30 @@ export function loadConfig(masterKey: Buffer): DiscordConfig {
     );
     process.exit(1);
   }
+  return partial;
+}
+
+/**
+ * Validate that the on-disk config exists and is complete, without
+ * needing the master key. Daemons MUST call this before constructing
+ * the Ledger: `new Ledger(...)` will silently auto-initialize a
+ * dev-mode ledger if none exists, which would then poison a later
+ * `usrcp setup` run (it'd skip the passphrase prompt because a
+ * dev-mode ledger is already there). Preflighting the config first
+ * means a missing/incomplete config exits cleanly with no side
+ * effects on the user's identity store.
+ */
+export function preflightConfig(): void {
+  readValidatedPartial();
+}
+
+/**
+ * Read-or-throw non-interactive loader. Called by the adapter's main()
+ * after the Ledger is unlocked. If config is missing or incomplete,
+ * exits with a clear message pointing the user at 'usrcp setup'.
+ */
+export function loadConfig(masterKey: Buffer): DiscordConfig {
+  const partial = readValidatedPartial();
   let decrypted: DiscordConfig;
   try {
     decrypted = {

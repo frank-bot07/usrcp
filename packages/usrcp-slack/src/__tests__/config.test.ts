@@ -8,6 +8,7 @@ import {
   readPartialConfig,
   readPartialDecryptedConfig,
   loadConfig,
+  preflightConfig,
   type SlackConfig,
 } from "../config.js";
 
@@ -99,6 +100,40 @@ describe("readPartialDecryptedConfig", () => {
     expect(decrypted.slack_bot_token).toBe(GOOD_CONFIG.slack_bot_token);
     expect(decrypted.slack_app_token).toBe(GOOD_CONFIG.slack_app_token);
     expect(decrypted.anthropic_api_key).toBe(GOOD_CONFIG.anthropic_api_key);
+  });
+});
+
+describe("preflightConfig (no master key required)", () => {
+  it("exits when no config file exists", () => {
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((_code?: number) => {
+      throw new Error("process.exit called");
+    });
+    expect(() => preflightConfig()).toThrow("process.exit called");
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("exits when a required field is missing", () => {
+    const p = getConfigPath();
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const { user_id: _omit, ...bad } = GOOD_CONFIG;
+    fs.writeFileSync(p, JSON.stringify(bad), { mode: 0o600 });
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((_code?: number) => {
+      throw new Error("process.exit called");
+    });
+    expect(() => preflightConfig()).toThrow("process.exit called");
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("returns normally when an encrypted config is on disk", () => {
+    writeSlackConfig(GOOD_CONFIG, masterKey);
+    expect(() => preflightConfig()).not.toThrow();
+  });
+
+  it("returns normally on a legacy plaintext config too (no decryption performed)", () => {
+    const p = getConfigPath();
+    fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(p, JSON.stringify(GOOD_CONFIG, null, 2), { mode: 0o600 });
+    expect(() => preflightConfig()).not.toThrow();
   });
 });
 

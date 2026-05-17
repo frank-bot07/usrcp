@@ -58,10 +58,36 @@ worse.
 
 ## Verification
 
-- `(cd packages/usrcp-discord && npm test)` -> 35/35 pass
-- `(cd packages/usrcp-slack && npm test)` -> 42/42 pass
-- `(cd packages/usrcp-telegram && npm test)` -> 43/43 pass
+- `(cd packages/usrcp-discord && npm test)` -> 39/39 pass
+- `(cd packages/usrcp-slack && npm test)` -> 46/46 pass
+- `(cd packages/usrcp-telegram && npm test)` -> 47/47 pass
+- `(cd packages/usrcp-google-calendar && npm test)` -> 27/27 pass
+- `(cd packages/usrcp-gmail && npm test)` -> 35/35 pass
+- `(cd packages/usrcp-linear && npm test)` -> 45/45 pass (plus 1 pre-existing NODE_MODULE_VERSION failure in capture.test.ts unrelated to this PR)
 - `(cd packages/usrcp-local && npm test)` -> 413/413 pass
+
+## Codex round-1 fix (P1, in-PR)
+
+Codex flagged that reordering `loadConfig` to happen *after*
+`new Ledger(...)` silently auto-initializes a dev-mode ledger on a
+fresh install where the chat config doesn't exist yet. That dev
+ledger then poisons a later `usrcp setup` run because the wizard
+skips the passphrase prompt when a ledger is already present.
+
+The same bug exists in PR #54's adapters (gcal/gmail/linear) -
+codex only saw the new ones, but the fix is identical and the
+exposure is the same, so the fix here covers all six.
+
+Resolution: each adapter's `config.ts` now exports
+`preflightConfig()`, which validates that the on-disk config
+exists + parses + has all required fields *without* needing the
+master key. Daemons call it before constructing the Ledger; a
+missing/incomplete config exits cleanly with zero side effects
+on the identity store.
+
+Four new tests per adapter cover preflightConfig (missing file
+exits, missing-required-field exits, encrypted-config OK,
+legacy-plaintext-config OK).
 
 ## Out of scope
 
