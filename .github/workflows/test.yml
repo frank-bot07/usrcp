@@ -24,6 +24,7 @@ jobs:
           - usrcp-cloud
           - usrcp-discord
           - usrcp-extension
+          - usrcp-gmail
           - usrcp-google-calendar
           - usrcp-linear
           - usrcp-local
@@ -42,6 +43,7 @@ jobs:
             packages/usrcp-cloud/package-lock.json
             packages/usrcp-discord/package-lock.json
             packages/usrcp-extension/package-lock.json
+            packages/usrcp-gmail/package-lock.json
             packages/usrcp-google-calendar/package-lock.json
             packages/usrcp-linear/package-lock.json
             packages/usrcp-local/package-lock.json
