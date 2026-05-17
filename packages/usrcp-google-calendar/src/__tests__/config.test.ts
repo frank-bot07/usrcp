@@ -101,26 +101,30 @@ describe("readPartialDecryptedConfig (setup-wizard defaults)", () => {
 });
 
 describe("legacy plaintext compat", () => {
-  it("loads a pre-PR plaintext config and auto-migrates to encrypted on next save", () => {
+  it("auto-migrates a pre-PR plaintext config the moment loadConfig runs (idle adapter case)", () => {
     // Simulate a pre-PR config: secrets in plaintext.
     const p = getConfigPath();
     fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });
     fs.writeFileSync(p, JSON.stringify(GOOD_CONFIG, null, 2), { mode: 0o600 });
 
+    // loadConfig itself re-writes the file as encrypted; we do NOT
+    // depend on saveLastSyncedAt firing (which only happens if the
+    // poll cursor advances - might never happen for an idle inbox /
+    // calendar).
     const loaded = loadConfig(masterKey);
     expect(loaded.oauth_client_secret).toBe(GOOD_CONFIG.oauth_client_secret);
     expect(loaded.refresh_token).toBe(GOOD_CONFIG.refresh_token);
-
-    saveLastSyncedAt("2026-05-17T16:00:00.000Z", masterKey);
-    flushLastSyncedAt();
 
     const raw = JSON.parse(fs.readFileSync(p, "utf8"));
     expect(raw.oauth_client_secret.startsWith("enc:")).toBe(true);
     expect(raw.refresh_token.startsWith("enc:")).toBe(true);
 
+    // Subsequent saves continue to round-trip cleanly.
+    saveLastSyncedAt("2026-05-17T16:00:00.000Z", masterKey);
+    flushLastSyncedAt();
     const reloaded = loadConfig(masterKey);
+    expect(reloaded.last_synced_at).toBe("2026-05-17T16:00:00.000Z");
     expect(reloaded.oauth_client_secret).toBe(GOOD_CONFIG.oauth_client_secret);
     expect(reloaded.refresh_token).toBe(GOOD_CONFIG.refresh_token);
-    expect(reloaded.last_synced_at).toBe("2026-05-17T16:00:00.000Z");
   });
 });

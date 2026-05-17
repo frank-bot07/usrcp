@@ -501,16 +501,20 @@ export async function runSetup(opts: SetupOptions = {}): Promise<void> {
     const label = a.charAt(0).toUpperCase() + a.slice(1);
     console.log(`  Configuring adapter: ${label}`);
     try {
-      // Acquire the master key here so adapter wizards can encrypt
-      // config secrets (refresh_token, api_key, ...) at rest under
-      // the global encryption key. Reads USRCP_PASSPHRASE if
-      // passphrase mode; throws (caught below) if neither env nor
-      // disk has what we need.
-      const masterKey = await acquireMasterKeyForStandaloneAdapter();
+      // Only acquire the master key for adapters whose wizards encrypt
+      // config secrets at rest. Forcing a passphrase prompt for
+      // terminal / discord / slack / telegram / etc. (where the wizard
+      // ignores the key arg) would regress the standalone --adapter
+      // path for users with passphrase-protected ledgers who haven't
+      // set USRCP_PASSPHRASE.
+      let masterKey: Buffer | undefined;
+      if (ADAPTERS_REQUIRING_MASTER_KEY.has(a)) {
+        masterKey = await acquireMasterKeyForStandaloneAdapter();
+      }
       try {
         await callAdapterSetup(a, masterKey);
       } finally {
-        masterKey.fill(0);
+        if (masterKey) masterKey.fill(0);
       }
     } catch (err) {
       console.error(`  Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -539,6 +543,22 @@ export async function runSetup(opts: SetupOptions = {}): Promise<void> {
     process.exit(1);
   }
 }
+
+/**
+ * Adapter names whose setup wizards encrypt config secrets at rest
+ * under the master key. The standalone `usrcp setup --adapter=<name>`
+ * path only acquires the master key for these adapters so it doesn't
+ * regress simpler wizards (terminal / discord / slack / telegram /
+ * etc.) that don't touch encrypted config.
+ *
+ * Adapters added here MUST accept `{ masterKey }` in their runXxxSetup
+ * signature.
+ */
+const ADAPTERS_REQUIRING_MASTER_KEY: ReadonlySet<string> = new Set([
+  "google-calendar",
+  "gmail",
+  "linear",
+]);
 
 /**
  * Acquire a master key in the --adapter standalone path (no

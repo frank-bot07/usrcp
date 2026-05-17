@@ -222,19 +222,22 @@ describe("saveLastSyncedAt / flushLastSyncedAt", () => {
     expect(fs.existsSync(getConfigPath())).toBe(false);
   });
 
-  it("auto-migrates a legacy plaintext config to the encrypted envelope on save", () => {
+  it("auto-migrates a legacy plaintext config the moment loadConfig runs (idle adapter case)", () => {
     // Simulate a pre-PR config: linear_api_key stored plaintext.
     const p = getConfigPath();
     fs.writeFileSync(p, JSON.stringify(GOOD_CONFIG, null, 2), { mode: 0o600 });
-    // Load works (legacy compat).
+
+    // loadConfig itself rewrites the file as encrypted - we don't
+    // wait for saveLastSyncedAt, which only fires if the poll cursor
+    // advances and might never happen for an idle workspace.
     const loaded = loadConfig(masterKey);
     expect(loaded.linear_api_key).toBe(GOOD_CONFIG.linear_api_key);
-    // First save re-encrypts on disk.
-    saveLastSyncedAt("2026-04-27T16:00:00.000Z", masterKey);
-    flushLastSyncedAt();
     const raw = JSON.parse(fs.readFileSync(p, "utf8"));
     expect(raw.linear_api_key.startsWith("enc:")).toBe(true);
-    // And round-trips back to plaintext through loadConfig.
+
+    // Subsequent saves continue to round-trip cleanly.
+    saveLastSyncedAt("2026-04-27T16:00:00.000Z", masterKey);
+    flushLastSyncedAt();
     const reloaded = loadConfig(masterKey);
     expect(reloaded.linear_api_key).toBe(GOOD_CONFIG.linear_api_key);
     expect(reloaded.last_synced_at).toBe("2026-04-27T16:00:00.000Z");

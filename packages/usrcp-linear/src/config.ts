@@ -139,6 +139,15 @@ export function loadConfig(masterKey: Buffer): LinearConfig {
     );
     process.exit(1);
   }
+  // Auto-migrate legacy plaintext configs at load time, not only on
+  // cursor advance.
+  if (!partial.linear_api_key!.startsWith("enc:")) {
+    try {
+      writeLinearConfig(decrypted, masterKey);
+    } catch {
+      /* Non-fatal; next save will retry. */
+    }
+  }
   return decrypted;
 }
 

@@ -153,6 +153,19 @@ export function loadConfig(masterKey: Buffer): GmailConfig {
     );
     process.exit(1);
   }
+  // Auto-migrate legacy plaintext configs at load time, not only on
+  // cursor advance - an idle inbox could otherwise leave the OAuth
+  // token plaintext on disk indefinitely after the upgrade.
+  const wasLegacyPlaintext =
+    !partial.oauth_client_secret!.startsWith("enc:") ||
+    !partial.refresh_token!.startsWith("enc:");
+  if (wasLegacyPlaintext) {
+    try {
+      writeGmailConfig(decrypted, masterKey);
+    } catch {
+      /* Non-fatal; next save will retry. */
+    }
+  }
   return decrypted;
 }
 

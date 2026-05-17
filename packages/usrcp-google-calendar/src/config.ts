@@ -175,6 +175,20 @@ export function loadConfig(masterKey: Buffer): GoogleCalendarConfig {
     );
     process.exit(1);
   }
+  // Auto-migrate legacy plaintext configs the moment we see them - not
+  // only when the poll cursor advances. An idle adapter (no new events)
+  // would otherwise leave the OAuth tokens on disk in plaintext
+  // indefinitely after upgrading.
+  const wasLegacyPlaintext =
+    !partial.oauth_client_secret!.startsWith("enc:") ||
+    !partial.refresh_token!.startsWith("enc:");
+  if (wasLegacyPlaintext) {
+    try {
+      writeGoogleCalendarConfig(decrypted, masterKey);
+    } catch {
+      /* Non-fatal; next save will retry. */
+    }
+  }
   return decrypted;
 }
 
