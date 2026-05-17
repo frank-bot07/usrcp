@@ -121,6 +121,67 @@ describe("normaliseMessage", () => {
     expect(out!.body).toBe("Hi Bob !");
   });
 
+  it("skips text/plain attachments and uses the real body part instead", () => {
+    // multipart/mixed wrapping a multipart/alternative body PLUS a
+    // text/plain attachment. The attachment must NOT win - the body
+    // text is the one captured.
+    const raw = mkRaw({
+      payload: {
+        headers: [
+          { name: "Subject", value: "With an attachment" },
+        ],
+        mimeType: "multipart/mixed",
+        parts: [
+          {
+            mimeType: "multipart/alternative",
+            parts: [
+              {
+                mimeType: "text/plain",
+                body: { data: b64("Hi Bob, see attached.") },
+              },
+              {
+                mimeType: "text/html",
+                body: { data: b64("<p>Hi Bob, see attached.</p>") },
+              },
+            ],
+          },
+          {
+            mimeType: "text/plain",
+            filename: "notes.txt",
+            body: { data: b64("This is a 500-line text attachment that shouldn't become the body.") },
+          },
+        ],
+      },
+    });
+    const out = normaliseMessage(raw);
+    expect(out).not.toBeNull();
+    expect(out!.body).toBe("Hi Bob, see attached.");
+  });
+
+  it("skips parts that store body content via attachmentId (no inline data)", () => {
+    const raw = mkRaw({
+      payload: {
+        headers: [
+          { name: "Subject", value: "Attachment-by-id" },
+        ],
+        mimeType: "multipart/mixed",
+        parts: [
+          {
+            mimeType: "text/plain",
+            body: { data: b64("Real body content.") },
+          },
+          {
+            mimeType: "text/plain",
+            body: { attachmentId: "ATT_123", size: 4096 }, // no data
+          },
+        ],
+      },
+    });
+    const out = normaliseMessage(raw);
+    expect(out).not.toBeNull();
+    expect(out!.body).toBe("Real body content.");
+  });
+
   it("strips <script> and <style> tags before extracting HTML text", () => {
     const raw = mkRaw({
       payload: {

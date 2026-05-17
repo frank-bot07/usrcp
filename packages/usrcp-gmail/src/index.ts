@@ -44,13 +44,16 @@ async function pollOnce(
 
   for (const activity of activities) {
     const outcome = captureGmailActivity(ledger, activity, config);
-    if (outcome.captured) {
-      captured++;
-      const sentMs = new Date(activity.sent_at).getTime();
-      if (sentMs > newCursorMs) newCursorMs = sentMs;
-    } else {
-      skipped++;
-    }
+    // Advance the cursor on BOTH captured AND skipped messages. A
+    // skipped message has been examined and rejected (e.g. empty
+    // subject + empty body); if we didn't advance past it, the next
+    // tick would re-fetch and re-skip the same message every
+    // interval until a capturable email is sent. The hash idempotency
+    // key already prevents double-recording.
+    const sentMs = new Date(activity.sent_at).getTime();
+    if (Number.isFinite(sentMs) && sentMs > newCursorMs) newCursorMs = sentMs;
+    if (outcome.captured) captured++;
+    else skipped++;
   }
 
   return { newCursor: new Date(newCursorMs).toISOString(), captured, skipped };

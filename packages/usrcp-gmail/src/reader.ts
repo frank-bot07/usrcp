@@ -166,17 +166,33 @@ export function normaliseMessage(msg: gmail_v1.Schema$Message): GmailActivity | 
   };
 }
 
+function isAttachment(p: gmail_v1.Schema$MessagePart): boolean {
+  // Gmail signals an attachment two ways:
+  //   1. a non-empty `filename` on the part (any disposition: inline, attached)
+  //   2. an `attachmentId` on the body (content stored separately, body.data absent)
+  // A real text/plain or text/html BODY part has neither. Skipping
+  // attachments stops a text-file attachment from masquerading as
+  // the message body in a multipart/mixed envelope.
+  if (p.filename && p.filename.length > 0) return true;
+  if (p.body?.attachmentId) return true;
+  return false;
+}
+
 function extractBody(payload: gmail_v1.Schema$MessagePart): string {
   // Walk the MIME tree depth-first; prefer text/plain over text/html.
   // For multipart/alternative messages where Gmail attaches an
   // empty/whitespace-only text/plain "decoy" and the real content
   // lives in text/html, we'd lose the body unless we also keep
   // accumulating the first non-empty plain part. Same idea for HTML.
+  // Attachment parts (anything with a filename or an attachmentId)
+  // are skipped entirely so a .txt attachment in a multipart/mixed
+  // can't be captured as the body.
   const parts: gmail_v1.Schema$MessagePart[] = [payload];
   let plain: string | null = null;
   let html: string | null = null;
   while (parts.length > 0) {
     const p = parts.shift()!;
+    if (isAttachment(p)) continue;
     if (p.parts && p.parts.length > 0) {
       parts.push(...p.parts);
       continue;
