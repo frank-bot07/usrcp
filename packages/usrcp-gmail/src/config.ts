@@ -1,14 +1,20 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import {
+  encrypt,
+  decrypt,
+  deriveGlobalEncryptionKey,
+  zeroBuffer,
+} from "usrcp-local/dist/encryption.js";
 
 /**
- * Config for the Gmail adapter. Same plaintext-on-disk-mode-0600
- * posture as the Linear API key and the Google Calendar adapter -
- * treat this file like ~/.ssh/id_rsa. The refresh_token grants
- * long-lived read access to the user's Gmail; rotating it requires
- * revoking the access in https://myaccount.google.com/permissions
- * and re-running setup.
+ * Config for the Gmail adapter. Sensitive secrets
+ * (`oauth_client_secret`, `refresh_token`) are encrypted at rest
+ * under the USRCP global encryption key derived from the master
+ * key; the file lives at mode 0600 either way. Legacy plaintext
+ * configs (pre-#54) load transparently and are re-encrypted on the
+ * next save.
  */
 export interface GmailConfig {
   oauth_client_id: string;
@@ -32,6 +38,25 @@ export function getConfigPath(): string {
   return path.join(os.homedir(), ".usrcp", CONFIG_FILENAME);
 }
 
+function encryptSecret(plaintext: string, masterKey: Buffer): string {
+  const key = deriveGlobalEncryptionKey(masterKey);
+  try {
+    return encrypt(plaintext, key);
+  } finally {
+    zeroBuffer(key);
+  }
+}
+
+function maybeDecryptSecret(value: string, masterKey: Buffer): string {
+  if (!value.startsWith("enc:")) return value;
+  const key = deriveGlobalEncryptionKey(masterKey);
+  try {
+    return decrypt(value, key);
+  } finally {
+    zeroBuffer(key);
+  }
+}
+
 export function readPartialConfig(): Partial<GmailConfig> {
   try {
     return JSON.parse(fs.readFileSync(getConfigPath(), "utf8")) as Partial<GmailConfig>;
@@ -40,10 +65,15 @@ export function readPartialConfig(): Partial<GmailConfig> {
   }
 }
 
-export function writeGmailConfig(cfg: GmailConfig): void {
+export function writeGmailConfig(cfg: GmailConfig, masterKey: Buffer): void {
   const p = getConfigPath();
   fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });
-  const body = JSON.stringify(cfg, null, 2);
+  const onDisk: GmailConfig = {
+    ...cfg,
+    oauth_client_secret: encryptSecret(cfg.oauth_client_secret, masterKey),
+    refresh_token: encryptSecret(cfg.refresh_token, masterKey),
+  };
+  const body = JSON.stringify(onDisk, null, 2);
   const fd = fs.openSync(p, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC, 0o600);
   try {
     fs.writeSync(fd, body);
@@ -53,7 +83,7 @@ export function writeGmailConfig(cfg: GmailConfig): void {
   fs.chmodSync(p, 0o600);
 }
 
-export function loadConfig(): GmailConfig {
+export function loadConfig(masterKey: Buffer): GmailConfig {
   const p = getConfigPath();
   let raw: string;
   try {
@@ -88,14 +118,29 @@ export function loadConfig(): GmailConfig {
     );
     process.exit(1);
   }
-  return partial as GmailConfig;
+  let decrypted: GmailConfig;
+  try {
+    decrypted = {
+      ...(partial as GmailConfig),
+      oauth_client_secret: maybeDecryptSecret(partial.oauth_client_secret!, masterKey),
+      refresh_token: maybeDecryptSecret(partial.refresh_token!, masterKey),
+    };
+  } catch (err) {
+    console.error(
+      `usrcp-gmail: failed to decrypt config secrets (wrong passphrase or corrupt file): ${err instanceof Error ? err.message : String(err)}`
+    );
+    process.exit(1);
+  }
+  return decrypted;
 }
 
 let _pendingTs: string | undefined;
+let _pendingMasterKey: Buffer | undefined;
 let _flushTimer: ReturnType<typeof setTimeout> | undefined;
 
-export function saveLastSyncedAt(ts: string): void {
+export function saveLastSyncedAt(ts: string, masterKey: Buffer): void {
   _pendingTs = ts;
+  _pendingMasterKey = masterKey;
   if (_flushTimer !== undefined) clearTimeout(_flushTimer);
   _flushTimer = setTimeout(() => {
     _flushTimer = undefined;
@@ -104,7 +149,7 @@ export function saveLastSyncedAt(ts: string): void {
 }
 
 export function flushLastSyncedAt(): void {
-  if (_pendingTs === undefined) return;
+  if (_pendingTs === undefined || !_pendingMasterKey) return;
   const existing = readPartialConfig();
   if (
     !existing.oauth_client_id ||
@@ -117,7 +162,13 @@ export function flushLastSyncedAt(): void {
     return;
   }
   try {
-    writeGmailConfig({ ...(existing as GmailConfig), last_synced_at: _pendingTs });
+    const decrypted: GmailConfig = {
+      ...(existing as GmailConfig),
+      oauth_client_secret: maybeDecryptSecret(existing.oauth_client_secret!, _pendingMasterKey),
+      refresh_token: maybeDecryptSecret(existing.refresh_token!, _pendingMasterKey),
+      last_synced_at: _pendingTs,
+    };
+    writeGmailConfig(decrypted, _pendingMasterKey);
   } catch {
     /* Non-fatal: next restart may re-process a few messages. */
   }

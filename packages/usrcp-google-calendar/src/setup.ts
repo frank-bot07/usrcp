@@ -60,7 +60,16 @@ function maskSecret(secret: string): string {
   return secret.slice(0, 4) + "…" + secret.slice(-4);
 }
 
-export async function runGoogleCalendarSetup(): Promise<GoogleCalendarConfig> {
+export async function runGoogleCalendarSetup(
+  opts: { masterKey?: Buffer } = {}
+): Promise<GoogleCalendarConfig> {
+  if (!opts.masterKey) {
+    console.error(
+      "usrcp-google-calendar setup: master key missing. Run via `usrcp setup --adapter=google-calendar` so the wizard can encrypt your OAuth secrets at rest."
+    );
+    process.exit(1);
+  }
+  const masterKey = opts.masterKey;
   if (!process.stdin.isTTY) {
     const p = getConfigPath();
     console.error(
@@ -277,7 +286,7 @@ export async function runGoogleCalendarSetup(): Promise<GoogleCalendarConfig> {
     // last_synced_at deliberately not carried over; reusing a stale
     // cursor on a fresh setup could silently miss recent events.
   };
-  writeGoogleCalendarConfig(cfg);
+  writeGoogleCalendarConfig(cfg, masterKey);
 
   process.stderr.write(`  ✓ Google Calendar adapter configured. Saved to ${getConfigPath()} (mode 0600)\n\n`);
   process.stderr.write("  What's next:\n");

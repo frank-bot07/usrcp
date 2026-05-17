@@ -82,9 +82,13 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  const config = loadConfig();
   const passphrase = process.env.USRCP_PASSPHRASE;
+  // The Ledger constructor derives + caches the master key; pull it
+  // back out via getMasterKey() so the config-decrypt path uses the
+  // same key as the rest of USRCP. close() at shutdown zeroes it.
   const ledger = new Ledger(undefined, passphrase);
+  const masterKey = ledger.getMasterKey();
+  const config = loadConfig(masterKey);
   const auth = makeOAuthClient({
     oauth_client_id: config.oauth_client_id,
     oauth_client_secret: config.oauth_client_secret,
@@ -114,7 +118,7 @@ async function main(): Promise<void> {
       const { newCursor, captured, skipped } = await pollOnce(ledger, api, config, endedAfter);
       if (newCursor !== cursor) {
         cursor = newCursor;
-        saveLastSyncedAt(cursor);
+        saveLastSyncedAt(cursor, masterKey);
       }
       if (captured > 0 || skipped > 0) {
         console.error(`[usrcp-google-calendar] tick: captured=${captured} skipped=${skipped} cursor=${cursor}`);

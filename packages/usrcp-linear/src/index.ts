@@ -137,9 +137,10 @@ async function main() {
     process.exit(0);
   }
 
-  const config = loadConfig();
   const passphrase = process.env.USRCP_PASSPHRASE;
   const ledger = new Ledger(undefined, passphrase);
+  const masterKey = ledger.getMasterKey();
+  const config = loadConfig(masterKey);
   const linear = new LinearClient({ apiKey: config.linear_api_key });
 
   const me = await linear.viewer;
@@ -160,7 +161,7 @@ async function main() {
       const { newCursor, captured, skipped } = await pollOnce(ledger, linear, me.id, config, cursor);
       if (newCursor !== cursor) {
         cursor = newCursor;
-        saveLastSyncedAt(cursor);
+        saveLastSyncedAt(cursor, masterKey);
       }
       if (captured > 0 || skipped > 0) {
         console.error(`[usrcp-linear] tick: captured=${captured} skipped=${skipped} cursor=${cursor}`);

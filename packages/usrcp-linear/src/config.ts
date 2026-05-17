@@ -1,6 +1,12 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import {
+  encrypt,
+  decrypt,
+  deriveGlobalEncryptionKey,
+  zeroBuffer,
+} from "usrcp-local/dist/encryption.js";
 
 export interface LinearConfig {
   linear_api_key: string;
@@ -21,6 +27,25 @@ export function getConfigPath(): string {
   return path.join(os.homedir(), ".usrcp", CONFIG_FILENAME);
 }
 
+function encryptSecret(plaintext: string, masterKey: Buffer): string {
+  const key = deriveGlobalEncryptionKey(masterKey);
+  try {
+    return encrypt(plaintext, key);
+  } finally {
+    zeroBuffer(key);
+  }
+}
+
+function maybeDecryptSecret(value: string, masterKey: Buffer): string {
+  if (!value.startsWith("enc:")) return value;
+  const key = deriveGlobalEncryptionKey(masterKey);
+  try {
+    return decrypt(value, key);
+  } finally {
+    zeroBuffer(key);
+  }
+}
+
 export function readPartialConfig(): Partial<LinearConfig> {
   try {
     return JSON.parse(fs.readFileSync(getConfigPath(), "utf8")) as Partial<LinearConfig>;
@@ -29,10 +54,14 @@ export function readPartialConfig(): Partial<LinearConfig> {
   }
 }
 
-export function writeLinearConfig(cfg: LinearConfig): void {
+export function writeLinearConfig(cfg: LinearConfig, masterKey: Buffer): void {
   const p = getConfigPath();
   fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });
-  const body = JSON.stringify(cfg, null, 2);
+  const onDisk: LinearConfig = {
+    ...cfg,
+    linear_api_key: encryptSecret(cfg.linear_api_key, masterKey),
+  };
+  const body = JSON.stringify(onDisk, null, 2);
   const fd = fs.openSync(p, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC, 0o600);
   try {
     fs.writeSync(fd, body);
@@ -43,7 +72,7 @@ export function writeLinearConfig(cfg: LinearConfig): void {
   fs.chmodSync(p, 0o600);
 }
 
-export function loadConfig(): LinearConfig {
+export function loadConfig(masterKey: Buffer): LinearConfig {
   const p = getConfigPath();
   let raw: string;
   try {
@@ -79,14 +108,28 @@ export function loadConfig(): LinearConfig {
     );
     process.exit(1);
   }
-  return partial as LinearConfig;
+  let decrypted: LinearConfig;
+  try {
+    decrypted = {
+      ...(partial as LinearConfig),
+      linear_api_key: maybeDecryptSecret(partial.linear_api_key!, masterKey),
+    };
+  } catch (err) {
+    console.error(
+      `usrcp-linear: failed to decrypt config secret (wrong passphrase or corrupt file): ${err instanceof Error ? err.message : String(err)}`
+    );
+    process.exit(1);
+  }
+  return decrypted;
 }
 
 let _pendingTs: string | undefined;
+let _pendingMasterKey: Buffer | undefined;
 let _flushTimer: ReturnType<typeof setTimeout> | undefined;
 
-export function saveLastSyncedAt(ts: string): void {
+export function saveLastSyncedAt(ts: string, masterKey: Buffer): void {
   _pendingTs = ts;
+  _pendingMasterKey = masterKey;
   if (_flushTimer !== undefined) clearTimeout(_flushTimer);
   _flushTimer = setTimeout(() => {
     _flushTimer = undefined;
@@ -95,7 +138,7 @@ export function saveLastSyncedAt(ts: string): void {
 }
 
 export function flushLastSyncedAt(): void {
-  if (_pendingTs === undefined) return;
+  if (_pendingTs === undefined || !_pendingMasterKey) return;
   const existing = readPartialConfig();
   // Bail if the on-disk config is gone or stripped — better to lose the
   // cursor than overwrite a missing key/team list with empty strings.
@@ -109,7 +152,12 @@ export function flushLastSyncedAt(): void {
     return;
   }
   try {
-    writeLinearConfig({ ...(existing as LinearConfig), last_synced_at: _pendingTs });
+    const decrypted: LinearConfig = {
+      ...(existing as LinearConfig),
+      linear_api_key: maybeDecryptSecret(existing.linear_api_key!, _pendingMasterKey),
+      last_synced_at: _pendingTs,
+    };
+    writeLinearConfig(decrypted, _pendingMasterKey);
   } catch {
     // Non-fatal — next restart may re-process a few events.
   }
