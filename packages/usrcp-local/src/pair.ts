@@ -28,6 +28,7 @@
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import qrcode from "qrcode-terminal";
 import {
   encrypt,
   decrypt,
@@ -553,6 +554,26 @@ export async function pairCancel(code: string, opts: PairAuthOpts): Promise<void
 // Re-exported for tests that need to inspect/format the code.
 export function formatCode(code: string): string {
   return /^[0-9]{8}$/.test(code) ? `${code.slice(0, 4)}-${code.slice(4)}` : code;
+}
+
+/**
+ * Render the pairing string as an ASCII QR code suitable for a
+ * terminal. Returns the rendered string rather than printing so the
+ * caller controls where it goes (stderr in the CLI, captured stdout
+ * in tests, etc).
+ *
+ * `small: true` uses half-block Unicode characters so the QR fits in
+ * roughly half the cells of the default rendering - the v2 pairing
+ * string is short enough (~45 chars including hyphens) that even at
+ * QR error-correction level L the result is a manageable ~25x25
+ * module grid.
+ */
+export function renderPairingQr(pairingString: string): string {
+  let captured = "";
+  qrcode.generate(pairingString, { small: true }, (qr: string) => {
+    captured = qr;
+  });
+  return captured;
 }
 
 // Re-exported so the CLI can switch user slugs before/after a join without

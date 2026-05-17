@@ -65,11 +65,18 @@ usrcp pair init
 #  Pairing string: 1234-5678-aabbccdd-eeff0011-22334455-66778899
 #  Lookup code:    1234-5678   (use this for 'usrcp pair status' / 'cancel')
 #  Expires:        2026-05-16T01:25:00Z
+#  [<scannable ASCII QR of the pairing string>]
 
 # On the new device:
 usrcp pair join 1234-5678-aabbccdd-eeff0011-22334455-66778899 --user=laptop
 #  (prompts for the passphrase that protects the existing identity)
 ```
+
+The QR is printed by default in `pair init` so the new device can scan
+it with any QR reader (phone camera, browser QR plugin, etc.) instead
+of dictating the 40-character string. Pass `--no-qr` to suppress the
+QR for non-interactive output or terminals that can't render
+half-block characters cleanly.
 
 `pair init` builds a bundle of `master.salt`, `master.verify`,
 `identity.json`, and the encrypted `private.pem`, encrypts it under
@@ -88,7 +95,7 @@ and validates by deriving the master key from the supplied passphrase.
 A wrong passphrase rolls back all writes.
 
 ```
-usrcp pair init    [--ttl=<seconds>] [--endpoint=<url>]
+usrcp pair init    [--ttl=<seconds>] [--endpoint=<url>] [--no-qr]
 usrcp pair join    <PAIRING-STRING> [--endpoint=<url>] [--force] [--user=<slug>]
 usrcp pair status                              # list pending codes (by 8-digit lookup)
 usrcp pair cancel  <CODE>                      # delete a pending code (8-digit lookup)
