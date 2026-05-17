@@ -25,10 +25,17 @@
 
 import { AddressInfo, createServer, Server } from "node:net";
 import * as http from "node:http";
+import * as crypto from "node:crypto";
 
 export interface OAuthFlowOpts {
-  /** Build the authorize URL given the localhost redirect URI. */
-  buildAuthUrl: (redirectUri: string) => string | Promise<string>;
+  /**
+   * Build the authorize URL given the localhost redirect URI and the
+   * random `state` token the helper has chosen for this flow. The
+   * adapter must include `state` in the URL so Google echoes it on
+   * the redirect; the helper rejects any redirect whose state does
+   * not match.
+   */
+  buildAuthUrl: (redirectUri: string, state: string) => string | Promise<string>;
   /**
    * Exchange the authorization code for tokens. The adapter receives
    * the same redirect_uri it built the URL with - Google requires the
@@ -68,6 +75,16 @@ const ERROR_PAGE = (msg: string): string =>
  * reading the assigned port. Closes the temporary socket before
  * returning so the real listener can bind to the same number.
  */
+/** Constant-time hex comparison; tolerates strings of different lengths. */
+function timingSafeEqualHex(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(a, "hex"), Buffer.from(b, "hex"));
+  } catch {
+    return false;
+  }
+}
+
 async function pickFreePort(): Promise<number> {
   return await new Promise<number>((resolve, reject) => {
     const srv: Server = createServer();
@@ -82,18 +99,28 @@ async function pickFreePort(): Promise<number> {
 }
 
 /**
- * Parse the redirect path's query string into { code, error }. Returns
- * null on a request whose path doesn't match REDIRECT_PATH.
+ * Parse the redirect path's query string into { code, error, state }.
+ * Returns null on a request whose path doesn't match REDIRECT_PATH OR
+ * on a malformed URL (an attacker on the same machine can craft
+ * invalid absolute-form request targets that would otherwise throw
+ * out of `new URL`; treating those as "not our redirect" keeps the
+ * listener waiting for the real one).
  */
 export function parseRedirect(
   url: string | undefined
-): { code?: string; error?: string } | null {
+): { code?: string; error?: string; state?: string } | null {
   if (!url) return null;
-  const u = new URL(url, "http://localhost");
+  let u: URL;
+  try {
+    u = new URL(url, "http://localhost");
+  } catch {
+    return null;
+  }
   if (u.pathname !== REDIRECT_PATH) return null;
   const code = u.searchParams.get("code") ?? undefined;
   const error = u.searchParams.get("error") ?? undefined;
-  return { code, error };
+  const state = u.searchParams.get("state") ?? undefined;
+  return { code, error, state };
 }
 
 export async function runLocalhostOauthFlow(opts: OAuthFlowOpts): Promise<OAuthFlowResult> {
@@ -102,11 +129,17 @@ export async function runLocalhostOauthFlow(opts: OAuthFlowOpts): Promise<OAuthF
 
   const port = await pickFreePort();
   const redirectUri = `http://127.0.0.1:${port}${REDIRECT_PATH}`;
+  // 128-bit random state token. Google echoes this on the redirect;
+  // we reject any redirect whose state does not match. Without this,
+  // any local process that can target the listener port could race
+  // the real redirect and trick us into exchanging a code they
+  // chose.
+  const state = crypto.randomBytes(16).toString("hex");
 
   // Build the authorize URL BEFORE starting the listener; if the
   // adapter's buildAuthUrl throws (e.g. malformed client_id), we
   // surface that error without leaving a listener dangling.
-  const authUrl = await opts.buildAuthUrl(redirectUri);
+  const authUrl = await opts.buildAuthUrl(redirectUri, state);
 
   // The listener resolves once we see the redirect. The OAuth flow
   // exchanges the code into tokens AFTER we've sent the success page,
@@ -127,6 +160,22 @@ export async function runLocalhostOauthFlow(opts: OAuthFlowOpts): Promise<OAuthF
           res.end(ERROR_PAGE(parsed.error));
           cleanup();
           reject(new Error(`Google authorization returned error: ${parsed.error}`));
+          return;
+        }
+        // CSRF guard: any redirect whose state does not match the one
+        // we generated is rejected. A real Google redirect always
+        // echoes the state we passed in &state=. A redirect missing
+        // state (or with the wrong state) is either a misconfigured
+        // client OR an attacker on the same machine trying to race
+        // the real redirect with their own code; either way we don't
+        // exchange it.
+        if (!parsed.state || !timingSafeEqualHex(parsed.state, state)) {
+          res.setHeader("content-type", "text/html; charset=utf-8");
+          res.statusCode = 400;
+          res.end(ERROR_PAGE("state mismatch"));
+          // Don't reject - keep waiting for the legitimate redirect.
+          // A real attacker can keep firing forged redirects, but the
+          // 5-min timeout bounds the window.
           return;
         }
         if (!parsed.code) {

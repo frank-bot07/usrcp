@@ -141,7 +141,7 @@ export async function runGmailSetup(): Promise<GmailConfig> {
     while (true) {
       try {
         const flow = await runLocalhostOauthFlow({
-          buildAuthUrl: (redirectUri) => {
+          buildAuthUrl: (redirectUri, state) => {
             const oauth = new OAuth2Client({
               clientId: oauth_client_id,
               clientSecret: oauth_client_secret,
@@ -152,6 +152,7 @@ export async function runGmailSetup(): Promise<GmailConfig> {
               prompt: "consent",
               scope: [GMAIL_READONLY_SCOPE],
               redirect_uri: redirectUri,
+              state,
             });
           },
           exchangeCode: async (code, redirectUri) => {
