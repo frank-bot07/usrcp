@@ -59,6 +59,7 @@ function telegramConfigModule() {
 // ---------------------------------------------------------------------------
 
 describe("Discord adapter config (via dist)", () => {
+  const masterKey = Buffer.alloc(32, 0x42);
   const GOOD_CONFIG = {
     discord_bot_token: "Bot.test.token.abc123",
     anthropic_api_key: "sk-ant-api03-test",
@@ -68,7 +69,7 @@ describe("Discord adapter config (via dist)", () => {
 
   it("writeDiscordConfig writes the file with mode 0600", () => {
     const m = discordConfigModule();
-    m.writeDiscordConfig(GOOD_CONFIG);
+    m.writeDiscordConfig(GOOD_CONFIG, masterKey);
     const p = m.getConfigPath();
     expect(fs.existsSync(p)).toBe(true);
     const stat = fs.statSync(p);
@@ -78,8 +79,8 @@ describe("Discord adapter config (via dist)", () => {
 
   it("writeDiscordConfig → loadConfig round-trips correctly", () => {
     const m = discordConfigModule();
-    m.writeDiscordConfig(GOOD_CONFIG);
-    const loaded = m.loadConfig();
+    m.writeDiscordConfig(GOOD_CONFIG, masterKey);
+    const loaded = m.loadConfig(masterKey);
     expect(loaded.discord_bot_token).toBe(GOOD_CONFIG.discord_bot_token);
     expect(loaded.anthropic_api_key).toBe(GOOD_CONFIG.anthropic_api_key);
     expect(loaded.allowlisted_channels).toEqual(GOOD_CONFIG.allowlisted_channels);
@@ -91,7 +92,7 @@ describe("Discord adapter config (via dist)", () => {
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((_code?: number) => {
       throw new Error("process.exit called");
     });
-    expect(() => m.loadConfig()).toThrow("process.exit called");
+    expect(() => m.loadConfig(masterKey)).toThrow("process.exit called");
     expect(exitSpy).toHaveBeenCalledWith(1);
     exitSpy.mockRestore();
   });
@@ -106,7 +107,7 @@ describe("Discord adapter config (via dist)", () => {
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((_code?: number) => {
       throw new Error("process.exit called");
     });
-    expect(() => m.loadConfig()).toThrow("process.exit called");
+    expect(() => m.loadConfig(masterKey)).toThrow("process.exit called");
     exitSpy.mockRestore();
   });
 
@@ -120,7 +121,7 @@ describe("Discord adapter config (via dist)", () => {
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((_code?: number) => {
       throw new Error("process.exit called");
     });
-    expect(() => m.loadConfig()).toThrow("process.exit called");
+    expect(() => m.loadConfig(masterKey)).toThrow("process.exit called");
     exitSpy.mockRestore();
   });
 });
@@ -130,6 +131,7 @@ describe("Discord adapter config (via dist)", () => {
 // ---------------------------------------------------------------------------
 
 describe("Telegram adapter config (via dist)", () => {
+  const masterKey = Buffer.alloc(32, 0x42);
   const GOOD_CONFIG = {
     telegram_bot_token: "123456:ABC-DEF-test",
     anthropic_api_key: "sk-ant-api03-test",
@@ -139,7 +141,7 @@ describe("Telegram adapter config (via dist)", () => {
 
   it("writeTelegramConfig writes the file with mode 0600", () => {
     const m = telegramConfigModule();
-    m.writeTelegramConfig(GOOD_CONFIG);
+    m.writeTelegramConfig(GOOD_CONFIG, masterKey);
     const p = m.getConfigPath();
     expect(fs.existsSync(p)).toBe(true);
     const stat = fs.statSync(p);
@@ -149,8 +151,8 @@ describe("Telegram adapter config (via dist)", () => {
 
   it("writeTelegramConfig → loadConfig round-trips correctly", () => {
     const m = telegramConfigModule();
-    m.writeTelegramConfig(GOOD_CONFIG);
-    const loaded = m.loadConfig();
+    m.writeTelegramConfig(GOOD_CONFIG, masterKey);
+    const loaded = m.loadConfig(masterKey);
     expect(loaded.telegram_bot_token).toBe(GOOD_CONFIG.telegram_bot_token);
     expect(loaded.anthropic_api_key).toBe(GOOD_CONFIG.anthropic_api_key);
     expect(loaded.allowlisted_chats).toEqual(GOOD_CONFIG.allowlisted_chats);
@@ -162,7 +164,7 @@ describe("Telegram adapter config (via dist)", () => {
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((_code?: number) => {
       throw new Error("process.exit called");
     });
-    expect(() => m.loadConfig()).toThrow("process.exit called");
+    expect(() => m.loadConfig(masterKey)).toThrow("process.exit called");
     expect(exitSpy).toHaveBeenCalledWith(1);
     exitSpy.mockRestore();
   });
@@ -177,7 +179,7 @@ describe("Telegram adapter config (via dist)", () => {
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((_code?: number) => {
       throw new Error("process.exit called");
     });
-    expect(() => m.loadConfig()).toThrow("process.exit called");
+    expect(() => m.loadConfig(masterKey)).toThrow("process.exit called");
     exitSpy.mockRestore();
   });
 });

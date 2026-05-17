@@ -87,7 +87,9 @@ function parseChatList(raw: string): string[] {
 // Main wizard flow
 // ---------------------------------------------------------------------------
 
-export async function runTelegramSetup(): Promise<TelegramConfig> {
+export async function runTelegramSetup(
+  opts: { masterKey?: Buffer } = {},
+): Promise<TelegramConfig> {
   if (!process.stdin.isTTY) {
     const p = getConfigPath();
     console.error(
@@ -96,6 +98,13 @@ export async function runTelegramSetup(): Promise<TelegramConfig> {
     );
     process.exit(1);
   }
+  if (!opts.masterKey) {
+    console.error(
+      `usrcp-telegram setup: master key not provided. Run 'usrcp setup' (no --adapter) to initialize the ledger first, or set USRCP_PASSPHRASE before re-running 'usrcp setup --adapter=telegram'.`
+    );
+    process.exit(1);
+  }
+  const masterKey = opts.masterKey;
 
   process.stderr.write("\n");
   process.stderr.write("  ┌─ Telegram adapter setup ────────────────────────────────────┐\n");
@@ -172,8 +181,8 @@ export async function runTelegramSetup(): Promise<TelegramConfig> {
     user_id,
   };
 
-  writeTelegramConfig(cfg);
-  process.stderr.write(`\n  ✓ Config saved to ${getConfigPath()} (mode 0600)\n`);
+  writeTelegramConfig(cfg, masterKey);
+  process.stderr.write(`\n  ✓ Config saved to ${getConfigPath()} (mode 0600, secrets encrypted)\n`);
 
   return cfg;
 }
