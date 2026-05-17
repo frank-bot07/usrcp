@@ -118,6 +118,43 @@ describe("happy path", () => {
     expect(e.summary.endsWith("…")).toBe(true);
   });
 
+  it("clamps every detail field so even an oversized message captures", () => {
+    // Bulk-email worst case: huge recipient lists, a long subject,
+    // many labels. With per-field clamps the serialised detail JSON
+    // must stay under the ledger's 64 KiB cap.
+    const hugeAddresses = Array.from({ length: 500 }, (_, i) => `recipient${i}@example.com`).join(", ");
+    const msg = mkMsg({
+      subject: "x".repeat(10_000),
+      body: "y".repeat(60_000),
+      from: "z".repeat(5_000),
+      to: hugeAddresses,
+      cc: hugeAddresses,
+      bcc: hugeAddresses,
+      date_header: "d".repeat(1_000),
+      label_ids: Array.from({ length: 200 }, (_, i) => "LABEL_" + i),
+      snippet: "s".repeat(5_000),
+    });
+    const result = captureGmailActivity(ledger, msg, baseConfig);
+    expect(result.captured).toBe(true);
+
+    const e = ledger.getTimeline({ last_n: 1 })[0];
+    const detail = e.detail as Record<string, unknown>;
+    expect((detail.subject as string).length).toBeLessThanOrEqual(2 * 1024);
+    expect((detail.body as string).length).toBeLessThanOrEqual(48 * 1024);
+    expect((detail.from as string).length).toBeLessThanOrEqual(512);
+    expect((detail.to as string).length).toBeLessThanOrEqual(2 * 1024);
+    expect((detail.cc as string).length).toBeLessThanOrEqual(2 * 1024);
+    expect((detail.bcc as string).length).toBeLessThanOrEqual(2 * 1024);
+    expect((detail.snippet as string).length).toBeLessThanOrEqual(1024);
+    expect((detail.date_header as string).length).toBeLessThanOrEqual(256);
+    expect((detail.label_ids as string[]).length).toBeLessThanOrEqual(20);
+    for (const lbl of detail.label_ids as string[]) {
+      expect(lbl.length).toBeLessThanOrEqual(64);
+    }
+    // Total serialised size sanity check.
+    expect(JSON.stringify(detail).length).toBeLessThan(64 * 1024);
+  });
+
   it("truncates very long bodies under the ledger's 64KiB detail cap", () => {
     const msg = mkMsg({ body: "x".repeat(200 * 1024) });
     const result = captureGmailActivity(ledger, msg, baseConfig);

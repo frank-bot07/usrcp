@@ -66,11 +66,26 @@ export interface CaptureSkipped {
 export type CaptureOutcome = CaptureResult | CaptureSkipped;
 
 const SUMMARY_MAX_CHARS = 200;
-// Ledger validates the serialised `detail` JSON at 64 KiB. The other
-// fields (headers, label ids, snippet, dates) consume some of that
-// budget; cap the body at 48 KiB to leave a comfortable margin even
-// for messages with long header lists or many labels.
+// Ledger validates the serialised `detail` JSON at 64 KiB. Cap every
+// field individually so a message with a long recipient list, an
+// over-long subject, or a flood of labels cannot push the envelope
+// over the cap and pin the cursor on a single bad message:
+//   body    48 KiB  (the dominant field for normal mail)
+//   subject  2 KiB
+//   snippet  1 KiB
+//   from    512 B
+//   to/cc/bcc each 2 KiB  (room for ~25 addresses; truncates longer)
+//   date_header 256 B
+//   label_ids capped at 20 entries x 64 B
+// Total: ~60 KiB plus JSON envelope; comfortably under 64 KiB.
 const BODY_MAX_CHARS = 48 * 1024;
+const SUBJECT_MAX_CHARS = 2 * 1024;
+const SNIPPET_MAX_CHARS = 1024;
+const FROM_MAX_CHARS = 512;
+const RECIPIENT_LIST_MAX_CHARS = 2 * 1024;
+const DATE_HEADER_MAX_CHARS = 256;
+const LABEL_IDS_MAX = 20;
+const LABEL_ID_MAX_CHARS = 64;
 
 function truncateSummary(text: string): string {
   if (text.length <= SUMMARY_MAX_CHARS) return text;
@@ -80,6 +95,20 @@ function truncateSummary(text: string): string {
 function truncateBody(text: string): string {
   if (text.length <= BODY_MAX_CHARS) return text;
   return text.slice(0, BODY_MAX_CHARS - 1) + "…";
+}
+
+function clamp(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return text.slice(0, max - 1) + "…";
+}
+
+function clampNullable(text: string | null, max: number): string | null {
+  if (text === null) return null;
+  return clamp(text, max);
+}
+
+function clampLabels(labels: string[]): string[] {
+  return labels.slice(0, LABEL_IDS_MAX).map((l) => clamp(l, LABEL_ID_MAX_CHARS));
 }
 
 /**
@@ -125,15 +154,15 @@ export function captureGmailActivity(
       detail: {
         message_id: activity.id,
         thread_id: activity.thread_id,
-        subject: activity.subject,
+        subject: clamp(activity.subject, SUBJECT_MAX_CHARS),
         body: truncateBody(activity.body),
-        snippet: activity.snippet,
-        from: activity.from,
-        to: activity.to,
-        cc: activity.cc,
-        bcc: activity.bcc,
-        date_header: activity.date_header,
-        label_ids: activity.label_ids,
+        snippet: clamp(activity.snippet, SNIPPET_MAX_CHARS),
+        from: clamp(activity.from, FROM_MAX_CHARS),
+        to: clamp(activity.to, RECIPIENT_LIST_MAX_CHARS),
+        cc: clampNullable(activity.cc, RECIPIENT_LIST_MAX_CHARS),
+        bcc: clampNullable(activity.bcc, RECIPIENT_LIST_MAX_CHARS),
+        date_header: clampNullable(activity.date_header, DATE_HEADER_MAX_CHARS),
+        label_ids: clampLabels(activity.label_ids),
         sent_at: activity.sent_at,
       },
       tags: ["gmail", "email", "sent"],
