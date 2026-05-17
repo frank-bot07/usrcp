@@ -26,7 +26,36 @@ DATABASE_URL=postgres://... node dist/index.js
 | `HOST`         | `0.0.0.0`   | Bind address                     |
 
 Migrations run automatically at startup. A 5-minute `setInterval`
-prunes expired nonces.
+prunes expired nonces, stale pairing bundles, and in-memory rate-limit
+buckets.
+
+### Rate limiting
+
+Built-in per-IP limits run as a Fastify `preHandler` and protect every
+route except `/healthz`. Limits are configurable via env:
+
+| Env var                          | Default       | Purpose |
+| -------------------------------- | ------------- | ------- |
+| `RATE_LIMIT_SIGNED_RPM`          | `600`         | Per-IP cap for any signed endpoint (per minute). |
+| `RATE_LIMIT_PAIRING_CLAIM_RPM`   | `30`          | Stricter cap on `GET /v1/pairing/claim/:code` (unauthenticated). |
+| `RATE_LIMIT_PAIRING_INIT_RPM`    | `10`          | Cap on `POST /v1/pairing/init` per IP. |
+| `RATE_LIMIT_WINDOW_MS`           | `60000`       | Sliding window for the above limits. |
+| `RATE_LIMIT_PROBE_CODES`         | `20`          | Max DISTINCT pairing codes one IP may probe via `claim` per `RATE_LIMIT_PROBE_WINDOW_MS`. |
+| `RATE_LIMIT_PROBE_WINDOW_MS`     | `600000`      | Window for the distinct-code probe detector (10 min, matches default pairing TTL). |
+| `TRUST_PROXY`                    | `0`           | Set `1` / `true` to honor `X-Forwarded-For` for IP attribution. ONLY enable behind a trusted proxy that scrubs that header on inbound. |
+
+Limit hits return `429` with a `Retry-After` header. The
+`PROBE_DETECTED` error specifically calls out the distinct-code
+brute-force scanner: a single IP that hits >`RATE_LIMIT_PROBE_CODES`
+different codes within the probe window is blocked even if it stays
+under the per-claim rate cap. Without that detector, the
+5-attempts-per-code cap inside `pairing.ts` only stops per-code brute
+force, leaving the cross-code scanner unbounded against a 1e8 codespace.
+
+Production deployments with multiple cloud instances should still put
+a reverse proxy with its own rate limiter (Nginx, Cloudflare, etc.)
+in front; the in-process limiter is per-instance and intended as
+zero-config defense in depth.
 
 ## Endpoints
 

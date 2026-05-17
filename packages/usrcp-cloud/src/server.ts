@@ -13,6 +13,13 @@ import { verifyAndClaim, AuthError } from "./auth.js";
 import { registerStreamRoutes } from "./stream.js";
 import { registerPairingRoutes } from "./pairing.js";
 import { registerRotateRoutes } from "./rotate.js";
+import {
+  registerRateLimits,
+  createRateLimitState,
+  loadConfigFromEnv,
+  type RateLimitConfig,
+  type RateLimitState,
+} from "./rate-limit.js";
 
 // --- Wire schemas (Zod) ---
 
@@ -102,6 +109,18 @@ const UpdateStateBody = z.object({
 export interface ServerOptions {
   db: Db;
   logger?: boolean;
+  /**
+   * Rate-limit configuration. When omitted, defaults are loaded from
+   * env (see rate-limit.ts loadConfigFromEnv). Pass `false` to disable
+   * rate limiting entirely (used in tests that exercise per-route
+   * behavior without the limiter interfering).
+   */
+  rateLimit?: RateLimitConfig | false;
+}
+
+export interface CreateAppResult {
+  app: FastifyInstance;
+  rateLimitState: RateLimitState | null;
 }
 
 // Max request body size. MCP payloads are JSON (ciphertext blobs); 2 MiB
@@ -115,6 +134,18 @@ export function createApp(opts: ServerOptions): FastifyInstance {
     bodyLimit: MAX_REQUEST_BODY_BYTES,
   });
   const db = opts.db;
+
+  // Per-IP rate limiting + brute-force detection. Registered before any
+  // route so it runs in preHandler ordering ahead of the auth check.
+  // Test callers pass `rateLimit: false` to bypass the limiter; the
+  // production entry point in index.ts loads the env-driven config.
+  let rateLimitState: RateLimitState | null = null;
+  if (opts.rateLimit !== false) {
+    const config = opts.rateLimit ?? loadConfigFromEnv();
+    rateLimitState = createRateLimitState(config);
+    registerRateLimits(app, rateLimitState);
+  }
+  (app as unknown as { rateLimitState?: RateLimitState | null }).rateLimitState = rateLimitState;
 
   // Read the raw body so we can hash it for signature verification.
   // Fastify parses JSON by default; we also capture the raw bytes.

@@ -14,6 +14,7 @@ import { createApp } from "./server.js";
 import { createPgPool } from "./db.js";
 import { pruneOldNonces } from "./auth.js";
 import { prunePairingBundles } from "./pairing.js";
+import { pruneRateLimitState, type RateLimitState } from "./rate-limit.js";
 
 const NONCE_PRUNE_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -34,10 +35,16 @@ async function main() {
 
   // Periodically prune expired nonces so seen_nonces doesn't grow
   // unboundedly. .unref() so the timer doesn't hold the process open.
-  // Same loop prunes expired and locked-out pairing bundles.
+  // Same loop prunes expired and locked-out pairing bundles and stale
+  // in-memory rate-limit buckets.
+  const rateLimitState = (app as unknown as { rateLimitState?: RateLimitState | null }).rateLimitState ?? null;
   const pruneTimer = setInterval(() => {
     pruneOldNonces(db).catch((err) => app.log.error({ err }, "nonce prune failed"));
     prunePairingBundles(db).catch((err) => app.log.error({ err }, "pairing prune failed"));
+    if (rateLimitState) {
+      const dropped = pruneRateLimitState(rateLimitState);
+      if (dropped > 0) app.log.debug({ dropped }, "rate_limit_prune");
+    }
   }, NONCE_PRUNE_INTERVAL_MS);
   pruneTimer.unref();
 
