@@ -118,6 +118,25 @@ describe("happy path", () => {
     expect(e.summary.endsWith("…")).toBe(true);
   });
 
+  it("fits bodies of JSON-expanding content (newline / quote storms) under the ledger cap", () => {
+    // A pathological body: 48 KiB of newlines and quotes. Each
+    // newline becomes \n (2 chars) and each " becomes \" (2 chars)
+    // after JSON.stringify; without the fit-to-serialised-size guard,
+    // the serialised detail would balloon past 64 KiB and pin the
+    // cursor. captureGmailActivity must trim the body until the
+    // envelope fits.
+    const pathological = ('\n"').repeat(24 * 1024); // 48 KiB body
+    const msg = mkMsg({ body: pathological });
+    const result = captureGmailActivity(ledger, msg, baseConfig);
+    expect(result.captured).toBe(true);
+
+    const e = ledger.getTimeline({ last_n: 1 })[0];
+    const detail = e.detail as Record<string, unknown>;
+    expect(JSON.stringify(detail).length).toBeLessThan(64 * 1024);
+    // The body still has content - the fitter trims, doesn't empty.
+    expect((detail.body as string).length).toBeGreaterThan(0);
+  });
+
   it("clamps every detail field so even an oversized message captures", () => {
     // Bulk-email worst case: huge recipient lists, a long subject,
     // many labels. With per-field clamps the serialised detail JSON

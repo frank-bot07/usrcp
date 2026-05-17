@@ -111,6 +111,58 @@ function clampLabels(labels: string[]): string[] {
   return labels.slice(0, LABEL_IDS_MAX).map((l) => clamp(l, LABEL_ID_MAX_CHARS));
 }
 
+// The ledger validates the serialised detail JSON at 64 KiB. JSON
+// encoding can multiply size when content has lots of newlines /
+// quotes / control chars (each becomes a 2-6 char escape sequence),
+// so per-character caps on individual fields are not sufficient.
+// We target a slightly lower budget than the ledger's 64 KiB to leave
+// headroom for the JSON envelope (keys, commas, braces) that
+// JSON.stringify adds on top of the values themselves.
+const SERIALISED_DETAIL_MAX_BYTES = 60 * 1024;
+
+/**
+ * Iteratively trim the `body` field of `detail` until JSON.stringify
+ * fits under `cap` bytes. Returns the trimmed detail object.
+ *
+ * Body is the dominant contributor for any reasonable message; if
+ * even an empty body can't fit (i.e. headers alone are >cap), we
+ * give up and return the detail as-is - the ledger will reject it
+ * and capture.ts's caller will surface the error.
+ */
+function fitDetailToCap(detail: Record<string, unknown>, cap: number): Record<string, unknown> {
+  let serialised = JSON.stringify(detail);
+  if (serialised.length <= cap) return detail;
+
+  // Empty the body and re-measure. If headers ALONE exceed the cap,
+  // the per-field clamps already failed to bound this message and
+  // there's nothing left to trim.
+  const probeWithoutBody = { ...detail, body: "" };
+  const headersOnlyLen = JSON.stringify(probeWithoutBody).length;
+  if (headersOnlyLen >= cap) return detail;
+
+  // Bisect on the body length until the serialised form fits. Body
+  // is the only field with enough mass to bisect; everything else
+  // is already capped to a few KiB.
+  const fullBody = String(detail.body ?? "");
+  let lo = 0;
+  let hi = fullBody.length;
+  let best = "";
+  // 30 iterations is overkill for any string up to ~1 GiB but cheap.
+  for (let i = 0; i < 30 && lo <= hi; i++) {
+    const mid = Math.floor((lo + hi) / 2);
+    const candidate = mid >= fullBody.length ? fullBody : fullBody.slice(0, mid) + "…";
+    const probe = { ...detail, body: candidate };
+    serialised = JSON.stringify(probe);
+    if (serialised.length <= cap) {
+      best = candidate;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return { ...detail, body: best };
+}
+
 /**
  * 16-byte SHA-256 prefix of the message id, hex-encoded. 32 chars +
  * the 14-char prefix = 46 chars total, well under the ledger's
@@ -145,26 +197,28 @@ export function captureGmailActivity(
   }
   const summary = truncateSummary(summarySource);
 
+  const rawDetail: Record<string, unknown> = {
+    message_id: activity.id,
+    thread_id: activity.thread_id,
+    subject: clamp(activity.subject, SUBJECT_MAX_CHARS),
+    body: truncateBody(activity.body),
+    snippet: clamp(activity.snippet, SNIPPET_MAX_CHARS),
+    from: clamp(activity.from, FROM_MAX_CHARS),
+    to: clamp(activity.to, RECIPIENT_LIST_MAX_CHARS),
+    cc: clampNullable(activity.cc, RECIPIENT_LIST_MAX_CHARS),
+    bcc: clampNullable(activity.bcc, RECIPIENT_LIST_MAX_CHARS),
+    date_header: clampNullable(activity.date_header, DATE_HEADER_MAX_CHARS),
+    label_ids: clampLabels(activity.label_ids),
+    sent_at: activity.sent_at,
+  };
+  const detail = fitDetailToCap(rawDetail, SERIALISED_DETAIL_MAX_BYTES);
   const result = ledger.appendEvent(
     {
       domain: config.domain,
       summary,
       intent: "email_sent",
       outcome: "success",
-      detail: {
-        message_id: activity.id,
-        thread_id: activity.thread_id,
-        subject: clamp(activity.subject, SUBJECT_MAX_CHARS),
-        body: truncateBody(activity.body),
-        snippet: clamp(activity.snippet, SNIPPET_MAX_CHARS),
-        from: clamp(activity.from, FROM_MAX_CHARS),
-        to: clamp(activity.to, RECIPIENT_LIST_MAX_CHARS),
-        cc: clampNullable(activity.cc, RECIPIENT_LIST_MAX_CHARS),
-        bcc: clampNullable(activity.bcc, RECIPIENT_LIST_MAX_CHARS),
-        date_header: clampNullable(activity.date_header, DATE_HEADER_MAX_CHARS),
-        label_ids: clampLabels(activity.label_ids),
-        sent_at: activity.sent_at,
-      },
+      detail,
       tags: ["gmail", "email", "sent"],
       // channel_id = thread_id so getRecentEventsByChannel returns
       // the whole thread's history (once we capture replies in a
