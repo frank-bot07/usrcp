@@ -44,7 +44,25 @@ prompt.
    choose **Desktop app**. Copy the resulting **client ID** and
    **client secret**.
 
-### 2. Get a refresh token
+### 2. Run the wizard
+
+```bash
+cd packages/usrcp-google-calendar
+npm install
+npm run build
+
+usrcp setup --adapter=google-calendar
+```
+
+The wizard prompts for `client_id` + `client_secret` and then asks
+whether to authorise via browser (default Yes). The browser flow
+opens a localhost listener, prints the Google sign-in URL, captures
+the redirect, and persists the refresh token automatically; no copy /
+paste from the OAuth Playground.
+
+If you can't open a browser from this machine (remote shell, CI,
+etc.), answer "no" and the wizard falls back to the manual
+OAuth-Playground path:
 
 1. Visit [developers.google.com/oauthplayground](https://developers.google.com/oauthplayground).
 2. Click the gear icon (top right). Tick **Use your own OAuth credentials**
@@ -53,19 +71,7 @@ prompt.
    `https://www.googleapis.com/auth/calendar.readonly`.
 4. Click **Authorize APIs**, complete the Google sign-in, then
    **Exchange authorization code for tokens**.
-5. Copy the `refresh_token` from the response.
-
-### 3. Run the wizard
-
-```bash
-cd packages/usrcp-google-calendar
-npm install
-npm run build
-
-usrcp setup --adapter=google-calendar
-# prompts for client_id, client_secret, refresh_token, poll interval,
-# and the USRCP domain to write under.
-```
+5. Copy the `refresh_token` from the response and paste it into the wizard.
 
 The wizard validates the credentials against the Calendar API before
 persisting, so a wrong value fails fast.
