@@ -20,6 +20,7 @@ import {
   formatCode,
   formatPairingString,
   parsePairingString,
+  renderPairingQr,
   InvalidPairingCode,
   WrongPassphrase,
   PairingExpired,
@@ -158,6 +159,27 @@ describe("formatCode", () => {
   it("formats 8 digits as XXXX-XXXX", () => {
     expect(formatCode("12345678")).toBe("1234-5678");
     expect(formatCode("abc")).toBe("abc");
+  });
+});
+
+describe("renderPairingQr", () => {
+  it("returns a non-empty QR rendering for a v2 pairing string", () => {
+    const pairingString = formatPairingString("12345678", Buffer.alloc(16, 0xab));
+    const qr = renderPairingQr(pairingString);
+    expect(qr.length).toBeGreaterThan(0);
+    // qrcode-terminal `small: true` mode renders QR cells via half-block
+    // Unicode characters: U+2580 (UPPER HALF BLOCK), U+2584 (LOWER HALF
+    // BLOCK), U+2588 (FULL BLOCK), plus spaces for white cells. At least
+    // one of these must be present in a real QR rendering.
+    expect(/[▀▄█]/.test(qr)).toBe(true);
+    // Multi-line: a QR is at least ~10 lines for a 40-ish char payload
+    // even at compact rendering.
+    expect(qr.split("\n").length).toBeGreaterThan(5);
+  });
+
+  it("produces stable output for the same input", () => {
+    const pairingString = "12345678-aabbccdd-eeff0011-22334455-66778899";
+    expect(renderPairingQr(pairingString)).toBe(renderPairingQr(pairingString));
   });
 });
 

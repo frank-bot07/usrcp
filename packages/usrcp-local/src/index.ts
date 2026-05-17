@@ -25,6 +25,7 @@ import {
   pairStatus,
   pairCancel,
   formatCode,
+  renderPairingQr,
   InvalidPairingCode,
   WrongPassphrase,
   PairingExpired,
@@ -1078,12 +1079,21 @@ async function cmdPair(subcommand: string | undefined, rest: string[]): Promise<
       console.error(`  Lookup code:    ${formatCode(r.code)}   (use this for 'usrcp pair status' / 'cancel')`);
       console.error(`  Expires:        ${r.expires_at}`);
       console.error("");
+      if (!hasFlag("no-qr")) {
+        // Render a scannable QR of the pairing string so the user can
+        // point a phone camera at it instead of dictating the 40-char
+        // string. Caller can disable with --no-qr (handy when piping
+        // output or running over a session that can't render the
+        // half-block characters cleanly).
+        console.error(renderPairingQr(r.pairingString));
+      }
       console.error("  On the new device, run:");
       console.error(`    usrcp pair join ${r.pairingString}`);
       console.error("");
       console.error("  Share the full pairing string via a trusted channel");
-      console.error("  (paste, AirDrop, encrypted DM). The cloud holds only the");
-      console.error("  lookup code; the secret half stays between your devices.");
+      console.error("  (paste, AirDrop, encrypted DM, or scan the QR above).");
+      console.error("  The cloud holds only the lookup code; the secret half");
+      console.error("  stays between your devices.");
       console.error("");
       return;
     }
