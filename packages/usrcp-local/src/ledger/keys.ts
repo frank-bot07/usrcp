@@ -16,7 +16,27 @@ import { safeJsonParse } from "./helpers.js";
 declare module "./core.js" {
   interface Ledger {
     rebuildBlindIndex(): void;
-    rotateKey(passphrase?: string): { version: number; reencrypted: number; skipped: number };
+    rotateKey(
+      passphrase?: string,
+      opts?: {
+        /**
+         * Invoked after the DB-rotation transaction commits and the
+         * new key files land on disk, but BEFORE the in-memory
+         * masterKey is updated. Receives both the old and new master
+         * key buffers (still allocated). Use this to re-encrypt
+         * out-of-band data (adapter configs, etc.) that's keyed off
+         * the master key but not stored in the ledger DB.
+         *
+         * If the callback throws, the rotation is still considered
+         * complete (the master key on disk and in the DB has
+         * rotated); the error is surfaced via console.warn so callers
+         * can inspect, but the rotation itself succeeds. Callers that
+         * need richer error reporting should catch internally and
+         * accumulate diagnostics.
+         */
+        onKeysReady?: (oldKey: Buffer, newKey: Buffer) => void;
+      },
+    ): { version: number; reencrypted: number; skipped: number };
   }
 }
 
@@ -52,7 +72,8 @@ Ledger.prototype.rebuildBlindIndex = function (this: Ledger): void {
 
 Ledger.prototype.rotateKey = function (
   this: Ledger,
-  passphrase?: string
+  passphrase?: string,
+  opts?: { onKeysReady?: (oldKey: Buffer, newKey: Buffer) => void },
 ): { version: number; reencrypted: number; skipped: number } {
   // Phase 1: Prepare new key material WITHOUT writing to disk
   const { oldKey, newKey, version, pendingFiles } = prepareKeyRotation(this.masterKey, passphrase);
@@ -318,7 +339,28 @@ Ledger.prototype.rotateKey = function (
   // we detect pending_key in rotation_state and recover.
   commitKeyRotation(pendingFiles);
 
-  // Phase 4: Clear pending state — rotation complete
+  // Phase 3.5: Caller hook for re-encrypting out-of-band data
+  // (e.g. adapter config files at ~/.usrcp/<name>-config.json that
+  // hold OAuth refresh tokens / bot tokens / API keys encrypted
+  // under the global key derived from the master key). Without this,
+  // every encrypted adapter config becomes unreadable after rotation.
+  //
+  // Both keys are still allocated. If the hook throws, log a warning
+  // and continue: the master key has already rotated, we can't roll
+  // back, but accumulating partial state is worse than reporting and
+  // moving on. Callers that need per-item diagnostics should catch
+  // internally.
+  if (opts?.onKeysReady) {
+    try {
+      opts.onKeysReady(oldKey, newKey);
+    } catch (err) {
+      console.warn(
+        `[usrcp] rotateKey: onKeysReady hook failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  // Phase 4: Clear pending state - rotation complete
   this.db.prepare(
     "UPDATE rotation_state SET pending_key = NULL, pending_version = NULL WHERE id = 1"
   ).run();

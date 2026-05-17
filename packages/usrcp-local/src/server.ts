@@ -4,6 +4,10 @@ import { Ledger } from "./ledger/index.js";
 import { getIdentity } from "./crypto.js";
 import { VersionConflictError } from "./types.js";
 import type { CoreIdentity, GlobalPreferences } from "./types.js";
+import {
+  reencryptAdapterConfigs,
+  type AdapterReencryptResult,
+} from "./rotate-adapter-configs.js";
 
 // --- Security constants ---
 const MAX_STRING_SHORT = 100; // identifiers, domains, keys
@@ -797,7 +801,16 @@ export function createServer(
       },
       handler: async (params) => {
         try {
-          const result = ledger.rotateKey(params.new_passphrase);
+          // Capture adapter-config re-encryption results out of the
+          // hook so we can surface them on the response. The hook
+          // runs inside rotateKey AFTER commit but BEFORE in-memory
+          // masterKey is swapped, so the buffers are still live.
+          let adapterResult: AdapterReencryptResult | undefined;
+          const result = ledger.rotateKey(params.new_passphrase, {
+            onKeysReady: (oldKey, newKey) => {
+              adapterResult = reencryptAdapterConfigs({ oldKey, newKey });
+            },
+          });
           return {
             content: [
               {
@@ -808,6 +821,11 @@ export function createServer(
                     version: result.version,
                     reencrypted: result.reencrypted,
                     skipped: result.skipped,
+                    adapter_configs: adapterResult ?? {
+                      rotated: [],
+                      absent: [],
+                      failed: [],
+                    },
                   },
                   null,
                   2
