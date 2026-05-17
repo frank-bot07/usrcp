@@ -215,6 +215,25 @@ describe("rate limits", () => {
     await app.close();
   });
 
+  it("the sliding-window counter stays bounded under a sustained flood", async () => {
+    // Once an IP is over the limit, hit() must not keep appending timestamps
+    // - otherwise a 60-second flood at 10K req/sec would grow the array to
+    // 600K entries before the next prune.
+    const { _internal } = await import("../rate-limit.js");
+    const sc = new _internal.SlidingCounter();
+    const now = Date.now();
+    const HARD_CAP = 4; // limit+1 for a 3-RPM cap
+
+    // 100 hits inside the window all from one IP.
+    let lastSize = 0;
+    for (let i = 0; i < 100; i++) {
+      lastSize = sc.hit("1.2.3.4", now + i, 60_000, HARD_CAP);
+    }
+    // The returned size never exceeds the cap, and the array stays bounded.
+    expect(lastSize).toBeLessThanOrEqual(HARD_CAP);
+    expect(sc.size()).toBeLessThanOrEqual(HARD_CAP);
+  });
+
   it("the probe map stays bounded even when the same IP keeps scanning after a block", async () => {
     // The probe detector must not grow its per-IP set indefinitely
     // under sustained attack. observe() caps the set at threshold+1.

@@ -69,23 +69,30 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): RateLim
 
 /**
  * Sliding-window counter: each bucket holds the timestamps of all
- * requests within `windowMs`. On every hit we drop expired entries
- * and compare the remaining size against the limit.
+ * requests within `windowMs`, capped at `hardCap` entries so a
+ * sustained flood from one IP cannot grow the array unboundedly
+ * during the window. Once an IP has reached the cap (which is one
+ * past the per-route limit), subsequent hit() calls return the
+ * saturated size without appending - the caller still sees
+ * `size > limit` and 429s, and the bucket's CPU + memory cost stays
+ * bounded.
  *
- * For high-cardinality keys (one bucket per IP) this is O(W) per
- * request where W = limit; with the defaults that is ~600 entries
- * per IP, trivial.
+ * Per request: O(W) walk for expired-entry pruning where W = hardCap;
+ * with the defaults that is ~601 entries for the signed counter,
+ * trivial.
  */
 class SlidingCounter {
   private readonly buckets = new Map<string, number[]>();
 
-  hit(key: string, now: number, windowMs: number): number {
+  hit(key: string, now: number, windowMs: number, hardCap: number): number {
     const arr = this.buckets.get(key) ?? [];
     const cutoff = now - windowMs;
     let i = 0;
     while (i < arr.length && arr[i] < cutoff) i++;
     const live = i === 0 ? arr : arr.slice(i);
-    live.push(now);
+    if (live.length < hardCap) {
+      live.push(now);
+    }
     this.buckets.set(key, live);
     return live.length;
   }
@@ -237,7 +244,9 @@ export function registerRateLimits(app: FastifyInstance, state: RateLimitState):
       //    bounds how fast an attacker can grow the probe map below,
       //    so even the worst-case scanner can only add
       //    pairingClaimRpm entries per windowMs into the probe set.
-      const hits = state.claim.hit(ip, now, config.windowMs);
+      //    The hardCap is the per-route limit + 1 so the array stays
+      //    bounded under a sustained flood.
+      const hits = state.claim.hit(ip, now, config.windowMs, config.pairingClaimRpm + 1);
       if (hits > config.pairingClaimRpm) {
         app.log.warn(
           { ip, hits, limit: config.pairingClaimRpm, route: url },
@@ -275,7 +284,7 @@ export function registerRateLimits(app: FastifyInstance, state: RateLimitState):
     }
 
     if (method === "POST" && url === "/v1/pairing/init") {
-      const hits = state.init.hit(ip, now, config.windowMs);
+      const hits = state.init.hit(ip, now, config.windowMs, config.pairingInitRpm + 1);
       if (hits > config.pairingInitRpm) {
         app.log.warn(
           { ip, hits, limit: config.pairingInitRpm, route: url },
@@ -294,7 +303,7 @@ export function registerRateLimits(app: FastifyInstance, state: RateLimitState):
     // Default per-IP limit for every other signed route. We bucket all
     // signed routes together rather than per-route so a single attacker
     // can't hammer multiple endpoints to exhaust each one independently.
-    const hits = state.signed.hit(ip, now, config.windowMs);
+    const hits = state.signed.hit(ip, now, config.windowMs, config.signedRpmDefault + 1);
     if (hits > config.signedRpmDefault) {
       app.log.warn(
         { ip, hits, limit: config.signedRpmDefault, route: url, method },
