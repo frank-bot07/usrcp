@@ -16,7 +16,7 @@ import { runLocalhostOauthFlow } from "usrcp-local/dist/adapters/google-oauth/in
 import {
   getConfigPath,
   writeGmailConfig,
-  readPartialConfig,
+  readPartialDecryptedConfig,
   type GmailConfig,
 } from "./config.js";
 import { validateCredentials } from "./reader.js";
@@ -56,7 +56,16 @@ function maskSecret(secret: string): string {
   return secret.slice(0, 4) + "…" + secret.slice(-4);
 }
 
-export async function runGmailSetup(): Promise<GmailConfig> {
+export async function runGmailSetup(
+  opts: { masterKey?: Buffer } = {}
+): Promise<GmailConfig> {
+  if (!opts.masterKey) {
+    console.error(
+      "usrcp-gmail setup: master key missing. Run via `usrcp setup --adapter=gmail` so the wizard can encrypt your OAuth secrets at rest."
+    );
+    process.exit(1);
+  }
+  const masterKey = opts.masterKey;
   if (!process.stdin.isTTY) {
     const p = getConfigPath();
     console.error(
@@ -66,7 +75,10 @@ export async function runGmailSetup(): Promise<GmailConfig> {
     process.exit(1);
   }
 
-  const existing = readPartialConfig();
+  // Decrypted defaults so "Enter to keep existing X" actually uses
+  // the plaintext value the user originally typed, not the
+  // enc:<base64> envelope that lives on disk.
+  const existing = readPartialDecryptedConfig(masterKey);
 
   process.stderr.write("\n");
   process.stderr.write("  ┌─ Gmail adapter setup ──────────────────────────────────────┐\n");
@@ -261,7 +273,7 @@ export async function runGmailSetup(): Promise<GmailConfig> {
     poll_interval_s,
     domain,
   };
-  writeGmailConfig(cfg);
+  writeGmailConfig(cfg, masterKey);
 
   process.stderr.write(`  ✓ Gmail adapter configured. Saved to ${getConfigPath()} (mode 0600)\n\n`);
   process.stderr.write("  What's next:\n");

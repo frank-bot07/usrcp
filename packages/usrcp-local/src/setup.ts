@@ -71,7 +71,7 @@ async function getPrompts(): Promise<Prompts> {
  * as a separate `packages/usrcp-terminal/` package, so its setup module is
  * imported directly and given the wizard's prompts object.
  */
-async function callAdapterSetup(adapterName: string): Promise<void> {
+async function callAdapterSetup(adapterName: string, masterKey?: Buffer): Promise<void> {
   if (adapterName === "terminal") {
     const { runTerminalSetup } = await import("./adapters/terminal/index.js");
     const prompts = await getPrompts();
@@ -123,14 +123,18 @@ async function callAdapterSetup(adapterName: string): Promise<void> {
       `Adapter module at ${setupPath} does not export '${fnName}'.`
     );
   }
-  await fn();
+  // Adapters that encrypt config secrets at rest (gcal, gmail, linear,
+  // etc.) accept `{ masterKey }` so they can encrypt under the global
+  // key. Older adapters that don't accept args silently ignore the
+  // extra parameter - JS lets us pass it freely.
+  await fn({ masterKey });
 }
 
 // ---------------------------------------------------------------------------
 // Ledger step
 // ---------------------------------------------------------------------------
 
-async function ensureLedger(): Promise<void> {
+async function ensureLedger(): Promise<{ masterKey: Buffer; passphrase: string | undefined }> {
   const migration = migrateLegacyLayout();
   if (migration.migrated) {
     console.error(`  Migrated legacy files into users/default/: ${migration.movedPaths.join(", ")}`);
@@ -178,6 +182,7 @@ async function ensureLedger(): Promise<void> {
       console.log("  ✓ Set USRCP_PASSPHRASE in your env when starting adapters:");
       console.log('    export USRCP_PASSPHRASE="<your passphrase>"');
     }
+    return { masterKey, passphrase };
   } else if (slugs.length === 1) {
     setUserSlug(slugs[0]);
     const inPp = isPassphraseMode();
@@ -208,6 +213,7 @@ async function ensureLedger(): Promise<void> {
     } else {
       console.log(`  ✓ Using existing "${slugs[0]}" ledger.`);
     }
+    return await resolveExistingMasterKey(inPp, password);
   } else {
     // Multiple users — require explicit selection
     const chosen = await select({
@@ -216,7 +222,44 @@ async function ensureLedger(): Promise<void> {
     });
     setUserSlug(chosen);
     console.log(`  ✓ Using user "${chosen}".`);
+    return await resolveExistingMasterKey(isPassphraseMode(), password);
   }
+}
+
+/**
+ * Derive the master key for an existing ledger. Reads USRCP_PASSPHRASE
+ * first; if missing in passphrase mode, prompts interactively via the
+ * caller-provided `password` prompt (same one the fresh-install
+ * branch uses). Dev-mode ledgers don't need a passphrase.
+ */
+async function resolveExistingMasterKey(
+  inPp: boolean,
+  password: <T extends { message: string }>(opts: T) => Promise<string>,
+): Promise<{ masterKey: Buffer; passphrase: string | undefined }> {
+  if (!inPp) {
+    return { masterKey: initializeMasterKey(), passphrase: undefined };
+  }
+  // Passphrase mode: prefer the env var so users can scriptize setup;
+  // fall back to an interactive prompt.
+  let passphrase = process.env.USRCP_PASSPHRASE;
+  if (!passphrase) {
+    while (true) {
+      const p = await password({ message: "  Passphrase (to unlock your existing ledger):" });
+      if (p) { passphrase = p; break; }
+      console.log("  Passphrase cannot be empty.");
+    }
+  }
+  // initializeMasterKey throws "Invalid passphrase" on verify mismatch.
+  // Surface that clearly; we'd rather fail fast than silently mis-derive.
+  let masterKey: Buffer;
+  try {
+    masterKey = initializeMasterKey(passphrase);
+  } catch (err) {
+    throw new Error(
+      `Failed to unlock ledger: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  return { masterKey, passphrase };
 }
 
 // ---------------------------------------------------------------------------
@@ -458,7 +501,21 @@ export async function runSetup(opts: SetupOptions = {}): Promise<void> {
     const label = a.charAt(0).toUpperCase() + a.slice(1);
     console.log(`  Configuring adapter: ${label}`);
     try {
-      await callAdapterSetup(a);
+      // Only acquire the master key for adapters whose wizards encrypt
+      // config secrets at rest. Forcing a passphrase prompt for
+      // terminal / discord / slack / telegram / etc. (where the wizard
+      // ignores the key arg) would regress the standalone --adapter
+      // path for users with passphrase-protected ledgers who haven't
+      // set USRCP_PASSPHRASE.
+      let masterKey: Buffer | undefined;
+      if (ADAPTERS_REQUIRING_MASTER_KEY.has(a)) {
+        masterKey = await acquireMasterKeyForStandaloneAdapter();
+      }
+      try {
+        await callAdapterSetup(a, masterKey);
+      } finally {
+        if (masterKey) masterKey.fill(0);
+      }
     } catch (err) {
       console.error(`  Error: ${err instanceof Error ? err.message : String(err)}`);
       console.error("  Run 'usrcp setup' again to retry.");
@@ -470,13 +527,68 @@ export async function runSetup(opts: SetupOptions = {}): Promise<void> {
 
   // Full wizard
   try {
-    await ensureLedger();
+    const { masterKey } = await ensureLedger();
     const adapters = await pickAdapters();
-    const { succeeded } = await runAdapterSetups(adapters);
-    printSummary(succeeded);
+    try {
+      const { succeeded } = await runAdapterSetups(adapters, (adapter) =>
+        callAdapterSetup(adapter, masterKey)
+      );
+      printSummary(succeeded);
+    } finally {
+      masterKey.fill(0);
+    }
   } catch (err) {
     console.error(`\n  Error during setup: ${err instanceof Error ? err.message : String(err)}`);
     console.error("  Run 'usrcp setup' again to retry.");
     process.exit(1);
   }
+}
+
+/**
+ * Adapter names whose setup wizards encrypt config secrets at rest
+ * under the master key. The standalone `usrcp setup --adapter=<name>`
+ * path only acquires the master key for these adapters so it doesn't
+ * regress simpler wizards (terminal / discord / slack / telegram /
+ * etc.) that don't touch encrypted config.
+ *
+ * Adapters added here MUST accept `{ masterKey }` in their runXxxSetup
+ * signature.
+ */
+const ADAPTERS_REQUIRING_MASTER_KEY: ReadonlySet<string> = new Set([
+  "google-calendar",
+  "gmail",
+  "linear",
+]);
+
+/**
+ * Acquire a master key in the --adapter standalone path (no
+ * ensureLedger). Reads USRCP_PASSPHRASE in passphrase mode; otherwise
+ * loads the dev-mode key off disk. Throws if passphrase mode is set
+ * up but no passphrase is available - we can't encrypt config
+ * secrets without it.
+ */
+async function acquireMasterKeyForStandaloneAdapter(): Promise<Buffer> {
+  // Resolve the slug first; initializeMasterKey reads the per-user
+  // keys/ dir, so the slug has to be set before we call it.
+  const slugs = listUserSlugs();
+  if (slugs.length === 1) {
+    setUserSlug(slugs[0]);
+  } else if (slugs.length > 1) {
+    throw new Error(
+      `Multiple users on this machine (${slugs.join(", ")}). Run 'usrcp setup' (no --adapter) to pick one first.`
+    );
+  } else {
+    throw new Error("No ledger found. Run 'usrcp setup' (no --adapter) to initialize one first.");
+  }
+  const inPp = isPassphraseMode();
+  if (!inPp) {
+    return initializeMasterKey();
+  }
+  const passphrase = process.env.USRCP_PASSPHRASE;
+  if (!passphrase) {
+    throw new Error(
+      `Ledger is passphrase-protected but USRCP_PASSPHRASE is not set. Re-run with: USRCP_PASSPHRASE="<your passphrase>" usrcp setup --adapter=...`
+    );
+  }
+  return initializeMasterKey(passphrase);
 }

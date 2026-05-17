@@ -7,7 +7,7 @@ import { LinearClient } from "@linear/sdk";
 import {
   getConfigPath,
   writeLinearConfig,
-  readPartialConfig,
+  readPartialDecryptedConfig,
   type LinearConfig,
 } from "./config.js";
 
@@ -84,7 +84,16 @@ async function validateApiKey(apiKey: string): Promise<{ ok: true; viewer: { nam
   }
 }
 
-export async function runLinearSetup(): Promise<LinearConfig> {
+export async function runLinearSetup(
+  opts: { masterKey?: Buffer } = {}
+): Promise<LinearConfig> {
+  if (!opts.masterKey) {
+    console.error(
+      "usrcp-linear setup: master key missing. Run via `usrcp setup --adapter=linear` so the wizard can encrypt your API key at rest."
+    );
+    process.exit(1);
+  }
+  const masterKey = opts.masterKey;
   if (!process.stdin.isTTY) {
     const p = getConfigPath();
     console.error(
@@ -94,7 +103,10 @@ export async function runLinearSetup(): Promise<LinearConfig> {
     process.exit(1);
   }
 
-  const existing = readPartialConfig();
+  // Decrypted defaults so "Enter to keep existing key" actually uses
+  // the plaintext API key the user originally pasted, not the
+  // enc:<base64> envelope that lives on disk.
+  const existing = readPartialDecryptedConfig(masterKey);
 
   process.stderr.write("\n");
   process.stderr.write("  ┌─ Linear adapter setup ─────────────────────────────────────┐\n");
@@ -234,7 +246,7 @@ export async function runLinearSetup(): Promise<LinearConfig> {
     // cursor on a fresh setup would silently miss recent activity if the
     // user had deleted and recreated config.
   };
-  writeLinearConfig(cfg);
+  writeLinearConfig(cfg, masterKey);
 
   process.stderr.write(`  ✓ Linear adapter configured. Saved to ${getConfigPath()} (mode 0600)\n\n`);
   process.stderr.write("  What's next:\n");

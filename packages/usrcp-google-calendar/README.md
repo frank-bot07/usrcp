@@ -91,12 +91,16 @@ Stored at `~/.usrcp/google-calendar-config.json` (mode 0600):
 
 | Field | Type | Notes |
 |---|---|---|
-| `oauth_client_id` | string | From step 1. |
-| `oauth_client_secret` | string | From step 1. Plaintext on disk; treat like `~/.ssh/id_rsa`. |
-| `refresh_token` | string | From step 2. Same posture. |
+| `oauth_client_id` | string | From step 1. Plaintext (not sensitive). |
+| `oauth_client_secret` | string | Encrypted at rest as `enc:<base64>` under the USRCP global key (HKDF-derived from the master key). |
+| `refresh_token` | string | Encrypted at rest as `enc:<base64>` under the USRCP global key. Grants long-lived Calendar read access; the master-key wrap means an attacker who reads disk without unlocking the passphrase cannot use it. |
 | `domain` | string | USRCP domain to write events under. |
 | `poll_interval_s` | number | Seconds; 60-3600. Default 300 (5 min). |
 | `last_synced_at` | string | ISO; managed by the poller. |
+
+Pre-#54 configs with plaintext secrets are still readable; the first
+save (e.g. when the poller advances the cursor) auto-migrates them
+into the encrypted envelope.
 
 ## What's out of scope (v0)
 
