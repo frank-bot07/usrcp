@@ -116,6 +116,37 @@ describe("happy path", () => {
   });
 });
 
+describe("idempotency key length", () => {
+  it("handles event IDs longer than the ledger's 100-char idempotency limit", () => {
+    // Google Calendar event IDs can be up to 1024 chars for imported
+    // events. The capture function must hash the id so the resulting
+    // idempotency key stays under the ledger's 100-char cap.
+    const longId = "a".repeat(500);
+    const ev = mkEvent({ id: longId });
+    const result = captureCalendarActivity(ledger, ev, baseConfig, NOW);
+    expect(result.captured).toBe(true);
+
+    // Re-running with the same long id must dedupe via the SAME hashed key.
+    const second = captureCalendarActivity(ledger, ev, baseConfig, NOW);
+    expect(second.captured).toBe(true);
+    if (!second.captured) throw new Error("unreachable");
+    expect(second.duplicate).toBe(true);
+  });
+
+  it("produces distinct idempotency keys for different event IDs", () => {
+    const a = mkEvent({ id: "event-a" });
+    const b = mkEvent({ id: "event-b" });
+    const ra = captureCalendarActivity(ledger, a, baseConfig, NOW);
+    const rb = captureCalendarActivity(ledger, b, baseConfig, NOW);
+    expect(ra.captured).toBe(true);
+    expect(rb.captured).toBe(true);
+    if (!ra.captured || !rb.captured) throw new Error("unreachable");
+    expect(ra.duplicate).toBe(false);
+    expect(rb.duplicate).toBe(false);
+    expect(ra.event_id).not.toBe(rb.event_id);
+  });
+});
+
 describe("filter: future_event", () => {
   it("refuses to capture an event whose end is in the future (defense in depth)", () => {
     const ev = mkEvent({

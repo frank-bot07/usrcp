@@ -109,8 +109,14 @@ async function callAdapterSetup(adapterName: string): Promise<void> {
   // Dynamic import of the compiled JS (adapter packages are ESM-compatible)
   const mod = await import(setupPath) as Record<string, unknown>;
 
-  // Convention: runDiscordSetup, runTelegramSetup, etc.
-  const fnName = `run${adapterName.charAt(0).toUpperCase()}${adapterName.slice(1)}Setup`;
+  // Convention: runDiscordSetup, runTelegramSetup, runGoogleCalendarSetup
+  // (camel-case across hyphens so hyphenated adapter names like
+  // "google-calendar" map to a valid JS identifier).
+  const camel = adapterName
+    .split("-")
+    .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+    .join("");
+  const fnName = `run${camel}Setup`;
   const fn = mod[fnName] as ((...args: unknown[]) => Promise<unknown>) | undefined;
   if (typeof fn !== "function") {
     throw new Error(

@@ -3,10 +3,25 @@
  * (not a googleapis Calendar client) so it's trivial to test without
  * mocking the SDK. The poller in index.ts is responsible for fetching
  * + normalising events into CalendarActivity values before handing
- * them off here. Idempotency keys use a 'gcal:event:*' namespace.
+ * them off here. Idempotency keys hash the event id under a
+ * 'gcal:event:*' namespace to stay within the ledger's 100-character
+ * idempotency_key limit (Google event IDs are documented up to 1024
+ * chars for imported events).
  */
 
+import * as crypto from "node:crypto";
 import type { GoogleCalendarConfig } from "./config.js";
+
+/**
+ * 16-byte SHA-256 prefix of the event id, hex-encoded. 32 chars +
+ * the 11-char `gcal:event:` prefix = 43 chars total, well under the
+ * ledger's 100-char idempotency-key cap. 128 bits is comfortably
+ * collision-resistant against any single user's calendar history.
+ */
+function eventIdempotencyKey(eventId: string): string {
+  const digest = crypto.createHash("sha256").update(eventId).digest("hex");
+  return `gcal:event:${digest.slice(0, 32)}`;
+}
 
 export interface CaptureLedger {
   appendEvent(
@@ -110,7 +125,7 @@ export function captureCalendarActivity(
       channel_id: activity.id,
     },
     "google-calendar",
-    `gcal:event:${activity.id}`,
+    eventIdempotencyKey(activity.id),
     "google-calendar-poller"
   );
   return {
