@@ -44,16 +44,30 @@ export interface GitHubConfig {
    * `closed:>{last_closed_at} is:unmerged`. Added in v1.1.
    */
   last_closed_at?: string;
+  /**
+   * Cursor for `issue_opened` events. Query uses
+   * `created:>{last_issue_opened_at} type:issue`. Added in v1.2.
+   */
+  last_issue_opened_at?: string;
+  /**
+   * Cursor for `issue_commented` events. Query uses
+   * `commenter:X updated:>{last_issue_commented_at}` to find
+   * candidate issues/PRs, then `listComments(since=cursor)` per
+   * candidate filtered by author. Added in v1.2.
+   */
+  last_issue_commented_at?: string;
 }
 
 /**
- * Field names of the three cursors, kept centralized so the save /
+ * Field names of the five cursors, kept centralized so the save /
  * flush plumbing doesn't drift from the GitHubConfig shape.
  */
 export type GitHubCursorField =
   | "last_synced_at"
   | "last_merged_at"
-  | "last_closed_at";
+  | "last_closed_at"
+  | "last_issue_opened_at"
+  | "last_issue_commented_at";
 
 const CONFIG_FILENAME = "github-config.json";
 

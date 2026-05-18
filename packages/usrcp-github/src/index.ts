@@ -33,6 +33,8 @@ import {
 import {
   captureGitHubActivity,
   type CaptureLedger,
+  type IssueCommentActivity,
+  type IssueOpenedActivity,
   type PullRequestActivity,
   type PullRequestStateChangeActivity,
 } from "./capture.js";
@@ -66,20 +68,19 @@ interface CursorState {
   opened: string;
   merged: string;
   closed: string;
+  issue_opened: string;
+  issue_commented: string;
 }
 
 export interface PollTickResult {
   opened: { captured: number; skipped: number; newCursor: string };
   merged: { captured: number; skipped: number; newCursor: string };
   closed: { captured: number; skipped: number; newCursor: string };
+  issue_opened: { captured: number; skipped: number; newCursor: string };
+  issue_commented: { captured: number; skipped: number; newCursor: string };
 }
 
-/**
- * Octokit search result items are typed loosely; pulling out the
- * fields we need into a narrower shape makes the per-query mapping
- * trivial and gives us one place to handle missing data.
- */
-function toBaseFields(item: any): {
+interface BaseFields {
   node_id: string;
   number: number;
   owner: string;
@@ -91,8 +92,16 @@ function toBaseFields(item: any): {
   created_at: string;
   updated_at: string;
   org: string | null;
-} | null {
-  if (!item.pull_request) return null;
+}
+
+/**
+ * Pull common fields out of an Octokit search result. The
+ * `requirePr` flag distinguishes the PR-only queries (where the
+ * search returns issues+PRs and we filter out pure issues) from the
+ * issue-only queries (where we accept both pure issues and PRs).
+ */
+function toBaseFields(item: any, requirePr: boolean): BaseFields | null {
+  if (requirePr && !item.pull_request) return null;
   const parsed = parseRepoUrl(item.repository_url);
   if (!parsed) return null;
   if (!item.user) return null;
@@ -143,7 +152,7 @@ async function pollOpened(
   const items = await runQuery(octokit, q, "created");
 
   for (const item of items) {
-    const base = toBaseFields(item);
+    const base = toBaseFields(item, /*requirePr=*/ true);
     if (!base) continue;
     const activity: PullRequestActivity = {
       type: "pr_opened",
@@ -186,7 +195,7 @@ async function pollTerminal(
   const items = await runQuery(octokit, q, "updated");
 
   for (const item of items) {
-    const base = toBaseFields(item);
+    const base = toBaseFields(item, /*requirePr=*/ true);
     if (!base) continue;
     // GitHub returns `merged_at` only for actually-merged PRs; for
     // closed-without-merge the cursor field is `closed_at`. Either
@@ -217,21 +226,158 @@ async function pollTerminal(
   return { captured, skipped, newCursor };
 }
 
+async function pollIssuesOpened(
+  ledger: CaptureLedger,
+  octokit: Octokit,
+  config: GitHubConfig,
+  sinceIso: string,
+): Promise<{ captured: number; skipped: number; newCursor: string }> {
+  let captured = 0;
+  let skipped = 0;
+  let newCursor = sinceIso;
+
+  const q = [
+    `author:${config.github_login}`,
+    "type:issue",
+    `created:>${sinceIso}`,
+    ...orgQualifiers(config),
+  ].join(" ");
+  const items = await runQuery(octokit, q, "created");
+
+  for (const item of items) {
+    const base = toBaseFields(item, /*requirePr=*/ false);
+    if (!base) continue;
+    const activity: IssueOpenedActivity = {
+      type: "issue_opened",
+      ...base,
+      state: item.state === "closed" ? "closed" : "open",
+    };
+    const outcome = captureGitHubActivity(ledger, activity, config);
+    if (outcome.captured) {
+      captured++;
+      if (activity.created_at > newCursor) newCursor = activity.created_at;
+    } else {
+      skipped++;
+    }
+  }
+  return { captured, skipped, newCursor };
+}
+
+/**
+ * Comments are two-stage: search returns issues/PRs the user has
+ * touched since the cursor (`commenter:X updated:>{cursor}`), then we
+ * fetch the comments of each candidate via the REST issue-comments
+ * endpoint and filter to ours since the same cursor.
+ *
+ * Search returns issues sorted by updated_at desc, which is fine -
+ * we don't need order for correctness because idempotency dedupes.
+ *
+ * Cursor advance is the latest emitted comment's `created_at`. A
+ * candidate issue with no qualifying comments doesn't advance the
+ * cursor (idempotency keeps the re-query cheap).
+ */
+async function pollIssueComments(
+  ledger: CaptureLedger,
+  octokit: Octokit,
+  config: GitHubConfig,
+  sinceIso: string,
+): Promise<{ captured: number; skipped: number; newCursor: string }> {
+  let captured = 0;
+  let skipped = 0;
+  let newCursor = sinceIso;
+
+  const q = [
+    `commenter:${config.github_login}`,
+    `updated:>${sinceIso}`,
+    ...orgQualifiers(config),
+  ].join(" ");
+  const candidates = await runQuery(octokit, q, "updated");
+
+  // Process candidates sequentially to keep the REST rate-limit
+  // headroom predictable. For most users this loop is short.
+  for (const item of candidates) {
+    const base = toBaseFields(item, /*requirePr=*/ false);
+    if (!base) continue;
+
+    let comments: any[];
+    try {
+      comments = await octokit.paginate(
+        octokit.issues.listComments,
+        {
+          owner: base.owner,
+          repo: base.repo,
+          issue_number: base.number,
+          since: sinceIso,
+          per_page: 100,
+        },
+      );
+    } catch (err) {
+      // 404 = repo went private / deleted; 410 = repo archived;
+      // anything else we just skip this candidate so the rest can
+      // still process. The cursor stays put for this issue.
+      console.error(
+        `[usrcp-github] listComments(${base.owner}/${base.repo}#${base.number}) failed: ` +
+        (err instanceof Error ? err.message : String(err)),
+      );
+      continue;
+    }
+
+    for (const c of comments) {
+      if (!c.user || c.user.login !== config.github_login) continue;
+      if (typeof c.id !== "number") continue;
+      if (typeof c.body !== "string") continue;
+      // GitHub's `since` is inclusive on second-precision; a comment
+      // exactly at the cursor would re-arrive. Filter strictly greater
+      // so the cursor advances forward; idempotency would dedupe
+      // anyway but this keeps the search results clean.
+      if (!(c.created_at > sinceIso)) continue;
+
+      const activity: IssueCommentActivity = {
+        type: "issue_commented",
+        comment_id: c.id,
+        node_id: c.node_id,
+        owner: base.owner,
+        repo: base.repo,
+        issue_number: base.number,
+        issue_title: base.title,
+        is_pr_parent: !!item.pull_request,
+        url: c.html_url,
+        issue_url: base.url,
+        body: c.body,
+        author_login: c.user.login,
+        created_at: c.created_at,
+        updated_at: c.updated_at,
+        org: base.org,
+      };
+      const outcome = captureGitHubActivity(ledger, activity, config);
+      if (outcome.captured) {
+        captured++;
+        if (c.created_at > newCursor) newCursor = c.created_at;
+      } else {
+        skipped++;
+      }
+    }
+  }
+  return { captured, skipped, newCursor };
+}
+
 export async function pollOnce(
   ledger: CaptureLedger,
   octokit: Octokit,
   config: GitHubConfig,
   cursors: CursorState,
 ): Promise<PollTickResult> {
-  // Three independent queries run in parallel - each has its own
+  // Five independent queries run in parallel - each has its own
   // server-side cursor filter so they don't waste each other's
   // pagination budget.
-  const [opened, merged, closed] = await Promise.all([
+  const [opened, merged, closed, issue_opened, issue_commented] = await Promise.all([
     pollOpened(ledger, octokit, config, cursors.opened),
     pollTerminal(ledger, octokit, config, "pr_merged", cursors.merged),
     pollTerminal(ledger, octokit, config, "pr_closed", cursors.closed),
+    pollIssuesOpened(ledger, octokit, config, cursors.issue_opened),
+    pollIssueComments(ledger, octokit, config, cursors.issue_commented),
   ]);
-  return { opened, merged, closed };
+  return { opened, merged, closed, issue_opened, issue_commented };
 }
 
 async function main() {
@@ -269,9 +415,12 @@ async function main() {
     opened: config.last_synced_at ?? firstRunIso,
     merged: config.last_merged_at ?? firstRunIso,
     closed: config.last_closed_at ?? firstRunIso,
+    issue_opened: config.last_issue_opened_at ?? firstRunIso,
+    issue_commented: config.last_issue_commented_at ?? firstRunIso,
   };
   console.error(
-    `[usrcp-github] starting cursors: opened=${cursors.opened} merged=${cursors.merged} closed=${cursors.closed}`,
+    `[usrcp-github] starting cursors: opened=${cursors.opened} merged=${cursors.merged} closed=${cursors.closed} ` +
+    `issue_opened=${cursors.issue_opened} issue_commented=${cursors.issue_commented}`,
   );
 
   let stopping = false;
@@ -282,7 +431,8 @@ async function main() {
     try {
       const result = await pollOnce(ledger, octokit, config, cursors);
       const advances: Partial<Record<
-        "last_synced_at" | "last_merged_at" | "last_closed_at",
+        "last_synced_at" | "last_merged_at" | "last_closed_at" |
+        "last_issue_opened_at" | "last_issue_commented_at",
         string
       >> = {};
       if (result.opened.newCursor !== cursors.opened) {
@@ -297,17 +447,31 @@ async function main() {
         cursors.closed = result.closed.newCursor;
         advances.last_closed_at = cursors.closed;
       }
+      if (result.issue_opened.newCursor !== cursors.issue_opened) {
+        cursors.issue_opened = result.issue_opened.newCursor;
+        advances.last_issue_opened_at = cursors.issue_opened;
+      }
+      if (result.issue_commented.newCursor !== cursors.issue_commented) {
+        cursors.issue_commented = result.issue_commented.newCursor;
+        advances.last_issue_commented_at = cursors.issue_commented;
+      }
       if (Object.keys(advances).length > 0) {
         saveCursors(advances, masterKey);
       }
-      const totalCaptured = result.opened.captured + result.merged.captured + result.closed.captured;
-      const totalSkipped = result.opened.skipped + result.merged.skipped + result.closed.skipped;
+      const totalCaptured =
+        result.opened.captured + result.merged.captured + result.closed.captured +
+        result.issue_opened.captured + result.issue_commented.captured;
+      const totalSkipped =
+        result.opened.skipped + result.merged.skipped + result.closed.skipped +
+        result.issue_opened.skipped + result.issue_commented.skipped;
       if (totalCaptured > 0 || totalSkipped > 0) {
         console.error(
-          `[usrcp-github] tick: opened={c=${result.opened.captured},s=${result.opened.skipped}} ` +
+          `[usrcp-github] tick: ` +
+          `opened={c=${result.opened.captured},s=${result.opened.skipped}} ` +
           `merged={c=${result.merged.captured},s=${result.merged.skipped}} ` +
           `closed={c=${result.closed.captured},s=${result.closed.skipped}} ` +
-          `cursors=[o=${cursors.opened} m=${cursors.merged} c=${cursors.closed}]`,
+          `issue_opened={c=${result.issue_opened.captured},s=${result.issue_opened.skipped}} ` +
+          `issue_commented={c=${result.issue_commented.captured},s=${result.issue_commented.skipped}}`,
         );
       }
     } catch (err) {

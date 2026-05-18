@@ -46,7 +46,9 @@ envelope as private.pem), in addition to file mode `0600`.
   "poll_interval_s": 600,
   "last_synced_at": "2026-05-17T12:00:00.000Z",
   "last_merged_at": "2026-05-17T14:00:00.000Z",
-  "last_closed_at": "2026-05-17T13:00:00.000Z"
+  "last_closed_at": "2026-05-17T13:00:00.000Z",
+  "last_issue_opened_at": "2026-05-17T15:00:00.000Z",
+  "last_issue_commented_at": "2026-05-17T16:00:00.000Z"
 }
 ```
 
@@ -57,42 +59,54 @@ clauses so out-of-scope orgs' PRs are never fetched.
 
 ### Cursors
 
-The adapter runs three independent queries per tick, each with its own cursor:
+The adapter runs five independent queries per tick, each with its own cursor:
 
-| Cursor field      | Query qualifier                                | Event fired |
-|-------------------|------------------------------------------------|-------------|
-| `last_synced_at`  | `created:>{cursor}`                            | `pr_opened` |
-| `last_merged_at`  | `is:merged merged:>{cursor}`                   | `pr_merged` |
-| `last_closed_at`  | `is:closed is:unmerged closed:>{cursor}`       | `pr_closed` |
+| Cursor field                | Query qualifier                                   | Event fired         |
+|-----------------------------|---------------------------------------------------|---------------------|
+| `last_synced_at`            | `author:X type:pr created:>{cursor}`              | `pr_opened`         |
+| `last_merged_at`            | `author:X type:pr is:merged merged:>{cursor}`     | `pr_merged`         |
+| `last_closed_at`            | `author:X type:pr is:closed is:unmerged closed:>{cursor}` | `pr_closed` |
+| `last_issue_opened_at`      | `author:X type:issue created:>{cursor}`           | `issue_opened`      |
+| `last_issue_commented_at`   | `commenter:X updated:>{cursor}` + `listComments`  | `issue_commented`   |
 
-Each PR captures **at most one** terminal event because `is:merged` and `is:closed is:unmerged` are mutually exclusive in the GitHub search index. A merged PR can never un-merge, so `pr_merged` is genuinely terminal. A PR closed without merge that's later reopened and merged will fire both `pr_closed` and `pr_merged` (different idempotency keys).
+The `issue_commented` flow is two-stage: search finds candidate issues/PRs the user has touched since the cursor, then we fetch each candidate's comments via `GET /repos/{owner}/{repo}/issues/{n}/comments?since={cursor}` and filter to comments where `user.login === github_login` and `created_at > {cursor}`. Idempotency keys (`github:issue-comment:<comment_id>`) ensure exactly-once even if the same candidate appears in multiple ticks.
+
+Each PR captures **at most one** terminal event because `is:merged` and `is:closed is:unmerged` are mutually exclusive in the search index. A merged PR can never un-merge, so `pr_merged` is genuinely terminal. A PR closed without merge that's later reopened and merged fires both `pr_closed` and `pr_merged` (different idempotency keys).
 
 ## What lands in the ledger
 
-Each PR contributes up to two events: `pr_opened` (on first observation) and a terminal state event (`pr_merged` or `pr_closed`). All events for the same PR share `channel_id = <owner>/<repo>#<number>`, so `getRecentEventsByChannel` returns the full lifecycle in one shot.
+Each PR contributes up to two events (`pr_opened` + one terminal state event). Each issue contributes one `issue_opened`. Comments add one `issue_commented` per author-matching comment. All events on the same issue/PR share `channel_id = <owner>/<repo>#<number>` (GitHub uses one numbering namespace per repo), so `getRecentEventsByChannel` returns the full lifecycle - PR open, comments, terminal state - in one shot.
 
 Per-event detail:
 
 - **`pr_opened`** - tags `["github", "pull-request", "<owner>/<repo>"]`, idempotency `github:pr:<owner>/<repo>#<number>`. Detail includes title, body, url, state, merged, created_at, updated_at.
-- **`pr_merged`** - tags `[..., "merged"]`, idempotency `github:pr-merged:<owner>/<repo>#<number>`. Detail includes `state_at` (the merge timestamp).
-- **`pr_closed`** - tags `[..., "closed"]`, idempotency `github:pr-closed:<owner>/<repo>#<number>`. Detail includes `state_at` (the close timestamp).
+- **`pr_merged`** / **`pr_closed`** - tags `[..., "merged"]` or `[..., "closed"]`, idempotency `github:pr-{merged,closed}:<owner>/<repo>#<number>`. Detail includes `state_at` (the merge/close timestamp).
+- **`issue_opened`** - tags `["github", "issue", "<owner>/<repo>"]`, idempotency `github:issue:<owner>/<repo>#<number>`. Detail includes title, body, url, state, created_at, updated_at.
+- **`issue_commented`** - tags `["github", "comment", "<pull-request|issue>", "<owner>/<repo>"]`, idempotency `github:issue-comment:<comment_id>`. `thread_id` = comment_id. Detail includes the full comment body, `is_pr_parent` flag, comment URL, parent issue URL, and timestamps.
 
-`external_user_id` is always the PR author login (equal to `github_login`). Title fields are encrypted under the domain key; everything else in `detail` goes through the global-key envelope.
+`external_user_id` is always the actor's login (equal to `github_login` since we filter to your activity). Title and body fields are encrypted under the domain key; everything else in `detail` goes through the global-key envelope.
 
 ## Rate limits
 
 GitHub Search API: 30 requests/minute for authenticated users.
-Default poll interval is 600s with three paginated queries per
-tick (opened/merged/closed), so the rate-limit cost is still
-negligible. Each query caps at 1000 results - if you have more
-than 1000 PRs in the time window since the cursor, overflow is
+Default poll interval is 600s with four paginated search queries
+per tick (opened/merged/closed/issue_opened/commented-candidates),
+so the rate-limit cost is still negligible. The comments stage
+then issues one `GET /repos/{owner}/{repo}/issues/{n}/comments`
+per candidate from the `commenter:` search; those count against
+the much-higher 5000/hr core REST cap (~50/min). For most users
+this hovers in the single digits per tick.
+
+Each search query caps at 1000 results - if you have more than
+1000 events in the time window since a cursor, overflow is
 permanently dropped. In practice this only matters on first run;
 the daemon's first-run lookback is 5 minutes.
 
 ## Out of scope (current)
 
-- Issues, discussions, issue comments.
-- Reviews you submit on others' PRs.
+- Discussions (separate API).
+- Reviews you submit on others' PRs (inline review comments
+  use a different endpoint; deferred to v1.3).
 - Commits authored by you (separate REST endpoint).
 - `pr_reopened` events. The search index doesn't expose "was
   closed, is now open" as a query, so reopens would require

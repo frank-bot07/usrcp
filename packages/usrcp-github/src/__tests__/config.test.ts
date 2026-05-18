@@ -178,6 +178,27 @@ describe("saveLastSyncedAt / flushLastSyncedAt (v1 deprecated aliases)", () => {
 });
 
 describe("saveCursors / flushCursors (v1.1)", () => {
+  it("writes all five cursors when all advance in one tick", () => {
+    writeGitHubConfig(GOOD_CONFIG, masterKey);
+    saveCursors(
+      {
+        last_synced_at: "2026-05-17T12:00:00.000Z",
+        last_merged_at: "2026-05-17T13:00:00.000Z",
+        last_closed_at: "2026-05-17T14:00:00.000Z",
+        last_issue_opened_at: "2026-05-17T15:00:00.000Z",
+        last_issue_commented_at: "2026-05-17T16:00:00.000Z",
+      },
+      masterKey,
+    );
+    flushCursors();
+    const reloaded = loadConfig(masterKey);
+    expect(reloaded.last_synced_at).toBe("2026-05-17T12:00:00.000Z");
+    expect(reloaded.last_merged_at).toBe("2026-05-17T13:00:00.000Z");
+    expect(reloaded.last_closed_at).toBe("2026-05-17T14:00:00.000Z");
+    expect(reloaded.last_issue_opened_at).toBe("2026-05-17T15:00:00.000Z");
+    expect(reloaded.last_issue_commented_at).toBe("2026-05-17T16:00:00.000Z");
+  });
+
   it("writes all three cursors when all three advance in one tick", () => {
     writeGitHubConfig(GOOD_CONFIG, masterKey);
     saveCursors(
