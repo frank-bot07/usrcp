@@ -122,6 +122,14 @@ export class Ledger {
       this.rebuildBlindIndex();
     }
 
+    // Data migrations that need this.masterKey (e.g. blind-index
+    // rebuild for older DBs that have events but no blind_index
+    // rows). Split out of migrate() in PR #72 because migrate() now
+    // runs BEFORE initializeMasterKey to make rotation_state.
+    // pending_files_json available for the pre-init recovery
+    // replay. (Codex round-2 P1.)
+    this.migrateData();
+
     // Adapter-config rotation recovery: if a previous rotateKey was
     // killed AFTER commitKeyRotation but BEFORE all adapter configs
     // were re-encrypted, the checkpoint at <userDir>/keys/adapter-rotation.json
@@ -559,7 +567,21 @@ export class Ledger {
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS idx_events_channel_hash ON timeline_events(channel_hash) WHERE channel_hash IS NOT NULL"
     );
+  }
 
+  /**
+   * Data migrations that REQUIRE this.masterKey. Split out of
+   * migrate() in PR #72 so schema-only setup can run before
+   * initializeMasterKey (the pre-init rotation-recovery replay
+   * depends on rotation_state.pending_files_json existing).
+   * Codex round-2 P1: rebuildBlindIndex() decrypts event fields and
+   * derives blind-index keys from this.masterKey, so calling it
+   * from inside migrate() before initializeMasterKey assigned
+   * this.masterKey would crash or produce bad crypto state. This
+   * method runs AFTER initializeMasterKey + the post-init recovery
+   * block.
+   */
+  private migrateData(): void {
     // Rebuild blind index if empty but events exist
     const blindCount = this.db
       .prepare("SELECT COUNT(*) as c FROM blind_index")

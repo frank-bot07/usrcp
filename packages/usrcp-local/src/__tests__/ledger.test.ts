@@ -609,6 +609,65 @@ describe("Key Rotation", () => {
     }
   });
 
+  it("reopens a ledger with events but an empty blind_index (Codex P1 on PR #72 round-2)", async () => {
+    // Codex round-2 P1 surfaced this: PR #72 moved migrate() ahead
+    // of initializeMasterKey so rotation_state.pending_files_json
+    // is queryable for the pre-init recovery probe. But migrate()
+    // historically also contained the blind-index rebuild for
+    // legacy DBs that have events but no blind_index rows, and
+    // that rebuild decrypts event fields via this.masterKey -
+    // which is not yet assigned at migrate() time. Moving
+    // migrate() up would have called rebuildBlindIndex() against
+    // an undefined masterKey and crashed.
+    //
+    // Fix: split the schema migration from the data-rebuild step
+    // (migrateData), and call migrateData AFTER initializeMasterKey
+    // + post-init recovery installs the final masterKey.
+    const origHome = process.env.HOME;
+    const isoHome = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-blind-rebuild-"));
+    process.env.HOME = isoHome;
+    try {
+      const isoDbPath = path.join(isoHome, "ledger.db");
+      // Step 1: create a ledger and add events (this populates
+      // blind_index via the normal append path).
+      const seed = new Ledger(isoDbPath, "test-passphrase");
+      seed.appendEvent(
+        {
+          domain: "test",
+          summary: "needs blind-index entries",
+          intent: "exercise the rebuild path",
+          outcome: "success",
+        },
+        "test"
+      );
+      seed.close();
+
+      // Step 2: open the DB directly and wipe blind_index, simulating
+      // a legacy ledger that has events but no blind tokens.
+      const Database = (await import("better-sqlite3")).default;
+      const raw = new Database(isoDbPath);
+      raw.prepare("DELETE FROM blind_index").run();
+      raw.close();
+
+      // Step 3: reopen via the Ledger constructor. The new ordering
+      // must NOT call rebuildBlindIndex before initializeMasterKey
+      // sets this.masterKey. After this constructor returns, the
+      // blind_index should be repopulated.
+      const reopened = new Ledger(isoDbPath, "test-passphrase");
+      try {
+        const blindCount = (reopened as any).db
+          .prepare("SELECT COUNT(*) as c FROM blind_index")
+          .get() as any;
+        expect(blindCount.c).toBeGreaterThan(0);
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      process.env.HOME = origHome;
+      try { fs.rmSync(isoHome, { recursive: true, force: true }); } catch {}
+    }
+  });
+
   it("invokes onKeysReady with both keys after commit, before in-memory swap", () => {
     let observed: { oldKey: Buffer; newKey: Buffer; oldSameAsCurrent: boolean } | null = null;
 
