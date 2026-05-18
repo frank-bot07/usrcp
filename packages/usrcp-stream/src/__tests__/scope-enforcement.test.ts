@@ -656,3 +656,156 @@ describe("stream_prewarm respects readScopes (PR #61 round-4 fix)", () => {
     expect(res.source_surfaces).toEqual(["cursor"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Codex PR #61 round-5: global-read tools (stream_active_surface,
+// stream_status) previously fell through scope checks entirely. A
+// read-scoped agent could learn the most-recent surface name and
+// ledger-wide counts even when those reference out-of-scope surfaces.
+// ---------------------------------------------------------------------------
+
+describe("global-read tools respect readScopes (PR #61 round-5 fix)", () => {
+  it("stream_active_surface returns null when the most-recent surface is out of read scope", async () => {
+    // Seed events on telegram (newest) and discord (older).
+    const seed = new McpServer({ name: "seed", version: "0" });
+    const seedReg = registerStreamTools(seed, {
+      masterKey,
+      userDir: tmpDir,
+      embedder: new FakeEmbedder(),
+    });
+    await callTool(seed, "stream_capture", {
+      surface: "discord",
+      channel_ref: { g: "g1" },
+      side: "outbound",
+      author_ref: { id: "u1" },
+      content: "older",
+      content_kind: "text",
+      ts_ms: Date.now() - 60_000,
+    });
+    await callTool(seed, "stream_capture", {
+      surface: "telegram",
+      channel_ref: { c: "c1" },
+      side: "outbound",
+      author_ref: { id: "u1" },
+      content: "newer",
+      content_kind: "text",
+      ts_ms: Date.now(),
+    });
+    seedReg.shutdown();
+
+    // Read scope = discord only. Most-recent activity is telegram.
+    // The active-surface tool MUST NOT leak that telegram is most-active.
+    server = new McpServer({ name: "t", version: "0.0.0" });
+    registration = registerStreamTools(server, {
+      masterKey,
+      userDir: tmpDir,
+      embedder: new FakeEmbedder(),
+      serveOptions: { readScopes: ["discord"], agentId: "a1" },
+    });
+    const res = parseResponse(await callTool(server, "stream_active_surface", {}));
+    expect(res.status).toBe("ok");
+    // The discord activity is within the window (60s old), so the
+    // tool returns the most-recent IN-SCOPE surface.
+    expect(res.active).not.toBeNull();
+    expect(res.active.surface).toBe("discord");
+  });
+
+  it("stream_active_surface returns null when there's no in-scope activity at all", async () => {
+    // Seed only out-of-scope events.
+    const seed = new McpServer({ name: "seed", version: "0" });
+    const seedReg = registerStreamTools(seed, {
+      masterKey,
+      userDir: tmpDir,
+      embedder: new FakeEmbedder(),
+    });
+    await callTool(seed, "stream_capture", {
+      surface: "telegram",
+      channel_ref: { c: "c1" },
+      side: "outbound",
+      author_ref: { id: "u1" },
+      content: "out of scope",
+      content_kind: "text",
+      ts_ms: Date.now(),
+    });
+    seedReg.shutdown();
+
+    server = new McpServer({ name: "t", version: "0.0.0" });
+    registration = registerStreamTools(server, {
+      masterKey,
+      userDir: tmpDir,
+      embedder: new FakeEmbedder(),
+      serveOptions: { readScopes: ["discord"], agentId: "a1" },
+    });
+    const res = parseResponse(await callTool(server, "stream_active_surface", {}));
+    expect(res.status).toBe("ok");
+    expect(res.active).toBeNull();
+  });
+
+  it("stream_status returns scope-filtered counts and omits db_path when readScopes is restrictive", async () => {
+    // Seed three events: 2 in discord, 1 in telegram.
+    const seed = new McpServer({ name: "seed", version: "0" });
+    const seedReg = registerStreamTools(seed, {
+      masterKey,
+      userDir: tmpDir,
+      embedder: new FakeEmbedder(),
+    });
+    await callTool(seed, "stream_capture", {
+      surface: "discord",
+      channel_ref: { g: "g1" },
+      side: "outbound",
+      author_ref: { id: "u1" },
+      content: "d1",
+      content_kind: "text",
+      ts_ms: Date.now() - 60_000,
+    });
+    await callTool(seed, "stream_capture", {
+      surface: "discord",
+      channel_ref: { g: "g1" },
+      side: "outbound",
+      author_ref: { id: "u1" },
+      content: "d2",
+      content_kind: "text",
+      ts_ms: Date.now() - 30_000,
+    });
+    await callTool(seed, "stream_capture", {
+      surface: "telegram",
+      channel_ref: { c: "c1" },
+      side: "outbound",
+      author_ref: { id: "u1" },
+      content: "t1",
+      content_kind: "text",
+      ts_ms: Date.now(),
+    });
+    seedReg.shutdown();
+
+    // Read scope = discord. Status MUST show 2 events, not 3, and
+    // MUST NOT include db_path.
+    server = new McpServer({ name: "t", version: "0.0.0" });
+    registration = registerStreamTools(server, {
+      masterKey,
+      userDir: tmpDir,
+      embedder: new FakeEmbedder(),
+      serveOptions: { readScopes: ["discord"], agentId: "a1" },
+    });
+    const res = parseResponse(await callTool(server, "stream_status", {}));
+    expect(res.status).toBe("ok");
+    expect(res.scoped).toBe(true);
+    expect(res.allowed_surfaces).toEqual(["discord"]);
+    expect(res.event_count).toBe(2);
+    expect(res.surface_count).toBe(1);
+    expect(res.db_path).toBeUndefined();
+  });
+
+  it("stream_status without scopes returns ledger-wide totals AND db_path (no regression)", async () => {
+    server = new McpServer({ name: "t", version: "0.0.0" });
+    registration = registerStreamTools(server, {
+      masterKey,
+      userDir: tmpDir,
+      embedder: new FakeEmbedder(),
+    });
+    const res = parseResponse(await callTool(server, "stream_status", {}));
+    expect(res.status).toBe("ok");
+    expect(res.scoped).toBeUndefined();
+    expect(res.db_path).toBeTruthy();
+  });
+});

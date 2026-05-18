@@ -100,17 +100,18 @@ export function registerStreamTools(
     streamCapture(handle, embedder, stitcher, entityResolver),
     streamRecall(handle, embedder, { allowedScopes: readScopes }),
     streamThread(handle, { allowedScopes: readScopes }),
-    streamActiveSurface(handle),
-    // streamPrewarm needs the read allowlist too: the wrapper only
-    // checks target_surface, but the handler intentionally pulls from
-    // OTHER surfaces. Without the explicit cross-surface filter, a
-    // read-scoped agent could call prewarm and receive content from
-    // out-of-scope surfaces (codex round-4 review on PR #61).
+    // global-read tools (stream_active_surface, stream_status) bypass
+    // the wrapper's domain check entirely. Without injecting
+    // readScopes here, a read-scoped agent could call them and learn
+    // metadata about surfaces outside its read allowlist (most-recent
+    // surface name, ledger-wide event/thread counts, db_path). Codex
+    // round-5 review on PR #61 caught the metadata leak.
+    streamActiveSurface(handle, { allowedScopes: readScopes }),
     streamPrewarm(handle, {
       summarizer: options.prewarmSummarizer,
       allowedScopes: readScopes,
     }),
-    streamStatus(handle, embedder),
+    streamStatus(handle, embedder, { allowedScopes: readScopes }),
   ];
 
   // Sync tools register only when a Ledger is wired AND a cloud

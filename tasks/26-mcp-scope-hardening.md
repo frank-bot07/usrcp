@@ -119,18 +119,38 @@ Tests:
 
 Tests: usrcp-stream 116 -> 121.
 
-## Four bypass paths, all now closed
+## Codex round-5 fix (P2, global-read leak)
 
-After four codex rounds, the asymmetric scope work covers every entry point AND every cross-surface read in the chain:
+Round-5 spotted that `global-read` stream tools bypass the wrapper's scope check entirely. `stream_active_surface` would return the most-recent surface name (and its channel_ref) even if it was out of the read allowlist; `stream_status` would return ledger-wide event/thread/surface counts AND the db_path regardless of `readScopes`. A read-scoped agent could call either tool and learn metadata about surfaces it shouldn't see.
 
-| # | Path | Round | Fix |
-|---|---|---|---|
-| 1 | `usrcp serve` -> `registerStreamTools` wrapper | 1 | Extend `StreamServeOptions`, add `resolveStreamScopes`. |
-| 2 | Standalone `createStreamServer()` programmatic | 2 | Forward `opts` verbatim instead of cherry-picking. |
-| 3 | Standalone `usrcp-stream serve` CLI | 3 | Parse the two new CLI flags. |
-| 4 | `stream_prewarm` cross-surface DB query | 4 | Pass `allowedSurfaces` into the SQL filter. |
+Fix:
 
-Each round caught a real bypass; this is the value of multi-round adversarial review.
+- `surface/presence.ts`: `getActiveSurface` accepts an `allowedSurfaces` filter. SQL gains an optional `AND surface IN (...)` clause. Empty allowlist short-circuits to null (no surfaces in scope).
+- `tools/stream-active-surface.ts`: new `allowedScopes` option, plumbs to `getActiveSurface`.
+- `tools/stream-status.ts`: new `allowedScopes` option. When set, all four counts (events, threads, surfaces, embeddings) and `last_capture_ms` are scope-filtered via `surface IN (...)` (threads via the events join; embeddings via `events.embedding_id -> embeddings.id`). The response envelope switches to a scoped shape: `{scoped: true, allowed_surfaces, event_count, thread_count, surface_count, embedding_count, last_capture_ms, embedding_model, embedding_dims, vector_backend}` - parity with `usrcp_status`'s scoped envelope, omits `db_path` and the unscoped totals.
+- `register.ts`: passes `allowedScopes: readScopes` to both tool factories.
+
+4 new regression tests in `scope-enforcement.test.ts`:
+- `stream_active_surface` returns the in-scope most-recent surface even when out-of-scope activity is newer.
+- `stream_active_surface` returns null when no in-scope activity exists.
+- `stream_status` with readScopes shows scope-filtered counts and omits db_path.
+- `stream_status` without scopes preserves the legacy ledger-wide envelope including db_path (no regression).
+
+Tests: usrcp-stream 121 -> 125.
+
+## Five bypass paths, all now closed
+
+After five codex rounds, the asymmetric scope work covers every entry point, every cross-surface read, and every metadata-leak surface in the chain:
+
+| # | Path | Round | Severity | Fix |
+|---|---|---|---|---|
+| 1 | `usrcp serve` -> `registerStreamTools` wrapper | 1 | P1 | Extend `StreamServeOptions`, add `resolveStreamScopes`. |
+| 2 | Standalone `createStreamServer()` programmatic | 2 | P1 | Forward `opts` verbatim instead of cherry-picking. |
+| 3 | Standalone `usrcp-stream serve` CLI | 3 | P1 | Parse the two new CLI flags. |
+| 4 | `stream_prewarm` cross-surface DB query | 4 | P1 | Pass `allowedSurfaces` into the SQL filter. |
+| 5 | `stream_active_surface` + `stream_status` (global-read) | 5 | P2 | Scope-filter counts + active-surface query when `readScopes` is set. |
+
+Each round caught a real bypass on a different code path through the same chain. The asymmetric `--read-scopes` / `--write-scopes` flags now enforce consistently across the entire MCP surface (local + stream, all entry points, all read paths).
 
 ## What this enables (worked examples)
 
