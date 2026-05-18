@@ -233,36 +233,50 @@ describe("runSetup export", () => {
 
 describe("selectAdaptersInteractive", () => {
   it("returns all adapters when user says yes to all", async () => {
-    const { selectAdaptersInteractive, KNOWN_ADAPTERS } = await import("../setup.js");
+    const { selectAdaptersInteractive } = await import("../setup.js");
+    const { getRegisteredAdapters } = await import("../adapters/registry.js");
+    const adapters = getRegisteredAdapters();
     const confirm = vi.fn().mockResolvedValue(true);
-    const chosen = await selectAdaptersInteractive([...KNOWN_ADAPTERS], confirm, () => {});
-    expect(chosen).toEqual(KNOWN_ADAPTERS.map((a) => a.value));
-    expect(confirm).toHaveBeenCalledTimes(KNOWN_ADAPTERS.length);
+    const chosen = await selectAdaptersInteractive(adapters, confirm, () => {});
+    expect(chosen).toEqual(adapters.map((a) => a.value));
+    expect(confirm).toHaveBeenCalledTimes(adapters.length);
   });
 
   it("returns only Y'd adapters in mixed Y/N path", async () => {
-    const { selectAdaptersInteractive, KNOWN_ADAPTERS } = await import("../setup.js");
+    const { selectAdaptersInteractive } = await import("../setup.js");
+    const { getRegisteredAdapters } = await import("../adapters/registry.js");
+    const adapters = getRegisteredAdapters();
     // Answer Y only for discord and slack; N for everything else.
     const wantValues = new Set(["discord", "slack"]);
     const confirm = vi.fn().mockImplementation(async (opts: { message: string }) => {
-      const adapter = KNOWN_ADAPTERS.find((a) => opts.message.includes(a.name));
+      const adapter = adapters.find((a) => opts.message.includes(a.name));
       return !!(adapter && wantValues.has(adapter.value));
     });
-    const chosen = await selectAdaptersInteractive([...KNOWN_ADAPTERS], confirm, () => {});
+    const chosen = await selectAdaptersInteractive(adapters, confirm, () => {});
     expect(chosen).toEqual(["discord", "slack"]);
   });
 
   it("returns empty array when user declines all", async () => {
-    const { selectAdaptersInteractive, KNOWN_ADAPTERS } = await import("../setup.js");
+    const { selectAdaptersInteractive } = await import("../setup.js");
+    const { getRegisteredAdapters } = await import("../adapters/registry.js");
     const confirm = vi.fn().mockResolvedValue(false);
-    const chosen = await selectAdaptersInteractive([...KNOWN_ADAPTERS], confirm, () => {});
+    const chosen = await selectAdaptersInteractive(
+      getRegisteredAdapters(),
+      confirm,
+      () => {},
+    );
     expect(chosen).toEqual([]);
   });
 
   it("each prompt defaults to false (explicit opt-in)", async () => {
-    const { selectAdaptersInteractive, KNOWN_ADAPTERS } = await import("../setup.js");
+    const { selectAdaptersInteractive } = await import("../setup.js");
+    const { getRegisteredAdapters } = await import("../adapters/registry.js");
     const confirm = vi.fn().mockResolvedValue(false);
-    await selectAdaptersInteractive([...KNOWN_ADAPTERS], confirm, () => {});
+    await selectAdaptersInteractive(
+      getRegisteredAdapters(),
+      confirm,
+      () => {},
+    );
     for (const call of confirm.mock.calls) {
       expect(call[0].default).toBe(false);
     }
@@ -357,11 +371,12 @@ describe("runAdapterSetups failure isolation", () => {
 // Terminal adapter as first/recommended in the registry
 // ---------------------------------------------------------------------------
 
-describe("KNOWN_ADAPTERS ordering", () => {
+describe("getRegisteredAdapters ordering", () => {
   it("lists terminal first as the recommended adapter", async () => {
-    const { KNOWN_ADAPTERS } = await import("../setup.js");
-    expect(KNOWN_ADAPTERS[0]?.value).toBe("terminal");
-    expect(KNOWN_ADAPTERS[0]?.blurb.toLowerCase()).toContain("recommended");
+    const { getRegisteredAdapters } = await import("../adapters/registry.js");
+    const adapters = getRegisteredAdapters();
+    expect(adapters[0]?.value).toBe("terminal");
+    expect(adapters[0]?.blurb.toLowerCase()).toContain("recommended");
   });
 });
 
