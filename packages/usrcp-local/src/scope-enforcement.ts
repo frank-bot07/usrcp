@@ -259,6 +259,24 @@ function formatScopeArr(s: string[] | undefined): string {
   return s === undefined ? "*" : s.length === 0 ? "[]" : `[${s.join(",")}]`;
 }
 
+export interface RegisterToolsOptions {
+  /**
+   * When true (the usrcp-local default), an audit-row write
+   * failure throws out of the wrapper before the handler runs,
+   * so a scoped tool call cannot proceed without attribution.
+   *
+   * When false (the usrcp-stream default), audit failures are
+   * swallowed and the handler runs anyway - "best-effort"
+   * sibling-package logging. The trade-off is documented at
+   * each call site; codex round-1 review on PR #64 flagged
+   * that mixing the two without a flag let stream's leniency
+   * leak into local.
+   *
+   * Default: true (strict). Stream passes false explicitly.
+   */
+  strictAudit?: boolean;
+}
+
 /**
  * Register a list of tool definitions on the given MCP server,
  * applying scope-enforcement at both registration time
@@ -267,13 +285,18 @@ function formatScopeArr(s: string[] | undefined): string {
  *
  * Both usrcp-local and usrcp-stream call this function with their
  * own tool tables. The semantics are identical across packages -
- * that's the whole point of having one shared implementation.
+ * that's the whole point of having one shared implementation. The
+ * one knob is `strictAudit`: usrcp-local fails closed on audit
+ * write failure (audit is a security property in scoped mode);
+ * usrcp-stream falls back to best-effort to keep cross-package
+ * audit failures from cratering stream tools.
  */
 export function registerToolsWithScopes(
   server: McpServer,
   defs: ScopedToolDef[],
   opts: ServeOptions,
   ledger: AuditSink | null,
+  registerOpts: RegisterToolsOptions = {},
 ): void {
   const { readScopes, writeScopes } = resolveScopes(opts);
 
@@ -296,6 +319,7 @@ export function registerToolsWithScopes(
     opts.agentId !== undefined;
   const agentId = opts.agentId ?? "unidentified";
   const auditScopeRepr = `read=${formatScopeArr(readScopes)};write=${formatScopeArr(writeScopes)}`;
+  const strictAudit = registerOpts.strictAudit ?? true;
 
   for (const def of defs) {
     // Registration-time filtering: tools that the caller has
@@ -306,7 +330,18 @@ export function registerToolsWithScopes(
 
     const wrappedHandler = async (params: any) => {
       if (scopedMode && ledger) {
-        try {
+        // Strict (usrcp-local default): an audit-row failure
+        // throws out of the wrapper, failing the tool call
+        // closed before any read or mutation happens. The
+        // scoped-mode contract is "per-call attribution
+        // guaranteed"; an unattributed proceed would silently
+        // violate it.
+        //
+        // Best-effort (usrcp-stream opt-in): swallow audit
+        // failures so a stream tool can still respond when the
+        // sibling-package ledger pipeline hiccups. Trade-off
+        // documented in stream's register.ts call site.
+        if (strictAudit) {
           ledger.logAudit(
             `mcp_call:${def.name}`,
             auditScopeRepr,
@@ -315,9 +350,19 @@ export function registerToolsWithScopes(
             undefined,
             agentId,
           );
-        } catch {
-          // Audit is best-effort. A logging failure must not
-          // bring down the MCP call.
+        } else {
+          try {
+            ledger.logAudit(
+              `mcp_call:${def.name}`,
+              auditScopeRepr,
+              undefined,
+              undefined,
+              undefined,
+              agentId,
+            );
+          } catch {
+            // Best-effort: see RegisterToolsOptions.strictAudit.
+          }
         }
       }
 

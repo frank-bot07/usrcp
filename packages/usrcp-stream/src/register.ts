@@ -133,7 +133,17 @@ export function registerStreamTools(
   // to usrcp-local's createServer; lifted into a shared module in
   // PR #64 so the two enforcement paths can't drift (the structural
   // smell that caused four codex bypass-rounds on PR #61).
-  registerToolsWithScopes(mcpServer, defs, serveOpts, ledger ?? null);
+  //
+  // `strictAudit: false` preserves stream's pre-#64 "best-effort"
+  // sibling-package audit behavior: a logAudit failure inside the
+  // local ledger must not bring down a stream tool call. usrcp-local
+  // uses strict (the default) because audit attribution is its
+  // scoped-mode security property. (Codex round-1 review on PR #64
+  // caught the regression that would have happened if we'd
+  // unified on stream's leniency.)
+  registerToolsWithScopes(mcpServer, defs, serveOpts, ledger ?? null, {
+    strictAudit: false,
+  });
 
   return {
     handle,

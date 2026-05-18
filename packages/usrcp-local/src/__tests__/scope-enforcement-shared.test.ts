@@ -206,6 +206,73 @@ describe("registerToolsWithScopes (shared) - direct wrapper exercise", () => {
     expect(body.requested_domains).toEqual(["<global>"]);
   });
 
+  it("strictAudit default = audit failures throw out before handler runs (codex PR #64 round-1)", async () => {
+    // usrcp-local's pre-#64 contract: in scoped mode, every tool
+    // call must produce an audit row before the handler runs. If
+    // the audit write throws (DB / encryption / table corruption),
+    // the call MUST fail closed - an unattributed proceed silently
+    // violates the scoped-mode security property.
+    const { server, registered } = makeFakeServer();
+    const calls: string[] = [];
+    const failingLedger = {
+      logAudit() {
+        throw new Error("simulated audit-table failure");
+      },
+    };
+    registerToolsWithScopes(
+      server,
+      [
+        makeDef({
+          name: "t_strict",
+          mutating: false,
+          handler: async () => {
+            calls.push("handler-ran");
+            return { content: [{ type: "text" as const, text: "{}" }] };
+          },
+        }),
+      ],
+      { readScopes: ["coding"], agentId: "a1" } as ServeOptions,
+      failingLedger,
+      // strictAudit defaults to true.
+    );
+    await expect(
+      registered["t_strict"].handler({ domain: "coding" }, {}),
+    ).rejects.toThrow(/simulated audit-table failure/);
+    expect(calls).toEqual([]);
+  });
+
+  it("strictAudit: false = audit failures are swallowed and the handler still runs (stream behavior)", async () => {
+    // usrcp-stream's pre-#64 trade-off: a cross-package audit
+    // failure must not crater the stream tool. Stream call sites
+    // opt into best-effort with strictAudit: false.
+    const { server, registered } = makeFakeServer();
+    const calls: string[] = [];
+    const failingLedger = {
+      logAudit() {
+        throw new Error("simulated audit-table failure");
+      },
+    };
+    registerToolsWithScopes(
+      server,
+      [
+        makeDef({
+          name: "t_loose",
+          mutating: false,
+          handler: async () => {
+            calls.push("handler-ran");
+            return { content: [{ type: "text" as const, text: "{}" }] };
+          },
+        }),
+      ],
+      { readScopes: ["coding"], agentId: "a1" } as ServeOptions,
+      failingLedger,
+      { strictAudit: false },
+    );
+    const result = await registered["t_loose"].handler({ domain: "coding" }, {});
+    expect(result.content[0].text).toBe("{}");
+    expect(calls).toEqual(["handler-ran"]);
+  });
+
   it("write-tools check writeScopes; read-tools check readScopes (asymmetric routing)", async () => {
     // Read scope = coding+work, write scope = coding. A read on
     // "work" succeeds (in read allowlist); a write to "work" fails
