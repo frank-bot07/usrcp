@@ -516,3 +516,74 @@ describe("asymmetric scopes (PR #61 round-1 fix)", () => {
     ).toThrow(/not in readScopes/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Regression: createStreamServer (standalone path) must forward the
+// new readScopes/writeScopes fields to registerStreamTools. The first
+// cut of PR #61 fixed the unified usrcp serve path but the standalone
+// `usrcp-stream` entry-point rebuilt serveOptions with only the
+// pre-asymmetric fields, silently dropping readScopes/writeScopes.
+// Codex round-2 review on PR #61 caught this.
+// ---------------------------------------------------------------------------
+
+import { setUserSlug } from "usrcp-local/dist/encryption.js";
+import { createStreamServer } from "../server.js";
+
+describe("createStreamServer forwards asymmetric scopes (PR #61 round-2 fix)", () => {
+  let origHome: string | undefined;
+  let standaloneTmpHome: string;
+
+  beforeEach(() => {
+    origHome = process.env.HOME;
+    standaloneTmpHome = fs.mkdtempSync(
+      path.join(os.tmpdir(), "usrcp-stream-standalone-"),
+    );
+    process.env.HOME = standaloneTmpHome;
+    setUserSlug("default");
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    setUserSlug("default");
+    fs.rmSync(standaloneTmpHome, { recursive: true, force: true });
+  });
+
+  it("readScopes is forwarded - mutating tools stripped on the standalone server", () => {
+    const { server: standalone, shutdown } = createStreamServer(undefined, {
+      readScopes: ["discord"],
+      agentId: "standalone-test",
+    });
+    try {
+      const tools = Object.keys((standalone as AnyServer)._registeredTools);
+      // Mutating tools stripped because writeScopes defaults to [] when
+      // only readScopes is set. Without the fix, readScopes was dropped
+      // by server.ts's rebuild, so writes would have stayed open.
+      expect(tools).not.toContain("stream_capture");
+      expect(tools).toContain("stream_recall");
+      expect(tools).toContain("stream_status");
+    } finally {
+      shutdown();
+    }
+  });
+
+  it("writeScopes is forwarded - constrains stream_capture on the standalone server", async () => {
+    const { server: standalone, shutdown } = createStreamServer(undefined, {
+      writeScopes: ["discord"],
+      agentId: "standalone-test",
+    });
+    try {
+      const denied = parseResponse(await callTool(standalone, "stream_capture", {
+        surface: "telegram",
+        channel_ref: { chatId: 1 },
+        side: "inbound",
+        author_ref: { id: "u1" },
+        content: "should be rejected on standalone server",
+        content_kind: "text",
+        ts_ms: Date.now(),
+      }));
+      expect(denied.status).toBe("out_of_scope");
+    } finally {
+      shutdown();
+    }
+  });
+});

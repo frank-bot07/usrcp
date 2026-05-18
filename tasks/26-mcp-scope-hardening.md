@@ -71,6 +71,17 @@ Fix: Normalize `opts.scopes = []` to `undefined` BEFORE the legacy alias step. E
 
 1 new local test locks the legacy `--scopes=[]` shape so this can't regress.
 
+## Codex round-2 fix (P1, follow-on)
+
+Round-2 spotted that the round-1 fix only covered the unified `usrcp serve` entry-point. The standalone `usrcp-stream` daemon has its own entry-point in `packages/usrcp-stream/src/server.ts` that rebuilt `serveOptions` from an explicit field list, silently dropping `readScopes` and `writeScopes`. Effect: `usrcp-stream serve --read-scopes=discord` accepted the flag but ran without the asymmetric restriction.
+
+Fix: forward `opts` verbatim to `registerStreamTools` instead of cherry-picking fields. Two new regression tests use `createStreamServer` directly and verify:
+
+- `readScopes: ["discord"]` strips `stream_capture` from the standalone server (writeScopes defaults to `[]`).
+- `writeScopes: ["discord"]` rejects `stream_capture` to `telegram` on the standalone server.
+
+Tests: usrcp-stream 114 -> 116.
+
 ## What this enables (worked examples)
 
 ```bash

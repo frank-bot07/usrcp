@@ -26,15 +26,14 @@ export function createStreamServer(
   // ${userDir}/stream-config.toml when `embedder` is omitted (Codex P1-3).
   // When the file is absent, no embedder is wired and recall returns no
   // hits. Tests inject their own embedder via the property.
+  //
+  // Forward ALL StreamServeOptions fields - the explicit-field rebuild
+  // used to silently drop new fields (codex PR #61 round-2 caught
+  // readScopes / writeScopes leaking past the standalone server).
   const { shutdown } = registerStreamTools(server, {
     masterKey,
     userDir,
-    serveOptions: {
-      scopes: opts.scopes,
-      readonly: opts.readonly,
-      noAudit: opts.noAudit,
-      agentId: opts.agentId,
-    },
+    serveOptions: opts,
   });
 
   return { server, shutdown };
