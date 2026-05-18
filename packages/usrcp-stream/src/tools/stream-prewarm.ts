@@ -9,6 +9,17 @@ export interface PrewarmToolOptions {
   // The lazy-import integration path leaves this undefined and ships the
   // default bullet-list summarizer.
   summarizer?: (events: PrewarmEvent[], maxTokens: number) => Promise<string>;
+  /**
+   * Read-scope wall: when the MCP server runs with a read allowlist
+   * (--scopes / --read-scopes), prewarm is wrapped at the tool layer
+   * to ensure target_surface is in the allowlist, but the handler's
+   * deliberate cross-surface pull (the whole point of prewarm) needs
+   * a second filter so it doesn't leak content from out-of-scope
+   * surfaces. registerStreamTools injects readScopes here.
+   *
+   * Codex round-4 review on PR #61 caught this.
+   */
+  allowedScopes?: string[];
 }
 
 export function streamPrewarm(
@@ -37,6 +48,7 @@ export function streamPrewarm(
           window_min: params.window_min,
           max_tokens: params.max_tokens,
           summarizer: options.summarizer,
+          allowedSurfaces: options.allowedScopes,
         });
         return okResponse({ status: "ok", ...result });
       } catch (err) {

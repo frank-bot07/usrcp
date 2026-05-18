@@ -125,13 +125,22 @@ async function cmdInit(): Promise<number> {
 
 async function cmdServe(): Promise<number> {
   const passphrase = getPassphrase();
+
+  // Symmetric (legacy) + asymmetric (PR #61) scope flags.
+  // `createStreamServer` -> registerStreamTools -> resolveStreamScopes
+  // rejects mixing --scopes with --read-scopes/--write-scopes, so we
+  // don't need to duplicate that check at the CLI layer.
   const scopes = getArg("scopes")?.split(",").filter(Boolean);
+  const readScopes = getArg("read-scopes")?.split(",").filter(Boolean);
+  const writeScopes = getArg("write-scopes")?.split(",").filter(Boolean);
   const readonly = hasFlag("readonly");
   const noAudit = hasFlag("no-audit");
   const agentId = getArg("agent-id");
 
   const { server, shutdown } = createStreamServer(passphrase, {
     scopes,
+    readScopes,
+    writeScopes,
     readonly,
     noAudit,
     agentId,
@@ -210,7 +219,14 @@ Commands:
 Common flags:
   --user=<slug>         User slug to operate on (default: "default")
   --passphrase=<p>      Passphrase mode (prefer USRCP_PASSPHRASE env var)
-  --scopes=a,b,c        (serve) Restrict tool access to listed surfaces
+  --scopes=a,b,c        (serve) Symmetric: restrict reads AND writes to
+                                 listed surfaces (legacy; mutex with the
+                                 asymmetric pair below)
+  --read-scopes=a,b,c   (serve) Asymmetric: read allowlist. Alone, implies
+                                 "no writes" (writeScopes defaults to []).
+  --write-scopes=a,b,c  (serve) Asymmetric: write allowlist. Alone, leaves
+                                 reads unrestricted. Must be a subset of
+                                 read-scopes when both are set.
   --readonly            (serve) Strip stream_capture
   --no-audit            (serve) Suppress per-call audit log writes
   --agent-id=<id>       (serve) Identifier logged with every call

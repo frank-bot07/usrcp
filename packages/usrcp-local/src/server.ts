@@ -33,13 +33,38 @@ const MAX_SEARCH_QUERY = 200; // search input
  * tokens). Not a substitute for cryptographic capability tokens (Model B).
  */
 export interface ServeOptions {
-  /** Domain allowlist. Undefined = unrestricted. Empty array is treated as unrestricted. */
+  /**
+   * Legacy symmetric domain allowlist. Sets BOTH `readScopes` and
+   * `writeScopes` to the same value. Empty array is treated as
+   * unrestricted. Mutually exclusive with `readScopes` / `writeScopes`
+   * (caller must not mix them).
+   */
   scopes?: string[];
-  /** Strip mutating tools from the registered tool list. */
+  /**
+   * Domains the agent is allowed to READ from. Undefined = unrestricted.
+   * Empty array is normalized to undefined (unrestricted reads).
+   *
+   * When set alone (without `writeScopes` or legacy `scopes`),
+   * defaults `writeScopes` to `[]` (no writes anywhere). This means
+   * `--read-scopes X` on its own is a "read-only on X" shorthand.
+   */
+  readScopes?: string[];
+  /**
+   * Domains the agent is allowed to WRITE to. Undefined = unrestricted.
+   * Empty array (`[]`) means "no writes anywhere" - equivalent to
+   * `readonly: true`. When both `readScopes` and `writeScopes` are
+   * set as non-empty allowlists, `writeScopes` must be a subset of
+   * `readScopes` (writes require reads on the same domain).
+   */
+  writeScopes?: string[];
+  /**
+   * Strip mutating tools from the registered tool list. Equivalent
+   * to `writeScopes: []`. If both are set, this still wins.
+   */
   readonly?: boolean;
   /** Hide the audit-log tool so agents can't read other agents' history. */
   noAudit?: boolean;
-  /** Identifier logged with every tool call. Required when `scopes` is set. */
+  /** Identifier logged with every tool call. Required when any scope flag is set. */
   agentId?: string;
 }
 
@@ -147,11 +172,99 @@ function boundedRecord() {
     });
 }
 
-function effectiveScopes(opts: ServeOptions): string[] | undefined {
-  // Treat empty array as unrestricted so callers can pass --scopes= without
-  // accidentally locking the agent out of every tool.
-  if (!opts.scopes || opts.scopes.length === 0) return undefined;
-  return opts.scopes;
+export interface ResolvedScopes {
+  /** undefined = unrestricted reads; otherwise an allowlist of domain names. */
+  readScopes: string[] | undefined;
+  /**
+   * undefined = unrestricted writes; non-empty array = write allowlist;
+   * empty array = no writes anywhere (strips mutating tools at register time).
+   */
+  writeScopes: string[] | undefined;
+}
+
+/**
+ * Resolve the four scope-related ServeOptions into the two effective
+ * arrays used by registerAll. The legacy `--scopes` flag is an alias
+ * for "both readScopes and writeScopes equal to scopes"; the new
+ * `readScopes` / `writeScopes` flags can be combined for asymmetric
+ * permissions.
+ *
+ * Throws when the inputs are mutually inconsistent (e.g. writeScopes
+ * has a domain that's not in readScopes).
+ */
+export function resolveScopes(opts: ServeOptions): ResolvedScopes {
+  // Mutex: --scopes is a symmetric shorthand. Mixing it with the new
+  // asymmetric flags is ambiguous; reject early so the operator sees
+  // the conflict rather than silently picking one.
+  if (
+    opts.scopes !== undefined &&
+    (opts.readScopes !== undefined || opts.writeScopes !== undefined)
+  ) {
+    throw new Error(
+      "--scopes is mutually exclusive with --read-scopes / --write-scopes. " +
+        "Use --scopes alone (symmetric) OR the asymmetric pair.",
+    );
+  }
+
+  // Legacy --scopes empty array historically meant "unrestricted both
+  // ways" (pre-asymmetric `effectiveScopes` returned undefined for any
+  // empty array). Preserve that: treat `scopes: []` the same as
+  // `scopes: undefined` so an empty CSV doesn't accidentally lock the
+  // agent out. NOTE: this empty-as-unrestricted convenience is ONLY
+  // for the legacy --scopes flag - explicit `writeScopes: []` still
+  // means "no writes" (its dedicated sentinel for --readonly parity).
+  const legacyScopes =
+    opts.scopes !== undefined && opts.scopes.length > 0 ? opts.scopes : undefined;
+
+  let readScopes: string[] | undefined = opts.readScopes;
+  let writeScopes: string[] | undefined = opts.writeScopes;
+
+  if (legacyScopes !== undefined) {
+    readScopes = legacyScopes;
+    writeScopes = legacyScopes;
+  }
+
+  // Asymmetric default: --read-scopes alone means "no writes". Without
+  // this, --read-scopes X would silently allow writes to all domains -
+  // surprising and the opposite of the operator's likely intent.
+  if (
+    opts.readScopes !== undefined &&
+    opts.writeScopes === undefined &&
+    opts.scopes === undefined
+  ) {
+    writeScopes = [];
+  }
+
+  // --readonly wins: strip all writes regardless of writeScopes.
+  if (opts.readonly === true) {
+    writeScopes = [];
+  }
+
+  // Empty-array normalization for the new flags: treat `--read-scopes=`
+  // as "unrestricted" the same way `--scopes=` works. Writes use [] as
+  // the sentinel for "no writes", so we do NOT normalize writes here.
+  if (readScopes !== undefined && readScopes.length === 0) {
+    readScopes = undefined;
+  }
+
+  // writeScopes ⊆ readScopes when both are restrictive. Empty
+  // writeScopes (`[]`, the "no writes" sentinel) is trivially a
+  // subset, so skip the check in that case.
+  if (
+    writeScopes !== undefined &&
+    writeScopes.length > 0 &&
+    readScopes !== undefined
+  ) {
+    const outOfRead = writeScopes.filter((d) => !readScopes!.includes(d));
+    if (outOfRead.length > 0) {
+      throw new Error(
+        `writeScopes contains domains not in readScopes: [${outOfRead.join(", ")}]. ` +
+          "Writes require read access on the same domain.",
+      );
+    }
+  }
+
+  return { readScopes, writeScopes };
 }
 
 // ----------------------------------------------------------------------------
@@ -174,13 +287,17 @@ export function createServer(
     version: "0.1.0",
   });
 
-  const scopes = effectiveScopes(opts);
+  // Resolve once and share across registerAll + the multi-domain-read
+  // handlers (which need to filter their own output to the agent's
+  // read allowlist).
+  const resolved = resolveScopes(opts);
+  const readScopes = resolved.readScopes;
 
   // Tool definitions — declarative table. registerAll filters and wraps
-  // based on opts (readonly/noAudit/scopes/agentId). Handler bodies are
-  // unchanged from the pre-refactor inline registrations; multi-domain-read
-  // handlers (get_state, search_timeline) additionally read `scopes` to
-  // filter their output when the caller did not constrain the request.
+  // based on opts (readonly/noAudit/readScopes/writeScopes/agentId).
+  // Multi-domain-read handlers (get_state, search_timeline, status)
+  // additionally read `readScopes` from this closure to filter their
+  // output when the caller did not constrain the request.
   const defs: ToolDef[] = [
     // --- Tool: usrcp_get_state -------------------------------------------
     {
@@ -241,13 +358,14 @@ export function createServer(
           .describe("Identifying name of the calling agent/platform"),
       },
       handler: async (params) => {
-        // If scope-restricted and the caller did not pass timeline_domains,
-        // inject the scope list so we don't leak events from other domains.
+        // If read-scope-restricted and the caller did not pass
+        // timeline_domains, inject the read allowlist so we don't
+        // leak events from other domains.
         if (
-          scopes &&
+          readScopes &&
           (!params.timeline_domains || params.timeline_domains.length === 0)
         ) {
-          params.timeline_domains = [...scopes];
+          params.timeline_domains = [...readScopes];
         }
 
         const state = ledger.getState(params.scopes);
@@ -265,18 +383,18 @@ export function createServer(
           });
         }
 
-        // Post-filter the per-domain facets so a scoped agent never sees
-        // projects or context for domains outside its allowlist.
-        if (scopes) {
+        // Post-filter the per-domain facets so a read-scoped agent never
+        // sees projects or context for domains outside its read allowlist.
+        if (readScopes) {
           if (state.active_projects) {
             state.active_projects = state.active_projects.filter((p) =>
-              scopes.includes(p.domain)
+              readScopes.includes(p.domain)
             );
           }
           if (state.domain_context) {
             state.domain_context = Object.fromEntries(
               Object.entries(state.domain_context).filter(([d]) =>
-                scopes.includes(d)
+                readScopes.includes(d)
               )
             );
           }
@@ -647,13 +765,13 @@ export function createServer(
       },
       handler: async (params) => {
         let results;
-        if (scopes && !params.domain) {
+        if (readScopes && !params.domain) {
           // Run a per-scope search and merge — searchTimeline only takes a
-          // single domain filter, but a scoped agent can search across all
-          // its allowed domains in one call.
+          // single domain filter, but a read-scoped agent can search across
+          // all its allowed domains in one call.
           const merged: any[] = [];
           const seen = new Set<string>();
-          for (const d of scopes) {
+          for (const d of readScopes) {
             const r = ledger.searchTimeline(params.query, {
               limit: params.limit,
               domain: d,
@@ -1004,11 +1122,12 @@ export function createServer(
       kind: "global-read",
       inputShape: {},
       handler: async () => {
-        // Scope filtering: a scoped agent must not see ledger-wide totals,
-        // domain names, or platform names outside its authorized scopes.
-        if (scopes) {
-          const scopedStats = ledger.getStatsForScopes(scopes);
-          const allowed = new Set(scopes);
+        // Read-scope filtering: a read-scoped agent must not see
+        // ledger-wide totals, domain names, or platform names outside
+        // its authorized read allowlist.
+        if (readScopes) {
+          const scopedStats = ledger.getStatsForScopes(readScopes);
+          const allowed = new Set(readScopes);
           const scopedActiveProjects = ledger
             .getProjects()
             .filter((p) => p.status === "active" && allowed.has(p.domain))
@@ -1024,7 +1143,7 @@ export function createServer(
                     user_id: formatUserId(identity?.user_id),
                     ledger: "local (SQLite)",
                     scoped: true,
-                    allowed_domains: scopes,
+                    allowed_domains: readScopes,
                     stats: scopedStats,
                     active_projects: scopedActiveProjects,
                   },
@@ -1123,22 +1242,35 @@ function registerAll(
   opts: ServeOptions,
   ledger: Ledger
 ): void {
-  const scopes = effectiveScopes(opts);
+  const { readScopes, writeScopes } = resolveScopes(opts);
+  // A mutating tool is stripped entirely (not registered) when writes
+  // are disallowed across all domains - i.e. `writeScopes === []`,
+  // which is either `--readonly` or explicit `--write-scopes=`. With
+  // `writeScopes` undefined (unrestricted) or a non-empty array, the
+  // tool registers and the wrapper gates per-domain.
+  const writesAllDenied = writeScopes !== undefined && writeScopes.length === 0;
+
   // Wrapper-layer audit fires only when the operator has explicitly opted
   // into scoped mode (any flag set). The unflagged default path keeps the
   // pre-refactor audit-row volume so existing single-agent setups don't
   // see a behavior change.
   const scopedMode =
-    scopes !== undefined ||
-    opts.readonly === true ||
+    readScopes !== undefined ||
+    writeScopes !== undefined ||
     opts.noAudit === true ||
     opts.agentId !== undefined;
   const agentId = opts.agentId ?? "unidentified";
 
+  // Compact display string for the audit row: distinguishes "all" from
+  // "[a,b,c]" without coupling the audit format to the read/write split.
+  const formatScopeArr = (s: string[] | undefined): string =>
+    s === undefined ? "*" : s.length === 0 ? "[]" : `[${s.join(",")}]`;
+  const auditScopeRepr = `read=${formatScopeArr(readScopes)};write=${formatScopeArr(writeScopes)}`;
+
   for (const def of defs) {
     // Registration-time filtering: tools that the caller has opted out of
     // are not registered at all, so they do not appear in tools/list.
-    if (opts.readonly && def.mutating) continue;
+    if (writesAllDenied && def.mutating) continue;
     if (opts.noAudit && def.kind === "audit-read") continue;
 
     const wrappedHandler = async (params: any) => {
@@ -1149,7 +1281,7 @@ function registerAll(
         // attribution across the full call surface.
         ledger.logAudit(
           `mcp_call:${def.name}`,
-          scopes ?? "*",
+          auditScopeRepr,
           undefined,
           undefined,
           undefined,
@@ -1157,30 +1289,41 @@ function registerAll(
         );
       }
 
+      // Mutating tools check writeScopes; read tools check readScopes.
+      // The two enforcement paths look identical, but distinguishing
+      // them is what enables asymmetric permissions ("read everything,
+      // write only personal").
+      const effective = def.mutating ? writeScopes : readScopes;
+
       // Scope enforcement
-      if (scopes) {
+      if (effective) {
         if (def.kind === "global-mutation") {
-          return outOfScopeResponse(def.name, ["<global>"], scopes);
+          // Any restricted writeScopes (even non-empty) bars
+          // global mutations - they touch state shared across all
+          // domains. The audit-displayed allowlist is writeScopes
+          // since this is a write-class tool.
+          return outOfScopeResponse(def.name, ["<global>"], effective);
         }
         if (def.kind === "domain-scoped" && def.scopeOf) {
           const requested = def.scopeOf(params) as string[];
-          const out = requested.filter((d) => !scopes.includes(d));
+          const out = requested.filter((d) => !effective.includes(d));
           if (out.length > 0) {
-            return outOfScopeResponse(def.name, out, scopes);
+            return outOfScopeResponse(def.name, out, effective);
           }
         }
         if (def.kind === "multi-domain-read" && def.scopeOf) {
           const requested = def.scopeOf(params);
           if (requested !== "all") {
             const out = (requested as string[]).filter(
-              (d) => !scopes.includes(d)
+              (d) => !effective.includes(d)
             );
             if (out.length > 0) {
-              return outOfScopeResponse(def.name, out, scopes);
+              return outOfScopeResponse(def.name, out, effective);
             }
           }
-          // If "all", the handler reads `scopes` from its closure and filters
-          // its own output — the wrapper does not inject anything here.
+          // If "all", the handler reads `readScopes` from its closure
+          // and filters its own output - the wrapper does not inject
+          // anything here.
         }
       }
 
