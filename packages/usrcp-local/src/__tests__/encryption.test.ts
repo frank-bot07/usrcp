@@ -427,3 +427,62 @@ describe("passphrase mode initialization", () => {
     expect(key1.equals(key2)).toBe(true);
   });
 });
+
+describe("fsyncFile / fsyncDir (PR #71 - power-loss durability helpers)", () => {
+  let tmpDir: string;
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-fsync-test-"));
+  });
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("fsyncFile returns cleanly for a real file (POSIX path)", async () => {
+    const { fsyncFile } = await import("../encryption.js");
+    const p = path.join(tmpDir, "thing.txt");
+    fs.writeFileSync(p, "hello");
+    expect(() => fsyncFile(p)).not.toThrow();
+  });
+
+  it("fsyncFile swallows errors for a non-existent path (best-effort contract)", async () => {
+    const { fsyncFile } = await import("../encryption.js");
+    expect(() => fsyncFile(path.join(tmpDir, "nope.txt"))).not.toThrow();
+  });
+
+  it("fsyncDir returns cleanly for a real directory (POSIX path)", async () => {
+    const { fsyncDir } = await import("../encryption.js");
+    fs.writeFileSync(path.join(tmpDir, "child"), "x");
+    expect(() => fsyncDir(tmpDir)).not.toThrow();
+  });
+
+  it("fsyncDir swallows errors for a non-existent path", async () => {
+    const { fsyncDir } = await import("../encryption.js");
+    expect(() => fsyncDir(path.join(tmpDir, "missing-subdir"))).not.toThrow();
+  });
+
+  it("mkdirpDurable creates a deep chain and leaves every level mode-0o700 readable", async () => {
+    const { mkdirpDurable } = await import("../encryption.js");
+    const target = path.join(tmpDir, "a", "b", "c", "d");
+    mkdirpDurable(target, 0o700);
+    expect(fs.statSync(target).isDirectory()).toBe(true);
+    // Every level on the new chain exists and is reachable - the fsync
+    // walk happens internally; we just verify the mkdir-p semantic is
+    // preserved on top of it.
+    for (const p of [
+      path.join(tmpDir, "a"),
+      path.join(tmpDir, "a", "b"),
+      path.join(tmpDir, "a", "b", "c"),
+      path.join(tmpDir, "a", "b", "c", "d"),
+    ]) {
+      expect(fs.statSync(p).isDirectory()).toBe(true);
+    }
+  });
+
+  it("mkdirpDurable is a no-op when the target already exists", async () => {
+    const { mkdirpDurable } = await import("../encryption.js");
+    const target = path.join(tmpDir, "already-here");
+    fs.mkdirSync(target, { recursive: true });
+    expect(() => mkdirpDurable(target, 0o700)).not.toThrow();
+    expect(fs.statSync(target).isDirectory()).toBe(true);
+  });
+});

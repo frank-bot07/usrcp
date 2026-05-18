@@ -34,6 +34,9 @@ import {
   decrypt,
   deriveFromPairingSecret,
   safeWriteFile,
+  fsyncFile,
+  fsyncDir,
+  mkdirpDurable,
   deriveAndVerifyMasterKey,
   deriveGlobalEncryptionKey,
   setUserSlug,
@@ -178,13 +181,17 @@ function sweepStaleStagingDirs(userDir: string): void {
       // Aside copy exists. If keys/ also exists, the prior pairJoin finished
       // the staging-to-keys rename but died before unlinking the aside; just
       // delete the aside. If keys/ is missing, restore from the aside (we
-      // died between the two renames).
+      // died between the two renames). fsync the parent dir after each
+      // mutation so the recovery itself is power-loss-durable on this
+      // boot (Codex round-2 P2 on PR #71).
       const asidePath = path.join(userDir, name);
       try {
         if (fs.existsSync(keysDir)) {
           fs.rmSync(asidePath, { recursive: true, force: true });
+          fsyncDir(userDir);
         } else {
           fs.renameSync(asidePath, keysDir);
+          fsyncDir(userDir);
         }
       } catch {
         // If recovery fails, leave the aside in place for manual inspection.
@@ -203,25 +210,38 @@ function sweepStaleStagingDirs(userDir: string): void {
  * to keys-replaced-by-pair.<rand>/, rename stagingDir into keysDir,
  * then rm the aside. A SIGKILL in this window is recovered by
  * sweepStaleStagingDirs on the next pairJoin.
+ *
+ * Power-loss durability: each rename is followed by an fsync of the
+ * parent directory so the rename is on disk before the syscall
+ * caller sees success. Without this, a power loss between the
+ * rename returning and the kernel flushing the parent inode could
+ * leave the directory listing reverting to the pre-rename state.
+ * The fsync of the staging dir's contents happens at the caller
+ * (right after the six safeWriteFile calls, before this function
+ * runs).
  */
 function commitStagingDir(stagingDir: string, keysDir: string): void {
+  const userDir = path.dirname(keysDir);
   if (!fs.existsSync(keysDir)) {
     fs.renameSync(stagingDir, keysDir);
+    fsyncDir(userDir);
     return;
   }
-  const userDir = path.dirname(keysDir);
   const asideName = PAIR_REPLACED_PREFIX + crypto.randomBytes(8).toString("hex");
   const asidePath = path.join(userDir, asideName);
   fs.renameSync(keysDir, asidePath);
+  fsyncDir(userDir);
   try {
     fs.renameSync(stagingDir, keysDir);
+    fsyncDir(userDir);
   } catch (err) {
     // Restore original keysDir before propagating.
-    try { fs.renameSync(asidePath, keysDir); } catch {}
+    try { fs.renameSync(asidePath, keysDir); fsyncDir(userDir); } catch {}
     throw err;
   }
   try {
     fs.rmSync(asidePath, { recursive: true, force: true });
+    fsyncDir(userDir);
   } catch {
     // The new keys/ is already committed; an orphan aside is harmless
     // and will be cleaned by the next pairJoin's sweep.
@@ -555,30 +575,53 @@ async function pairJoinAfterDecrypt(
   // canonical path. Sweep any stale staging dirs from prior crashed
   // runs first so they don't accumulate.
   const userDir = path.dirname(keysDir);
-  fs.mkdirSync(userDir, { recursive: true, mode: 0o700 });
+  // mkdirpDurable rather than plain mkdirSync: on a brand-new
+  // install, the entire ~/.usrcp/users/<slug>/ chain may be created
+  // here. Without fsyncing each parent in the new chain, a power
+  // loss after pair-join returns could lose one or more chain
+  // links and leave the freshly committed keys/ unreachable.
+  // (Codex round-2 P2 on PR #71.)
+  mkdirpDurable(userDir, 0o700);
   sweepStaleStagingDirs(userDir);
 
   const stagingDir = fs.mkdtempSync(path.join(userDir, PAIR_STAGING_PREFIX));
   try {
     fs.chmodSync(stagingDir, 0o700);
-    safeWriteFile(path.join(stagingDir, "master.salt"), saltBytes, 0o600);
-    safeWriteFile(path.join(stagingDir, "master.verify"), verifyBytes, 0o600);
-    safeWriteFile(path.join(stagingDir, "mode"), Buffer.from("passphrase"), 0o600);
-    safeWriteFile(
-      path.join(stagingDir, "private.pem"),
-      Buffer.from(bundle.private_pem_enc, "utf8"),
-      0o600
-    );
-    safeWriteFile(
-      path.join(stagingDir, "public.pem"),
-      Buffer.from(bundle.identity.public_key, "utf8"),
-      0o644
-    );
-    safeWriteFile(
-      path.join(stagingDir, "identity.json"),
-      Buffer.from(JSON.stringify(bundle.identity, null, 2), "utf8"),
-      0o600
-    );
+    // Write + fsync each file: safeWriteFile is atomic against
+    // SIGKILL but a power loss between the write returning and the
+    // kernel flushing buffer cache could leave the file empty or
+    // partial on next boot. fsyncFile forces the file's data + inode
+    // to disk before we move on.
+    const stagedFiles: Array<[string, Buffer, number]> = [
+      [path.join(stagingDir, "master.salt"), saltBytes, 0o600],
+      [path.join(stagingDir, "master.verify"), verifyBytes, 0o600],
+      [path.join(stagingDir, "mode"), Buffer.from("passphrase"), 0o600],
+      [
+        path.join(stagingDir, "private.pem"),
+        Buffer.from(bundle.private_pem_enc, "utf8"),
+        0o600,
+      ],
+      [
+        path.join(stagingDir, "public.pem"),
+        Buffer.from(bundle.identity.public_key, "utf8"),
+        0o644,
+      ],
+      [
+        path.join(stagingDir, "identity.json"),
+        Buffer.from(JSON.stringify(bundle.identity, null, 2), "utf8"),
+        0o600,
+      ],
+    ];
+    for (const [p, content, mode] of stagedFiles) {
+      safeWriteFile(p, content, mode);
+      fsyncFile(p);
+    }
+    // fsync the staging dir so its directory entries (the six files
+    // we just wrote) are durably on disk BEFORE the rename in
+    // commitStagingDir. Without this, a power loss after the rename
+    // returns could leave the directory pointing at incomplete /
+    // non-existent inodes when the parent's view is flushed.
+    fsyncDir(stagingDir);
 
     commitStagingDir(stagingDir, keysDir);
   } catch (err) {

@@ -187,6 +187,90 @@ export function safeWriteFile(filePath: string, content: Buffer, mode: number): 
   fs.renameSync(tmpPath, filePath);
 }
 
+/**
+ * fsync a file's data + inode to disk. Used at durability boundaries
+ * (pair-join key-file writes) where SIGKILL safety alone is not
+ * enough: a power loss between the write returning and the kernel
+ * flushing buffer-cache could lose the data. On POSIX (Darwin/Linux)
+ * this issues fsync(2); on filesystems / platforms where fsync is
+ * not supported the open or fsync call may fail, which we swallow:
+ * the rename is still atomic in the SIGKILL sense, just not
+ * durable past a kernel-level crash.
+ */
+export function fsyncFile(filePath: string): void {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(filePath, "r");
+    fs.fsyncSync(fd);
+  } catch {
+    // Best-effort: see jsdoc.
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* swallow */ }
+    }
+  }
+}
+
+/**
+ * fsync a directory so its entry list (added/removed/renamed files)
+ * is durably on disk. POSIX-only; on Windows or filesystems that
+ * reject opening a directory for reading this is a no-op. Used at
+ * the rename boundaries in pair-join so that a power loss after a
+ * rename returns successfully does not leave the parent directory
+ * with a stale view of which children exist.
+ */
+export function fsyncDir(dirPath: string): void {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(dirPath, "r");
+    fs.fsyncSync(fd);
+  } catch {
+    // Best-effort: see jsdoc.
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* swallow */ }
+    }
+  }
+}
+
+/**
+ * mkdir -p with full power-loss durability for the entire newly-
+ * created chain. mkdirSync({ recursive: true }) is itself crash-
+ * safe, but each newly-created directory's existence is recorded
+ * only in its parent's inode - which can be lost across power
+ * failure before the kernel flushes the parent. Without an fsync
+ * walk, a fresh-install pair-join that creates the full
+ * `~/.usrcp/users/<slug>/` chain risks losing one or more chain
+ * links across a power loss after the join returns.
+ *
+ * Resolution: after mkdirSync, if anything was created, walk from
+ * the topmost newly-created directory down to the target, fsyncing
+ * each parent along the way. mkdirSync(recursive:true) returns the
+ * path of the topmost dir it had to create (or undefined when
+ * everything already existed; the chain was already durable from
+ * prior runs and no extra work is needed).
+ */
+export function mkdirpDurable(target: string, mode: number): void {
+  const firstCreated = fs.mkdirSync(target, { recursive: true, mode });
+  if (!firstCreated) return;
+  let cursor = firstCreated;
+  while (true) {
+    // fsync the parent of `cursor` so cursor's entry is durable
+    // in its parent. cursor itself may not be fully durable yet
+    // (its own children's entries become durable on the next
+    // iteration when we fsync `cursor` as the parent of the next
+    // child).
+    fsyncDir(path.dirname(cursor));
+    if (cursor === target) break;
+    // Descend one path component toward target.
+    const rest = target.slice(cursor.length).replace(/^[\\/]/, "");
+    if (!rest) break;
+    const nextComponent = rest.split(/[\\/]/)[0];
+    if (!nextComponent) break;
+    cursor = path.join(cursor, nextComponent);
+  }
+}
+
 function generateVerifyHash(masterKey: Buffer): Buffer {
   return crypto
     .createHmac("sha256", masterKey)
