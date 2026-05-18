@@ -44,7 +44,9 @@ envelope as private.pem), in addition to file mode `0600`.
   "allowlisted_orgs": ["anthropics", "usrcp"],
   "domain": "github",
   "poll_interval_s": 600,
-  "last_synced_at": "2026-05-17T12:00:00.000Z"
+  "last_synced_at": "2026-05-17T12:00:00.000Z",
+  "last_merged_at": "2026-05-17T14:00:00.000Z",
+  "last_closed_at": "2026-05-17T13:00:00.000Z"
 }
 ```
 
@@ -53,39 +55,45 @@ can see (user-owned + public-collaborator). When the list is
 non-empty, GitHub search filters server-side via `org:<slug>`
 clauses so out-of-scope orgs' PRs are never fetched.
 
-`last_synced_at` advances once per successful poll. Cursor uses
-`created:>{last_synced_at}` so a PR is captured exactly once;
-state-change events (merged / closed / reviewed) are out of
-scope for v1.
+### Cursors
+
+The adapter runs three independent queries per tick, each with its own cursor:
+
+| Cursor field      | Query qualifier                                | Event fired |
+|-------------------|------------------------------------------------|-------------|
+| `last_synced_at`  | `created:>{cursor}`                            | `pr_opened` |
+| `last_merged_at`  | `is:merged merged:>{cursor}`                   | `pr_merged` |
+| `last_closed_at`  | `is:closed is:unmerged closed:>{cursor}`       | `pr_closed` |
+
+Each PR captures **at most one** terminal event because `is:merged` and `is:closed is:unmerged` are mutually exclusive in the GitHub search index. A merged PR can never un-merge, so `pr_merged` is genuinely terminal. A PR closed without merge that's later reopened and merged will fire both `pr_closed` and `pr_merged` (different idempotency keys).
 
 ## What lands in the ledger
 
-Each PR becomes one `timeline_events` row:
+Each PR contributes up to two events: `pr_opened` (on first observation) and a terminal state event (`pr_merged` or `pr_closed`). All events for the same PR share `channel_id = <owner>/<repo>#<number>`, so `getRecentEventsByChannel` returns the full lifecycle in one shot.
 
-- `intent`: `pr_opened`
-- `channel_id`: `<owner>/<repo>#<number>` - stable PR identifier
-- `external_user_id`: PR author login (always equals `github_login`)
-- `tags`: `["github", "pull-request", "<owner>/<repo>"]`
-- `detail`: full PR metadata (number, title, body, url, state,
-  merged, created_at, updated_at)
+Per-event detail:
 
-Title and body are encrypted under the domain key; everything else
-in `detail` goes through the global-key envelope.
+- **`pr_opened`** - tags `["github", "pull-request", "<owner>/<repo>"]`, idempotency `github:pr:<owner>/<repo>#<number>`. Detail includes title, body, url, state, merged, created_at, updated_at.
+- **`pr_merged`** - tags `[..., "merged"]`, idempotency `github:pr-merged:<owner>/<repo>#<number>`. Detail includes `state_at` (the merge timestamp).
+- **`pr_closed`** - tags `[..., "closed"]`, idempotency `github:pr-closed:<owner>/<repo>#<number>`. Detail includes `state_at` (the close timestamp).
+
+`external_user_id` is always the PR author login (equal to `github_login`). Title fields are encrypted under the domain key; everything else in `detail` goes through the global-key envelope.
 
 ## Rate limits
 
 GitHub Search API: 30 requests/minute for authenticated users.
-Default poll interval is 600s with one paginated query per tick,
-so the rate-limit cost is negligible. The search query also caps
-at 1000 results total per query - if you have more than 1000 PRs
-in the time window since `last_synced_at`, the overflow is
+Default poll interval is 600s with three paginated queries per
+tick (opened/merged/closed), so the rate-limit cost is still
+negligible. Each query caps at 1000 results - if you have more
+than 1000 PRs in the time window since the cursor, overflow is
 permanently dropped. In practice this only matters on first run;
-the wizard's `FIRST_RUN_LOOKBACK` is 5 minutes.
+the daemon's first-run lookback is 5 minutes.
 
-## Out of scope (v1)
+## Out of scope (current)
 
-- Issues, discussions, review comments.
+- Issues, discussions, issue comments.
 - Reviews you submit on others' PRs.
 - Commits authored by you (separate REST endpoint).
-- PR state changes (merged, closed, reopened) - the cursor is on
-  `created_at`, so any one PR fires exactly once.
+- `pr_reopened` events. The search index doesn't expose "was
+  closed, is now open" as a query, so reopens would require
+  state tracking that's deferred to a future PR.

@@ -10,6 +10,8 @@ import {
   loadConfig,
   preflightConfig,
   reencryptConfigUnderNewKey,
+  saveCursors,
+  flushCursors,
   saveLastSyncedAt,
   flushLastSyncedAt,
   type GitHubConfig,
@@ -155,8 +157,8 @@ describe("legacy plaintext compat", () => {
   });
 });
 
-describe("saveLastSyncedAt / flushLastSyncedAt", () => {
-  it("debounces multiple saves into one disk write and updates last_synced_at", async () => {
+describe("saveLastSyncedAt / flushLastSyncedAt (v1 deprecated aliases)", () => {
+  it("still works as a thin wrapper over saveCursors", () => {
     writeGitHubConfig(GOOD_CONFIG, masterKey);
     saveLastSyncedAt("2026-05-17T12:00:00.000Z", masterKey);
     saveLastSyncedAt("2026-05-17T12:00:01.000Z", masterKey);
@@ -164,7 +166,6 @@ describe("saveLastSyncedAt / flushLastSyncedAt", () => {
 
     const reloaded = loadConfig(masterKey);
     expect(reloaded.last_synced_at).toBe("2026-05-17T12:00:01.000Z");
-    // PAT survives the cursor save.
     expect(reloaded.github_token).toBe(GOOD_CONFIG.github_token);
   });
 
@@ -173,6 +174,80 @@ describe("saveLastSyncedAt / flushLastSyncedAt", () => {
     fs.rmSync(getConfigPath(), { force: true });
     flushLastSyncedAt();
     expect(fs.existsSync(getConfigPath())).toBe(false);
+  });
+});
+
+describe("saveCursors / flushCursors (v1.1)", () => {
+  it("writes all three cursors when all three advance in one tick", () => {
+    writeGitHubConfig(GOOD_CONFIG, masterKey);
+    saveCursors(
+      {
+        last_synced_at: "2026-05-17T12:00:00.000Z",
+        last_merged_at: "2026-05-17T13:00:00.000Z",
+        last_closed_at: "2026-05-17T14:00:00.000Z",
+      },
+      masterKey,
+    );
+    flushCursors();
+    const reloaded = loadConfig(masterKey);
+    expect(reloaded.last_synced_at).toBe("2026-05-17T12:00:00.000Z");
+    expect(reloaded.last_merged_at).toBe("2026-05-17T13:00:00.000Z");
+    expect(reloaded.last_closed_at).toBe("2026-05-17T14:00:00.000Z");
+  });
+
+  it("writes only the cursors actually staged (others remain untouched)", () => {
+    writeGitHubConfig(
+      { ...GOOD_CONFIG, last_merged_at: "2026-05-10T00:00:00.000Z" },
+      masterKey,
+    );
+    saveCursors({ last_synced_at: "2026-05-17T12:00:00.000Z" }, masterKey);
+    flushCursors();
+    const reloaded = loadConfig(masterKey);
+    expect(reloaded.last_synced_at).toBe("2026-05-17T12:00:00.000Z");
+    // The merged cursor that was already on disk is preserved.
+    expect(reloaded.last_merged_at).toBe("2026-05-10T00:00:00.000Z");
+    expect(reloaded.last_closed_at).toBeUndefined();
+  });
+
+  it("coalesces multiple calls within the debounce window into one write per cursor", () => {
+    writeGitHubConfig(GOOD_CONFIG, masterKey);
+    saveCursors({ last_merged_at: "2026-05-17T12:00:00.000Z" }, masterKey);
+    saveCursors({ last_merged_at: "2026-05-17T12:00:05.000Z" }, masterKey);
+    saveCursors({ last_closed_at: "2026-05-17T12:00:10.000Z" }, masterKey);
+    flushCursors();
+    const reloaded = loadConfig(masterKey);
+    // Latest value wins for the same field.
+    expect(reloaded.last_merged_at).toBe("2026-05-17T12:00:05.000Z");
+    expect(reloaded.last_closed_at).toBe("2026-05-17T12:00:10.000Z");
+  });
+
+  it("resets pending state after flush so a second flush is a no-op", () => {
+    writeGitHubConfig(GOOD_CONFIG, masterKey);
+    saveCursors({ last_synced_at: "2026-05-17T12:00:00.000Z" }, masterKey);
+    flushCursors();
+    // Mutate the file on disk; a second flush must NOT overwrite it.
+    const updated = { ...readPartialConfig(), last_synced_at: "2030-01-01T00:00:00.000Z" };
+    fs.writeFileSync(getConfigPath(), JSON.stringify(updated, null, 2), { mode: 0o600 });
+    flushCursors();
+    expect(JSON.parse(fs.readFileSync(getConfigPath(), "utf8")).last_synced_at).toBe(
+      "2030-01-01T00:00:00.000Z",
+    );
+  });
+
+  it("bails if config was deleted at runtime", () => {
+    saveCursors({ last_merged_at: "2026-05-17T13:00:00.000Z" }, masterKey);
+    fs.rmSync(getConfigPath(), { force: true });
+    flushCursors();
+    expect(fs.existsSync(getConfigPath())).toBe(false);
+  });
+
+  it("does nothing when no cursors are staged", () => {
+    writeGitHubConfig(GOOD_CONFIG, masterKey);
+    flushCursors(); // nothing staged
+    const reloaded = loadConfig(masterKey);
+    expect(reloaded.last_synced_at).toBeUndefined();
+    expect(reloaded.last_merged_at).toBeUndefined();
+    expect(reloaded.last_closed_at).toBeUndefined();
   });
 });
 
