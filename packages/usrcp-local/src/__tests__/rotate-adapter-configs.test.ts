@@ -189,14 +189,75 @@ describe("reencryptAdapterConfigs", () => {
   });
 });
 
-describe("ADAPTERS_WITH_ENCRYPTED_CONFIG", () => {
-  it("matches the master-key-requiring adapter set", () => {
-    // Sanity that we don't forget to keep these in sync. The
-    // setup-time list is in setup.ts:ADAPTERS_REQUIRING_MASTER_KEY;
-    // the rotate-time list is here. Any adapter that encrypts at
-    // setup must also re-encrypt at rotate.
+describe("ADAPTERS_WITH_ENCRYPTED_CONFIG (legacy snapshot)", () => {
+  it("preserves the historical static snapshot for back-compat", () => {
+    // After the marketplace registry refactor (PR #62), this is
+    // derived from BUILTIN_ADAPTERS.supportsRotateKey rather than
+    // hardcoded. The snapshot is still asserted explicitly here so
+    // a regression that quietly removes an adapter's supportsRotateKey
+    // flag fails this test loudly.
     expect(new Set(ADAPTERS_WITH_ENCRYPTED_CONFIG)).toEqual(
       new Set(["google-calendar", "gmail", "linear", "discord", "slack", "telegram", "github"]),
     );
+  });
+
+  it("snapshot is stable across machines: does NOT read external adapters.json at import time (codex PR #62 round-3)", async () => {
+    // The first cut of the registry refactor read the external
+    // registry at module-import time, so a developer with
+    // ~/.usrcp/adapters.json containing a rotate-key adapter got a
+    // larger "static" snapshot than CI. Codex round-3 caught it.
+    //
+    // The contract: ADAPTERS_WITH_ENCRYPTED_CONFIG is a freeze of
+    // the IN-TREE adapter set, not the merged registry. Use a
+    // fresh import after writing an external rotate-key adapter to
+    // disk and assert the snapshot is unchanged.
+    const { BUILTIN_ADAPTERS, getRotateKeyAdapterValues } = await import(
+      "../adapters/registry.js"
+    );
+
+    // 1. Direct equivalence with BUILTIN_ADAPTERS source-of-truth.
+    const builtinOnly = getRotateKeyAdapterValues([...BUILTIN_ADAPTERS]);
+    expect(new Set(ADAPTERS_WITH_ENCRYPTED_CONFIG)).toEqual(new Set(builtinOnly));
+
+    // 2. Stronger guarantee: register an external rotate-key
+    //    adapter, force a fresh module import, and assert the
+    //    re-imported snapshot is STILL the in-tree set. (Pre-fix
+    //    this test would have included "extra" in the snapshot.)
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-snapshot-test-"));
+    const origHome = process.env.HOME;
+    try {
+      process.env.HOME = tmpHome;
+      fs.mkdirSync(path.join(tmpHome, ".usrcp"), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpHome, ".usrcp", "adapters.json"),
+        JSON.stringify(
+          {
+            adapters: [
+              {
+                value: "extra-rotator",
+                name: "Extra",
+                blurb: "External adapter that would change the snapshot pre-fix.",
+                setupFunction: "runExtraSetup",
+                supportsRotateKey: true,
+              },
+            ],
+          },
+          null,
+          2,
+        ),
+      );
+      vi.resetModules();
+      const fresh = await import("../rotate-adapter-configs.js");
+      expect(new Set(fresh.ADAPTERS_WITH_ENCRYPTED_CONFIG)).toEqual(
+        new Set(["google-calendar", "gmail", "linear", "discord", "slack", "telegram", "github"]),
+      );
+      // Dynamic getter DOES include the external entry (sanity that
+      // the registry merge logic isn't completely broken).
+      expect(fresh.getAdaptersWithEncryptedConfig()).toContain("extra-rotator");
+    } finally {
+      process.env.HOME = origHome;
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+      vi.resetModules();
+    }
   });
 });

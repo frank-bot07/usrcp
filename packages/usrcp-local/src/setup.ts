@@ -29,6 +29,14 @@ import {
 } from "./encryption.js";
 import { initializeIdentity } from "./crypto.js";
 import { Ledger } from "./ledger/index.js";
+import {
+  type AdapterManifest,
+  findAdapter,
+  getExternalRegistryPath,
+  getMasterKeyRequiringAdapterValues,
+  getRegisteredAdapters,
+  resolveAdapterPackageName,
+} from "./adapters/registry.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -72,61 +80,95 @@ async function getPrompts(): Promise<Prompts> {
  * imported directly and given the wizard's prompts object.
  */
 async function callAdapterSetup(adapterName: string, masterKey?: Buffer): Promise<void> {
+  // Builtin-internal adapters (terminal / mcp-agent / openclaw) live
+  // inside usrcp-local and predate the sibling-package convention.
+  // The dispatcher special-cases them BEFORE consulting the registry
+  // so they can pass the prompts object the standard setupFunction
+  // signature doesn't accept.
   if (adapterName === "terminal") {
     const { runTerminalSetup } = await import("./adapters/terminal/index.js");
     const prompts = await getPrompts();
     await runTerminalSetup({ checkbox: prompts.checkbox, confirm: prompts.confirm });
     return;
   }
-
   if (adapterName === "mcp-agent") {
     const { runMcpAgentSetup } = await import("./adapters/mcp-agent/setup.js");
     const prompts = await getPrompts();
     await runMcpAgentSetup({ input: prompts.input, confirm: prompts.confirm });
     return;
   }
-
   if (adapterName === "openclaw") {
     const { runOpenclawSetup } = await import("./adapters/openclaw/setup.js");
     await runOpenclawSetup();
     return;
   }
 
-  // __dirname in dist/ is packages/usrcp-local/dist/
-  // We need to go two levels up to reach packages/
-  const localPkgDir = path.resolve(__dirname, ".."); // packages/usrcp-local
-  const monoRoot = path.resolve(localPkgDir, "..");   // packages/
-  const adapterPkg = `usrcp-${adapterName}`;
-  const setupPath = path.join(monoRoot, adapterPkg, "dist", "setup.js");
-
-  if (!fs.existsSync(setupPath)) {
+  // Everything else routes through the manifest registry.
+  const manifest = findAdapter(adapterName);
+  if (!manifest) {
     throw new Error(
-      `Cannot find setup module for adapter '${adapterName}' at:\n  ${setupPath}\n` +
-      `Make sure 'npm run build' has been run inside packages/${adapterPkg}/.`
+      `Unknown adapter '${adapterName}'. Known adapters: ${getRegisteredAdapters()
+        .map((m) => m.value)
+        .join(", ")}.`,
+    );
+  }
+  if (!manifest.setupFunction) {
+    throw new Error(
+      `Adapter '${adapterName}' manifest is missing 'setupFunction'. ` +
+        `Builtin-internal adapters bypass this dispatcher; external adapters must declare it.`,
     );
   }
 
-  // Dynamic import of the compiled JS (adapter packages are ESM-compatible)
-  const mod = await import(setupPath) as Record<string, unknown>;
+  const packageName = resolveAdapterPackageName(manifest);
+  if (!packageName) {
+    // resolveAdapterPackageName returns null only for builtinInternal,
+    // which the early returns above already handled. Defensive.
+    throw new Error(
+      `Adapter '${adapterName}' is marked builtinInternal but reached the package-resolution path.`,
+    );
+  }
 
-  // Convention: runDiscordSetup, runTelegramSetup, runGoogleCalendarSetup
-  // (camel-case across hyphens so hyphenated adapter names like
-  // "google-calendar" map to a valid JS identifier).
-  const camel = adapterName
-    .split("-")
-    .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
-    .join("");
-  const fnName = `run${camel}Setup`;
-  const fn = mod[fnName] as ((...args: unknown[]) => Promise<unknown>) | undefined;
+  // Resolve dist/setup.js. The same two-strategy resolution as before:
+  // (a) monorepo layout (packages/<pkg>/dist/setup.js) for in-tree
+  //     adapters that haven't been published; (b) npm resolution for
+  //     external adapters installed alongside usrcp-local.
+  // __dirname in dist/ is packages/usrcp-local/dist/, so two levels
+  // up is packages/.
+  const localPkgDir = path.resolve(__dirname, "..");
+  const monoRoot = path.resolve(localPkgDir, "..");
+  const monoSetupPath = path.join(monoRoot, packageName, "dist", "setup.js");
+
+  let setupPath: string;
+  if (fs.existsSync(monoSetupPath)) {
+    setupPath = monoSetupPath;
+  } else {
+    // Fall back to npm resolution. This is the path external adapters
+    // take: they're npm-installed alongside usrcp-local, not in the
+    // monorepo's packages/ directory.
+    try {
+      setupPath = require.resolve(`${packageName}/dist/setup.js`);
+    } catch {
+      throw new Error(
+        `Cannot find setup module for adapter '${adapterName}'.\n` +
+          `  Tried monorepo path: ${monoSetupPath}\n` +
+          `  Tried npm resolution: ${packageName}/dist/setup.js\n` +
+          `  For in-tree adapters: 'npm run build' inside packages/${packageName}/.\n` +
+          `  For external adapters: 'npm install ${packageName}' and verify the manifest in ${getExternalRegistryPath()}.`,
+      );
+    }
+  }
+
+  // Dynamic import of the compiled JS (adapter packages are ESM-compatible).
+  const mod = (await import(setupPath)) as Record<string, unknown>;
+  const fn = mod[manifest.setupFunction] as ((...args: unknown[]) => Promise<unknown>) | undefined;
   if (typeof fn !== "function") {
     throw new Error(
-      `Adapter module at ${setupPath} does not export '${fnName}'.`
+      `Adapter module at ${setupPath} does not export '${manifest.setupFunction}' (declared in manifest).`,
     );
   }
-  // Adapters that encrypt config secrets at rest (gcal, gmail, linear,
-  // etc.) accept `{ masterKey }` so they can encrypt under the global
-  // key. Older adapters that don't accept args silently ignore the
-  // extra parameter - JS lets us pass it freely.
+  // Adapters that encrypt config secrets at rest accept `{ masterKey }`.
+  // Older adapters that don't accept args silently ignore the extra
+  // parameter - JS lets us pass it freely.
   await fn({ masterKey });
 }
 
@@ -266,92 +308,67 @@ async function resolveExistingMasterKey(
 // Adapter selection step
 // ---------------------------------------------------------------------------
 
-export interface AdapterSpec {
-  name: string;
-  value: string;
-  blurb: string;
-  /** When true, hide on non-Darwin platforms. */
-  requiresMacOS?: boolean;
-  /** When true, hide from the interactive wizard list. Still selectable via `--adapter=<value>`. */
-  hidden?: boolean;
-}
+/**
+ * Backwards-compatible alias for AdapterManifest. The wizard and tests
+ * still reference the type by the old name; new code should use
+ * AdapterManifest directly from the registry module.
+ */
+export type AdapterSpec = AdapterManifest;
 
-export const KNOWN_ADAPTERS: readonly AdapterSpec[] = [
+/**
+ * Backwards-compatible accessor for the adapter catalog. Reads through
+ * the registry (BUILTIN_ADAPTERS + ~/.usrcp/adapters.json) every time
+ * - operators can hand-edit the external file without restarting the
+ * daemon. Existing call sites that imported a constant
+ * `KNOWN_ADAPTERS` keep working via this Proxy.
+ *
+ * Typed as `readonly AdapterManifest[]` so every array method
+ * (find, forEach, indexed access, etc.) type-checks for TypeScript
+ * consumers - the Proxy's get-trap forwards every property access
+ * to the live array, so the runtime matches the type signature.
+ * Codex round-2 review on PR #62 caught a narrower declaration that
+ * would have broken type-checking for find / indexed access.
+ *
+ * Prefer importing `getRegisteredAdapters()` directly in new code -
+ * the Proxy is a transitional shim and the next PR sweeps the
+ * call sites to the explicit getter. See
+ * [[feedback_backcompat_shims_must_have_migration_path]].
+ */
+export const KNOWN_ADAPTERS: readonly AdapterManifest[] = new Proxy(
+  [] as AdapterManifest[],
   {
-    name: "Terminal / CLI agents (Claude Code, Cursor, Codex, etc.)",
-    value: "terminal",
-    blurb: "RECOMMENDED. Wires USRCP into your MCP-aware CLI agents (Claude Code, Cursor, Codex, Copilot CLI, Cline, Continue, Aider) so every terminal session has cross-platform memory. No external accounts or bot tokens required.",
+    // Proxy through to the live array each access. The Proxy lets us
+    // keep the existing `readonly AdapterSpec[]`-shaped consumers
+    // (filter/map/find/forEach/indexed access/iteration) working
+    // without an explicit getter call.
+    get(_target, prop, _receiver) {
+      const live = getRegisteredAdapters();
+      // Special-case length so `KNOWN_ADAPTERS.length` works.
+      if (prop === "length") return live.length;
+      const value = (live as unknown as Record<string | symbol, unknown>)[prop];
+      if (typeof value === "function") {
+        // Bind array methods to the live array so `filter` etc.
+        // operate on a fresh snapshot.
+        return value.bind(live);
+      }
+      return value;
+    },
+    // Block writes - the registry is sourced from BUILTIN_ADAPTERS +
+    // adapters.json, not mutated at runtime.
+    set() {
+      throw new Error(
+        "KNOWN_ADAPTERS is read-only; edit BUILTIN_ADAPTERS or ~/.usrcp/adapters.json instead.",
+      );
+    },
   },
-  {
-    name: "Discord",
-    value: "discord",
-    blurb: "Free. Requires a Discord account, a server you control, and an Anthropic API key.",
-  },
-  {
-    name: "Telegram",
-    value: "telegram",
-    blurb: "Free. Requires a Telegram account and an Anthropic API key. Mobile-friendly setup via BotFather.",
-  },
-  {
-    name: "Slack",
-    value: "slack",
-    blurb: "⚠️  Requires a PAID Slack workspace tier (Pro, Business+, or Enterprise) — bot APIs are restricted on the free tier. Skip this if your workspace is on the free plan.",
-  },
-  {
-    name: "iMessage (macOS)",
-    value: "imessage",
-    blurb: "macOS only. Requires Full Disk Access for Messages.app + the imsg CLI (brew install steipete/tap/imsg).",
-    requiresMacOS: true,
-  },
-  {
-    name: "Obsidian (local vault)",
-    value: "obsidian",
-    blurb: "Capture notes from a local Obsidian vault. Watches the vault directory and appends each note edit to the ledger. v0: capture-only, no replies.",
-  },
-  {
-    name: "Linear",
-    value: "linear",
-    blurb: "Capture issues and comments YOU author in Linear. Polls Linear's GraphQL API every minute (configurable). Requires a Linear personal API key. v0: capture-only, no @usrcp replies.",
-  },
-  {
-    name: "Google Calendar",
-    value: "google-calendar",
-    blurb: "Capture past events you attended on your primary Google Calendar. Polls every 5 min (configurable). Requires a Google Cloud OAuth client + refresh token (see packages/usrcp-google-calendar/README.md). v0: capture-only.",
-  },
-  {
-    name: "Gmail",
-    value: "gmail",
-    blurb: "Capture messages YOU sent in Gmail. Polls every 10 min (configurable). Requires a Google Cloud OAuth client + refresh token (same setup as Google Calendar, different scope). v0: capture-only, no received mail.",
-  },
-  {
-    name: "GitHub",
-    value: "github",
-    blurb: "Capture pull requests YOU author on GitHub. Polls GitHub's REST search API every 10 min (configurable). Requires a personal access token. v1: capture-only on pr_opened (state changes come later).",
-  },
-  {
-    name: "Browser extension (Chrome)",
-    value: "extension",
-    blurb: "Capture claude.ai conversations and inject ledger context via /usrcp slash command. Chrome only in v0; requires manual extension load (Developer Mode → Load Unpacked).",
-  },
-  {
-    name: "OpenClaw (agent harness)",
-    value: "openclaw",
-    blurb: "Requires OpenClaw already installed (https://docs.openclaw.ai/start/getting-started). Registers USRCP as an MCP server in your OpenClaw config so OpenClaw agents can read/write your ledger via the same 6 tools as Claude Code. Read-side only in v0 — capture per channel still goes through the dedicated Discord/Slack/iMessage adapters.",
-  },
-  {
-    name: "Scoped MCP agent (per-process restriction)",
-    value: "mcp-agent",
-    blurb: "Generate an MCP config snippet that runs `usrcp serve` with --scopes / --readonly / --no-audit so one agent (e.g. Cursor) can only see a subset of your domains. Use this in addition to (not instead of) the terminal adapter. Run via `usrcp setup --adapter=mcp-agent`.",
-    hidden: true,
-  },
-];
+) as readonly AdapterManifest[];
 
 /**
  * Filter the registry for the interactive wizard — drops adapters marked
  * hidden, and drops macOS-only adapters on non-Darwin hosts.
  */
 export function visibleAdapters(platform: NodeJS.Platform = process.platform): AdapterSpec[] {
-  return KNOWN_ADAPTERS.filter((a) => {
+  return getRegisteredAdapters().filter((a) => {
     if (a.hidden) return false;
     if (a.requiresMacOS && platform !== "darwin") return false;
     return true;
@@ -494,7 +511,14 @@ export async function runSetup(opts: SetupOptions = {}): Promise<void> {
   console.log("  ╚═╝╚═╝╩╚═╚═╝╩");
   console.log("");
 
-  const validAdapters = KNOWN_ADAPTERS.map((x) => x.value) as readonly string[];
+  // Build the master-key gate from manifests once per `usrcp setup`
+  // invocation. Adapters with `requiresMasterKey: true` route through
+  // `acquireMasterKeyForStandaloneAdapter` below; everything else
+  // bypasses the key acquisition so terminal / mcp-agent / etc. don't
+  // demand a passphrase the wizard won't use.
+  const registered = getRegisteredAdapters();
+  const validAdapters = registered.map((x) => x.value);
+  const masterKeyRequiringAdapters = getMasterKeyRequiringAdapterValues(registered);
 
   // If --adapter is given, skip ledger + selection and jump straight to that adapter.
   if (opts.adapter) {
@@ -506,13 +530,8 @@ export async function runSetup(opts: SetupOptions = {}): Promise<void> {
     const label = a.charAt(0).toUpperCase() + a.slice(1);
     console.log(`  Configuring adapter: ${label}`);
     try {
-      // Only acquire the master key for adapters whose wizards encrypt
-      // config secrets at rest. Forcing a passphrase prompt for
-      // terminal / etc. (where the wizard ignores the key arg) would
-      // regress the standalone --adapter path for users with
-      // passphrase-protected ledgers who haven't set USRCP_PASSPHRASE.
       let masterKey: Buffer | undefined;
-      if (ADAPTERS_REQUIRING_MASTER_KEY.has(a)) {
+      if (masterKeyRequiringAdapters.has(a)) {
         masterKey = await acquireMasterKeyForStandaloneAdapter();
       }
       try {
@@ -547,26 +566,6 @@ export async function runSetup(opts: SetupOptions = {}): Promise<void> {
     process.exit(1);
   }
 }
-
-/**
- * Adapter names whose setup wizards encrypt config secrets at rest
- * under the master key. The standalone `usrcp setup --adapter=<name>`
- * path only acquires the master key for these adapters so it doesn't
- * regress simpler wizards (terminal / etc.) that don't touch
- * encrypted config.
- *
- * Adapters added here MUST accept `{ masterKey }` in their runXxxSetup
- * signature.
- */
-const ADAPTERS_REQUIRING_MASTER_KEY: ReadonlySet<string> = new Set([
-  "google-calendar",
-  "gmail",
-  "linear",
-  "discord",
-  "slack",
-  "telegram",
-  "github",
-]);
 
 /**
  * Acquire a master key in the --adapter standalone path (no
