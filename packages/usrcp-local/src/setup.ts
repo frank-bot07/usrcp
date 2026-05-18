@@ -319,37 +319,49 @@ export type AdapterSpec = AdapterManifest;
  * Backwards-compatible accessor for the adapter catalog. Reads through
  * the registry (BUILTIN_ADAPTERS + ~/.usrcp/adapters.json) every time
  * - operators can hand-edit the external file without restarting the
- * daemon. Existing call sites that imported a constant `KNOWN_ADAPTERS`
- * keep working via this getter.
+ * daemon. Existing call sites that imported a constant
+ * `KNOWN_ADAPTERS` keep working via this Proxy.
  *
- * Prefer importing `getRegisteredAdapters()` directly in new code.
+ * Typed as `readonly AdapterManifest[]` so every array method
+ * (find, forEach, indexed access, etc.) type-checks for TypeScript
+ * consumers - the Proxy's get-trap forwards every property access
+ * to the live array, so the runtime matches the type signature.
+ * Codex round-2 review on PR #62 caught a narrower declaration that
+ * would have broken type-checking for find / indexed access.
+ *
+ * Prefer importing `getRegisteredAdapters()` directly in new code -
+ * the Proxy is a transitional shim and the next PR sweeps the
+ * call sites to the explicit getter. See
+ * [[feedback_backcompat_shims_must_have_migration_path]].
  */
-export const KNOWN_ADAPTERS: { readonly [Symbol.iterator]: () => Iterator<AdapterManifest> } & {
-  readonly length: number;
-  filter(fn: (a: AdapterManifest) => boolean): AdapterManifest[];
-  map<T>(fn: (a: AdapterManifest) => T): T[];
-} = new Proxy([] as AdapterManifest[], {
-  // Proxy through to the live array each access. The Proxy lets us
-  // keep the existing `readonly AdapterSpec[]`-shaped consumers
-  // (filter/map/iteration) working without an explicit getter call.
-  get(_target, prop, _receiver) {
-    const live = getRegisteredAdapters();
-    // Special-case length so `KNOWN_ADAPTERS.length` works.
-    if (prop === "length") return live.length;
-    const value = (live as unknown as Record<string | symbol, unknown>)[prop];
-    if (typeof value === "function") {
-      // Bind array methods to the live array so `filter` etc.
-      // operate on a fresh snapshot.
-      return value.bind(live);
-    }
-    return value;
+export const KNOWN_ADAPTERS: readonly AdapterManifest[] = new Proxy(
+  [] as AdapterManifest[],
+  {
+    // Proxy through to the live array each access. The Proxy lets us
+    // keep the existing `readonly AdapterSpec[]`-shaped consumers
+    // (filter/map/find/forEach/indexed access/iteration) working
+    // without an explicit getter call.
+    get(_target, prop, _receiver) {
+      const live = getRegisteredAdapters();
+      // Special-case length so `KNOWN_ADAPTERS.length` works.
+      if (prop === "length") return live.length;
+      const value = (live as unknown as Record<string | symbol, unknown>)[prop];
+      if (typeof value === "function") {
+        // Bind array methods to the live array so `filter` etc.
+        // operate on a fresh snapshot.
+        return value.bind(live);
+      }
+      return value;
+    },
+    // Block writes - the registry is sourced from BUILTIN_ADAPTERS +
+    // adapters.json, not mutated at runtime.
+    set() {
+      throw new Error(
+        "KNOWN_ADAPTERS is read-only; edit BUILTIN_ADAPTERS or ~/.usrcp/adapters.json instead.",
+      );
+    },
   },
-  // Block writes - the registry is sourced from BUILTIN_ADAPTERS +
-  // adapters.json, not mutated at runtime.
-  set() {
-    throw new Error("KNOWN_ADAPTERS is read-only; edit BUILTIN_ADAPTERS or ~/.usrcp/adapters.json instead.");
-  },
-}) as never;
+) as readonly AdapterManifest[];
 
 /**
  * Filter the registry for the interactive wizard — drops adapters marked

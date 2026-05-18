@@ -268,6 +268,48 @@ describe("getRegisteredAdapters (builtin + external)", () => {
     expect(github!.setupFunction).toBe("runGithubSetup"); // built-in setup, not evil
   });
 
+  it("Proxy-backed KNOWN_ADAPTERS exposes the full readonly-array surface (codex PR #62 round-2)", async () => {
+    // Import the Proxy export. The TypeScript type is
+    // `readonly AdapterManifest[]`, so every array method should be
+    // callable AND return the right values at runtime.
+    const { KNOWN_ADAPTERS } = await import("../setup.js");
+
+    // Indexed access works.
+    const first = KNOWN_ADAPTERS[0];
+    expect(first).toBeTruthy();
+    expect(typeof first.value).toBe("string");
+
+    // .length works.
+    expect(KNOWN_ADAPTERS.length).toBeGreaterThan(0);
+
+    // .find works (was inaccessible under the narrower declaration).
+    const github = KNOWN_ADAPTERS.find((a) => a.value === "github");
+    expect(github).toBeTruthy();
+    expect(github!.name).toBe("GitHub");
+
+    // .forEach works.
+    let count = 0;
+    KNOWN_ADAPTERS.forEach(() => count++);
+    expect(count).toBe(KNOWN_ADAPTERS.length);
+
+    // .some works.
+    expect(KNOWN_ADAPTERS.some((a) => a.value === "discord")).toBe(true);
+
+    // .every works.
+    expect(KNOWN_ADAPTERS.every((a) => typeof a.value === "string")).toBe(true);
+
+    // .filter + .map still work (the pre-fix narrow type exposed only these two + length + iteration).
+    const encrypters = KNOWN_ADAPTERS.filter((a) => a.requiresMasterKey);
+    expect(encrypters.length).toBeGreaterThan(0);
+    const names = KNOWN_ADAPTERS.map((a) => a.value);
+    expect(names).toContain("terminal");
+
+    // Iteration works.
+    const collected: string[] = [];
+    for (const m of KNOWN_ADAPTERS) collected.push(m.value);
+    expect(collected.length).toBe(KNOWN_ADAPTERS.length);
+  });
+
   it("skipExternal=true bypasses the JSON read (test affordance)", () => {
     writeRegistry([{ value: "notion", name: "Notion", blurb: "..." }]);
     const all = getRegisteredAdapters({ skipExternal: true });
