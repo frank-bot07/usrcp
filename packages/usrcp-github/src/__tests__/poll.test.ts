@@ -483,7 +483,14 @@ describe("pollOnce - issue_commented (v1.2)", () => {
     expect(result.issue_commented.newCursor).toBe(cursors.issue_commented);
   });
 
-  it("advances cursor only when at least one comment was emitted (not on candidate-only matches)", async () => {
+  it("advances cursor to candidate.updated_at even when no own comments emit (codex PR #59 round-2)", async () => {
+    // Scenario: candidate appears in `commenter:X` search because the
+    // user has historically commented, but only teammates have been
+    // active since the cursor. listComments succeeds with zero
+    // own-author matches. Without advancing the cursor past the
+    // candidate's updated_at, the same candidate would be re-fetched
+    // every tick indefinitely (growing the candidate set, wasting
+    // REST quota, eventually hitting the search 1000-result cap).
     const ledger = new FakeLedger();
     const candidate = makeIssueSearchItem({
       number: 5,
@@ -493,7 +500,6 @@ describe("pollOnce - issue_commented (v1.2)", () => {
       issue_commented_candidates: [candidate],
       comments: {
         "anthropics/usrcp#5": [
-          // Only others' comments - we should not advance.
           {
             id: 700,
             user: { login: "someone-else" },
@@ -510,6 +516,50 @@ describe("pollOnce - issue_commented (v1.2)", () => {
     const result = await pollOnce(ledger, octokit, CONFIG, neutralCursors());
 
     expect(result.issue_commented.captured).toBe(0);
-    expect(result.issue_commented.newCursor).toBe("2026-05-16T00:00:00Z");
+    expect(result.issue_commented.failures).toBe(0);
+    // Cursor MUST advance past the candidate's updated_at.
+    expect(result.issue_commented.newCursor).toBe("2026-05-17T12:00:00Z");
+  });
+
+  it("on a tick with a mix of candidates, cursor ends at max(candidate.updated_at, emitted comment.created_at)", async () => {
+    const ledger = new FakeLedger();
+    const candidates = [
+      // Candidate with our comment.
+      makeIssueSearchItem({ number: 1, updated_at: "2026-05-17T13:00:00Z" }),
+      // Candidate with only teammate activity, but UPDATED_AT IS LATER.
+      makeIssueSearchItem({ number: 2, updated_at: "2026-05-17T14:00:00Z" }),
+    ];
+    const octokit = makeFakeOctokit({
+      issue_commented_candidates: candidates,
+      comments: {
+        "anthropics/usrcp#1": [
+          {
+            id: 800,
+            user: { login: "chad" },
+            body: "my comment",
+            html_url: "",
+            created_at: "2026-05-17T12:30:00Z",
+            updated_at: "2026-05-17T12:30:00Z",
+            node_id: "IC_c",
+          },
+        ],
+        "anthropics/usrcp#2": [
+          {
+            id: 801,
+            user: { login: "someone-else" },
+            body: "teammate",
+            html_url: "",
+            created_at: "2026-05-17T14:00:00Z",
+            updated_at: "2026-05-17T14:00:00Z",
+            node_id: "IC_d",
+          },
+        ],
+      },
+    });
+
+    const result = await pollOnce(ledger, octokit, CONFIG, neutralCursors());
+
+    expect(result.issue_commented.captured).toBe(1);
+    expect(result.issue_commented.newCursor).toBe("2026-05-17T14:00:00Z");
   });
 });

@@ -27,6 +27,7 @@ your GitHub participation from the ledger without re-querying GitHub.
 | Inline review comments (the ones on diff hunks)? | Out of scope | Different endpoint (`pulls.listReviewComments`). Defer to v1.3 (reviews). |
 | Strict-greater-than cursor filter? | Yes | `since` on the REST endpoint is inclusive on second-precision. A comment exactly at the cursor would re-arrive every tick. Idempotency would dedupe but the filter keeps the data clean. |
 | Comment-list failure on one candidate? | Log + skip that candidate, AND pin the cursor at the input value | A 404 (private repo) shouldn't kill the tick. But if we let other candidates' comments advance the cursor, the failed candidate's comments would be skipped forever on retry. Pinning the cursor + idempotency on the captured ones lets the next tick re-process the entire window cleanly. (Codex round-1 review on PR #59 found this; see test "partial failure pins the cursor at the input value".) |
+| Cursor advance on successful candidate with no own comments? | Yes - advance to `candidate.updated_at` | If we only advanced on emitted own-comments, candidates the user commented on historically would be re-fetched every tick when only teammates have activity. The candidate set grows unbounded and eventually hits the search 1000-result cap. GitHub guarantees `issue.updated_at >= max(comment.created_at)`, so advancing here never skips an unseen own comment. (Codex round-2 review on PR #59 found this; see test "advances cursor to candidate.updated_at even when no own comments emit".) |
 
 ## Surface area
 
@@ -53,7 +54,7 @@ your GitHub participation from the ledger without re-querying GitHub.
 
 ## Verification
 
-- `(cd packages/usrcp-github && npm test)` -> 67/67 pass (was 45 in v1.1).
+- `(cd packages/usrcp-github && npm test)` -> 68/68 pass (was 45 in v1.1).
 - `(cd packages/usrcp-local && npm test)` -> 422/422 (unchanged - no usrcp-local files touched).
 
 ## Out of scope (still)

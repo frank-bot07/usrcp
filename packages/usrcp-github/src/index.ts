@@ -272,14 +272,22 @@ async function pollIssuesOpened(
  * Search returns issues sorted by updated_at desc, which is fine -
  * we don't need order for correctness because idempotency dedupes.
  *
- * Cursor advance is the latest emitted comment's `created_at` ONLY
- * IF every candidate fetch succeeded. If ANY candidate's
- * `listComments` failed (404/500/rate-limit), we keep the cursor
- * at the input value so the next tick re-fetches the entire window.
- * Idempotency keys dedupe successfully-captured comments on the
- * retry tick. Without this, a transient failure on candidate A
- * combined with success on candidate B would advance the cursor
- * past A's comment time, permanently losing A's comment.
+ * Cursor advance rules:
+ *   - Successful candidate fetch with own comments captured:
+ *     advance newCursor to max(comment.created_at) AND to the
+ *     candidate's updated_at.
+ *   - Successful candidate fetch with no own comments (e.g. only
+ *     teammates were active): still advance newCursor to the
+ *     candidate's updated_at. Without this, candidates that
+ *     match `commenter:X` historically but only see teammate
+ *     activity would be re-scanned every tick until the search
+ *     hit the 1000-result cap (codex review #59 round-2).
+ *   - GitHub guarantees issue.updated_at >= max(comment.created_at)
+ *     for any comment on the issue, so advancing to updated_at
+ *     never skips an unseen own comment.
+ *   - Any candidate fetch FAILURE pins newCursor at the input
+ *     value so the next tick re-processes the entire window
+ *     (codex review #59 round-1).
  */
 async function pollIssueComments(
   ledger: CaptureLedger,
@@ -364,6 +372,14 @@ async function pollIssueComments(
       } else {
         skipped++;
       }
+    }
+    // All comments on this candidate have been inspected. Advance
+    // past the candidate's updated_at so subsequent ticks don't
+    // re-fetch this same window when only teammates have activity.
+    // GitHub's data model guarantees updated_at >= max(comment.created_at),
+    // so this never skips an unseen own comment.
+    if (typeof item.updated_at === "string" && item.updated_at > newCursor) {
+      newCursor = item.updated_at;
     }
   }
   // If any candidate fetch failed, pin the cursor at the input value
