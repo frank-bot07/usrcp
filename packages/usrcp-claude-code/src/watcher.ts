@@ -17,6 +17,7 @@ import * as path from "node:path";
 import {
   encodeProjectDir,
   setOffset,
+  deleteOffset,
   flushOffsets,
   getClaudeProjectsDir,
   type ClaudeCodeConfig,
@@ -46,6 +47,14 @@ export interface TickStats {
   linesSkipped: number;
   errors: number;
   truncationsDetected: number;
+  /**
+   * Stale file_offsets entries removed this tick. A JSONL the watcher
+   * previously tracked but that no longer exists on disk (Claude Code
+   * compacted/deleted the session, or the user removed the project
+   * directory). Prevents unbounded growth of the config file over
+   * long-running daemons (Codex Tier-2 #5).
+   */
+  offsetsPruned: number;
 }
 
 export interface Watcher {
@@ -74,7 +83,15 @@ export function makeWatcher(
       linesSkipped: 0,
       errors: 0,
       truncationsDetected: 0,
+      offsetsPruned: 0,
     };
+
+    // Track every JSONL we observed this tick across all allowlisted
+    // projects. Anything in config.file_offsets that isn't in this
+    // set AND lives under a project dir we successfully scanned is a
+    // stale entry to prune at the end of the tick.
+    const seenFiles = new Set<string>();
+    const scannedProjectDirs = new Set<string>();
 
     for (const project of config.allowlisted_projects) {
       const dir = path.join(projectsRoot, encodeProjectDir(project));
@@ -83,12 +100,17 @@ export function makeWatcher(
         entries = fs.readdirSync(dir);
       } catch {
         // Project not yet active on disk - silently skip this tick.
+        // We do NOT add `dir` to scannedProjectDirs because we don't
+        // know what's in there; pruning offsets under it would be
+        // wrong (the directory might come back).
         continue;
       }
+      scannedProjectDirs.add(dir);
 
       for (const name of entries) {
         if (!name.endsWith(".jsonl")) continue;
         const file = path.join(dir, name);
+        seenFiles.add(file);
         let size: number;
         try {
           size = fs.statSync(file).size;
@@ -170,6 +192,22 @@ export function makeWatcher(
         }
 
         setOffset(file, consumed, config);
+      }
+    }
+
+    // Prune offset entries whose underlying JSONL no longer exists.
+    // Scope: only prune entries that live UNDER a project dir we
+    // successfully scanned this tick. If a project dir failed
+    // readdirSync (transient permission / mount issue), its entries
+    // stay so we don't drop them on a flake.
+    if (scannedProjectDirs.size > 0) {
+      for (const stored of Object.keys(config.file_offsets)) {
+        const parentDir = path.dirname(stored);
+        if (!scannedProjectDirs.has(parentDir)) continue;
+        if (seenFiles.has(stored)) continue;
+        if (deleteOffset(stored, config)) {
+          stats.offsetsPruned++;
+        }
       }
     }
 

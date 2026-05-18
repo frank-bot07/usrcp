@@ -79,6 +79,27 @@ const FLUSH_INTERVAL_MS = 500;
 
 export function setOffset(file: string, offset: number, configRef: ClaudeCodeConfig): void {
   configRef.file_offsets[file] = offset;
+  scheduleFlush(configRef);
+}
+
+/**
+ * Remove the offset entry for a file the watcher no longer tracks
+ * (e.g. the JSONL was deleted by Claude Code's own session cleanup,
+ * or the project directory was removed). Without this, file_offsets
+ * grows unbounded across the lifetime of a long-running daemon,
+ * surfaced by Codex Tier-2 #5.
+ *
+ * Returns true if an entry was actually removed; the caller can use
+ * the return value to decide whether to log/audit the prune.
+ */
+export function deleteOffset(file: string, configRef: ClaudeCodeConfig): boolean {
+  if (!(file in configRef.file_offsets)) return false;
+  delete configRef.file_offsets[file];
+  scheduleFlush(configRef);
+  return true;
+}
+
+function scheduleFlush(configRef: ClaudeCodeConfig): void {
   pendingConfig = configRef;
   if (flushTimer) return;
   flushTimer = setTimeout(() => {
