@@ -5,6 +5,7 @@ import {
   type IssueCommentActivity,
   type IssueOpenedActivity,
   type PullRequestActivity,
+  type PullRequestReviewActivity,
   type PullRequestStateChangeActivity,
 } from "../capture.js";
 import type { GitHubConfig } from "../config.js";
@@ -432,5 +433,117 @@ describe("captureGitHubActivity - issue_commented", () => {
     const result = captureGitHubActivity(ledger, makeIssueComment(), cfg);
     expect(result.captured).toBe(false);
     expect(result).toMatchObject({ captured: false, reason: "org_not_allowlisted" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v1.3: pr_reviewed
+// ---------------------------------------------------------------------------
+
+function makeReview(
+  overrides: Partial<PullRequestReviewActivity> = {},
+): PullRequestReviewActivity {
+  return {
+    type: "pr_reviewed",
+    review_id: 9876543210,
+    node_id: "PRR_kwDOABC",
+    owner: "anthropics",
+    repo: "claude-code",
+    pr_number: 100,
+    pr_title: "Add background-mode flag",
+    pr_author_login: "alice",
+    state: "APPROVED",
+    body: "lgtm with one nit",
+    url: "https://github.com/anthropics/claude-code/pull/100#pullrequestreview-9876543210",
+    pr_url: "https://github.com/anthropics/claude-code/pull/100",
+    reviewer_login: "chad",
+    submitted_at: "2026-05-17T15:00:00Z",
+    org: "anthropics",
+    ...overrides,
+  };
+}
+
+describe("captureGitHubActivity - pr_reviewed", () => {
+  let ledger: FakeLedger;
+  beforeEach(() => { ledger = new FakeLedger(); });
+
+  it("uses 'approved' verb for APPROVED reviews", () => {
+    const result = captureGitHubActivity(ledger, makeReview(), CONFIG);
+    expect(result.captured).toBe(true);
+    const e = ledger.events[0];
+    expect(e.intent).toBe("pr_reviewed");
+    expect(e.summary).toBe("anthropics/claude-code#100 approved: Add background-mode flag");
+    expect(e.idempotencyKey).toBe("github:pr-review:9876543210");
+    expect(e.channel_id).toBe("anthropics/claude-code#100");
+    // external_user_id = the PR author, not the reviewer, so agents
+    // can grep "reviews I did for Alice".
+    expect(e.external_user_id).toBe("alice");
+    expect(e.tags).toEqual(["github", "review", "approved", "anthropics/claude-code"]);
+    expect((e as any).thread_id).toBe("9876543210");
+  });
+
+  it("uses 'requested-changes' verb for CHANGES_REQUESTED reviews", () => {
+    captureGitHubActivity(
+      ledger,
+      makeReview({ state: "CHANGES_REQUESTED", review_id: 1 }),
+      CONFIG,
+    );
+    expect(ledger.events[0].summary).toBe("anthropics/claude-code#100 requested-changes: Add background-mode flag");
+    expect(ledger.events[0].tags).toContain("requested-changes");
+  });
+
+  it("uses 'reviewed' verb for COMMENTED-only reviews", () => {
+    captureGitHubActivity(
+      ledger,
+      makeReview({ state: "COMMENTED", review_id: 2 }),
+      CONFIG,
+    );
+    expect(ledger.events[0].summary).toBe("anthropics/claude-code#100 reviewed: Add background-mode flag");
+    expect(ledger.events[0].tags).toContain("reviewed");
+  });
+
+  it("captures plain-Approve clicks (empty review body) without skipping", () => {
+    // GitHub allows a reviewer to click Approve without typing a
+    // body. The act of approval is the signal; an empty body should
+    // NOT be treated as empty_body.
+    const result = captureGitHubActivity(ledger, makeReview({ body: "" }), CONFIG);
+    expect(result.captured).toBe(true);
+    expect(ledger.events[0].detail!.body).toBe("");
+  });
+
+  it("uses a distinct idempotency namespace from pr_opened on the same PR", () => {
+    captureGitHubActivity(ledger, makeActivity({ number: 100, owner: "anthropics", repo: "claude-code" }), CONFIG);
+    captureGitHubActivity(ledger, makeReview(), CONFIG);
+    expect(ledger.events).toHaveLength(2);
+    const keys = ledger.events.map((e) => e.idempotencyKey);
+    expect(new Set(keys).size).toBe(2);
+    // Both share the channel so getRecentEventsByChannel returns
+    // them together.
+    expect(ledger.events[0].channel_id).toBe(ledger.events[1].channel_id);
+  });
+
+  it("respects the org allowlist", () => {
+    const cfg = { ...CONFIG, allowlisted_orgs: ["other"] };
+    const result = captureGitHubActivity(ledger, makeReview(), cfg);
+    expect(result.captured).toBe(false);
+    expect(result).toMatchObject({ captured: false, reason: "org_not_allowlisted" });
+  });
+
+  it("skips a review whose parent PR title is empty (e.g. mid-rename)", () => {
+    const result = captureGitHubActivity(ledger, makeReview({ pr_title: "" }), CONFIG);
+    expect(result.captured).toBe(false);
+    expect(result).toMatchObject({ captured: false, reason: "empty_title" });
+  });
+
+  it("preserves the full review body in detail (not just summary)", () => {
+    const longBody = "Detailed review comments ".repeat(50);
+    captureGitHubActivity(ledger, makeReview({ body: longBody }), CONFIG);
+    expect(ledger.events[0].detail!.body).toBe(longBody);
+  });
+
+  it("captures pr_author_login and reviewer_login as distinct fields in detail", () => {
+    captureGitHubActivity(ledger, makeReview(), CONFIG);
+    expect(ledger.events[0].detail!.pr_author_login).toBe("alice");
+    expect(ledger.events[0].detail!.reviewer_login).toBe("chad");
   });
 });

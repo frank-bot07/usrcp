@@ -56,10 +56,17 @@ export interface GitHubConfig {
    * candidate filtered by author. Added in v1.2.
    */
   last_issue_commented_at?: string;
+  /**
+   * Cursor for `pr_reviewed` events. Query uses
+   * `reviewed-by:X type:pr updated:>{last_pr_reviewed_at}` to find
+   * candidate PRs, then `pulls.listReviews` per candidate filtered
+   * by reviewer + state + submitted_at. Added in v1.3.
+   */
+  last_pr_reviewed_at?: string;
 }
 
 /**
- * Field names of the five cursors, kept centralized so the save /
+ * Field names of the six cursors, kept centralized so the save /
  * flush plumbing doesn't drift from the GitHubConfig shape.
  */
 export type GitHubCursorField =
@@ -67,7 +74,8 @@ export type GitHubCursorField =
   | "last_merged_at"
   | "last_closed_at"
   | "last_issue_opened_at"
-  | "last_issue_commented_at";
+  | "last_issue_commented_at"
+  | "last_pr_reviewed_at";
 
 const CONFIG_FILENAME = "github-config.json";
 

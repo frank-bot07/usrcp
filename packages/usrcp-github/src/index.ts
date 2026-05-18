@@ -36,6 +36,7 @@ import {
   type IssueCommentActivity,
   type IssueOpenedActivity,
   type PullRequestActivity,
+  type PullRequestReviewActivity,
   type PullRequestStateChangeActivity,
 } from "./capture.js";
 
@@ -70,6 +71,7 @@ interface CursorState {
   closed: string;
   issue_opened: string;
   issue_commented: string;
+  pr_reviewed: string;
 }
 
 export interface PollTickResult {
@@ -78,6 +80,7 @@ export interface PollTickResult {
   closed: { captured: number; skipped: number; newCursor: string };
   issue_opened: { captured: number; skipped: number; newCursor: string };
   issue_commented: { captured: number; skipped: number; newCursor: string; failures: number };
+  pr_reviewed: { captured: number; skipped: number; newCursor: string; failures: number };
 }
 
 interface BaseFields {
@@ -390,23 +393,144 @@ async function pollIssueComments(
   return { captured, skipped, newCursor, failures };
 }
 
+/**
+ * PR reviews are two-stage like comments. The search index has a
+ * `reviewed-by:<login>` qualifier that returns PRs the user has
+ * reviewed (any review state, any time). We then fetch each
+ * candidate's reviews via `pulls.listReviews` (no `since` parameter,
+ * so we fetch all and filter client-side on submitted_at).
+ *
+ * Filter rules:
+ *   - user.login === github_login (their reviews only)
+ *   - submitted_at > sinceIso (strictly greater)
+ *   - state in {APPROVED, CHANGES_REQUESTED, COMMENTED}
+ *     (PENDING = draft not yet submitted; DISMISSED = cleared
+ *      administratively, both out of scope)
+ *
+ * Same cursor invariants as pollIssueComments:
+ *   - Pin newCursor at sinceIso if ANY candidate fetch fails.
+ *   - Advance newCursor to candidate.updated_at on successful empty
+ *     scans, so candidates the user reviewed historically don't
+ *     get re-fetched indefinitely when only the PR author has
+ *     activity. GitHub's data model guarantees
+ *     `pr.updated_at >= max(review.submitted_at)`.
+ */
+async function pollPrReviews(
+  ledger: CaptureLedger,
+  octokit: Octokit,
+  config: GitHubConfig,
+  sinceIso: string,
+): Promise<{ captured: number; skipped: number; newCursor: string; failures: number }> {
+  let captured = 0;
+  let skipped = 0;
+  let newCursor = sinceIso;
+  let failures = 0;
+
+  const q = [
+    `reviewed-by:${config.github_login}`,
+    "type:pr",
+    `updated:>${sinceIso}`,
+    ...orgQualifiers(config),
+  ].join(" ");
+  const candidates = await runQuery(octokit, q, "updated");
+
+  for (const item of candidates) {
+    const base = toBaseFields(item, /*requirePr=*/ true);
+    if (!base) continue;
+
+    let reviews: any[];
+    try {
+      reviews = await octokit.paginate(
+        octokit.pulls.listReviews,
+        {
+          owner: base.owner,
+          repo: base.repo,
+          pull_number: base.number,
+          per_page: 100,
+        },
+      );
+    } catch (err) {
+      console.error(
+        `[usrcp-github] pulls.listReviews(${base.owner}/${base.repo}#${base.number}) failed: ` +
+        (err instanceof Error ? err.message : String(err)),
+      );
+      failures++;
+      continue;
+    }
+
+    for (const r of reviews) {
+      if (!r.user || r.user.login !== config.github_login) continue;
+      if (typeof r.id !== "number") continue;
+      if (typeof r.submitted_at !== "string") continue;
+      if (r.submitted_at <= sinceIso) continue;
+      // Only substantive review states. PENDING is a draft the
+      // reviewer hasn't submitted yet (we'd capture it next tick
+      // once submitted). DISMISSED is an administratively-cleared
+      // review - the review still exists in the API but the act
+      // has been undone, so we skip it.
+      const state = r.state;
+      if (
+        state !== "APPROVED" &&
+        state !== "CHANGES_REQUESTED" &&
+        state !== "COMMENTED"
+      ) {
+        continue;
+      }
+
+      const activity: PullRequestReviewActivity = {
+        type: "pr_reviewed",
+        review_id: r.id,
+        node_id: r.node_id,
+        owner: base.owner,
+        repo: base.repo,
+        pr_number: base.number,
+        pr_title: base.title,
+        pr_author_login: base.author_login,
+        state,
+        body: typeof r.body === "string" ? r.body : "",
+        url: r.html_url,
+        pr_url: base.url,
+        reviewer_login: r.user.login,
+        submitted_at: r.submitted_at,
+        org: base.org,
+      };
+      const outcome = captureGitHubActivity(ledger, activity, config);
+      if (outcome.captured) {
+        captured++;
+        if (r.submitted_at > newCursor) newCursor = r.submitted_at;
+      } else {
+        skipped++;
+      }
+    }
+    // Advance past candidate.updated_at on successful empty scans
+    // (round-2 lesson from PR #59).
+    if (typeof item.updated_at === "string" && item.updated_at > newCursor) {
+      newCursor = item.updated_at;
+    }
+  }
+  // Round-1 lesson from PR #59: pin on any failure.
+  if (failures > 0) newCursor = sinceIso;
+  return { captured, skipped, newCursor, failures };
+}
+
 export async function pollOnce(
   ledger: CaptureLedger,
   octokit: Octokit,
   config: GitHubConfig,
   cursors: CursorState,
 ): Promise<PollTickResult> {
-  // Five independent queries run in parallel - each has its own
+  // Six independent queries run in parallel - each has its own
   // server-side cursor filter so they don't waste each other's
   // pagination budget.
-  const [opened, merged, closed, issue_opened, issue_commented] = await Promise.all([
+  const [opened, merged, closed, issue_opened, issue_commented, pr_reviewed] = await Promise.all([
     pollOpened(ledger, octokit, config, cursors.opened),
     pollTerminal(ledger, octokit, config, "pr_merged", cursors.merged),
     pollTerminal(ledger, octokit, config, "pr_closed", cursors.closed),
     pollIssuesOpened(ledger, octokit, config, cursors.issue_opened),
     pollIssueComments(ledger, octokit, config, cursors.issue_commented),
+    pollPrReviews(ledger, octokit, config, cursors.pr_reviewed),
   ]);
-  return { opened, merged, closed, issue_opened, issue_commented };
+  return { opened, merged, closed, issue_opened, issue_commented, pr_reviewed };
 }
 
 async function main() {
@@ -446,10 +570,11 @@ async function main() {
     closed: config.last_closed_at ?? firstRunIso,
     issue_opened: config.last_issue_opened_at ?? firstRunIso,
     issue_commented: config.last_issue_commented_at ?? firstRunIso,
+    pr_reviewed: config.last_pr_reviewed_at ?? firstRunIso,
   };
   console.error(
     `[usrcp-github] starting cursors: opened=${cursors.opened} merged=${cursors.merged} closed=${cursors.closed} ` +
-    `issue_opened=${cursors.issue_opened} issue_commented=${cursors.issue_commented}`,
+    `issue_opened=${cursors.issue_opened} issue_commented=${cursors.issue_commented} pr_reviewed=${cursors.pr_reviewed}`,
   );
 
   let stopping = false;
@@ -461,7 +586,8 @@ async function main() {
       const result = await pollOnce(ledger, octokit, config, cursors);
       const advances: Partial<Record<
         "last_synced_at" | "last_merged_at" | "last_closed_at" |
-        "last_issue_opened_at" | "last_issue_commented_at",
+        "last_issue_opened_at" | "last_issue_commented_at" |
+        "last_pr_reviewed_at",
         string
       >> = {};
       if (result.opened.newCursor !== cursors.opened) {
@@ -484,25 +610,36 @@ async function main() {
         cursors.issue_commented = result.issue_commented.newCursor;
         advances.last_issue_commented_at = cursors.issue_commented;
       }
+      if (result.pr_reviewed.newCursor !== cursors.pr_reviewed) {
+        cursors.pr_reviewed = result.pr_reviewed.newCursor;
+        advances.last_pr_reviewed_at = cursors.pr_reviewed;
+      }
       if (Object.keys(advances).length > 0) {
         saveCursors(advances, masterKey);
       }
       const totalCaptured =
         result.opened.captured + result.merged.captured + result.closed.captured +
-        result.issue_opened.captured + result.issue_commented.captured;
+        result.issue_opened.captured + result.issue_commented.captured +
+        result.pr_reviewed.captured;
       const totalSkipped =
         result.opened.skipped + result.merged.skipped + result.closed.skipped +
-        result.issue_opened.skipped + result.issue_commented.skipped;
-      if (totalCaptured > 0 || totalSkipped > 0 || result.issue_commented.failures > 0) {
+        result.issue_opened.skipped + result.issue_commented.skipped +
+        result.pr_reviewed.skipped;
+      const totalFailures =
+        result.issue_commented.failures + result.pr_reviewed.failures;
+      if (totalCaptured > 0 || totalSkipped > 0 || totalFailures > 0) {
         const ic = result.issue_commented;
+        const pr = result.pr_reviewed;
         const icFailNote = ic.failures > 0 ? `,f=${ic.failures} (cursor pinned)` : "";
+        const prFailNote = pr.failures > 0 ? `,f=${pr.failures} (cursor pinned)` : "";
         console.error(
           `[usrcp-github] tick: ` +
           `opened={c=${result.opened.captured},s=${result.opened.skipped}} ` +
           `merged={c=${result.merged.captured},s=${result.merged.skipped}} ` +
           `closed={c=${result.closed.captured},s=${result.closed.skipped}} ` +
           `issue_opened={c=${result.issue_opened.captured},s=${result.issue_opened.skipped}} ` +
-          `issue_commented={c=${ic.captured},s=${ic.skipped}${icFailNote}}`,
+          `issue_commented={c=${ic.captured},s=${ic.skipped}${icFailNote}} ` +
+          `pr_reviewed={c=${pr.captured},s=${pr.skipped}${prFailNote}}`,
         );
       }
     } catch (err) {
