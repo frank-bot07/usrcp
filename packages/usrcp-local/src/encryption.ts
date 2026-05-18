@@ -203,6 +203,37 @@ function deriveFromPassphrase(passphrase: string, salt: Buffer): Buffer {
   });
 }
 
+/**
+ * Pure in-memory passphrase validation against a (salt, verify) pair.
+ *
+ * pairJoin uses this to validate the user's passphrase against the
+ * bundle's stored salt+verify BEFORE writing any key files to disk.
+ * Without it, a wrong passphrase would write all six key files first
+ * and only catch the mismatch when initializeMasterKey() ran against
+ * the now-canonical files - leaving partial state on disk if the
+ * process was killed before the snapshot-restore rollback completed.
+ *
+ * Returns the derived master key on success. Throws "Invalid
+ * passphrase" on mismatch; caller wraps as WrongPassphrase. The
+ * caller is responsible for zeroing the returned Buffer.
+ */
+export function deriveAndVerifyMasterKey(
+  passphrase: string,
+  salt: Buffer,
+  expectedVerify: Buffer
+): Buffer {
+  const masterKey = deriveFromPassphrase(passphrase, salt);
+  const computed = generateVerifyHash(masterKey);
+  if (
+    expectedVerify.length !== computed.length ||
+    !crypto.timingSafeEqual(expectedVerify, computed)
+  ) {
+    zeroBuffer(masterKey);
+    throw new Error("Invalid passphrase");
+  }
+  return masterKey;
+}
+
 // Fixed personalization salt for the legacy (v1) pairing KDF where the
 // 8-digit code was BOTH the lookup key sent to the server AND the scrypt
 // input. v2 (deriveFromPairingSecret below) replaces this design so the
