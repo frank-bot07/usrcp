@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach } from "vitest";
 import {
   captureGitHubActivity,
   type CaptureLedger,
+  type IssueCommentActivity,
+  type IssueOpenedActivity,
   type PullRequestActivity,
   type PullRequestStateChangeActivity,
 } from "../capture.js";
@@ -257,5 +259,178 @@ describe("captureGitHubActivity - pr_closed (without merge)", () => {
     captureGitHubActivity(ledger, makeMergedActivity(), CONFIG);
     const keys = ledger.events.map((e) => e.idempotencyKey);
     expect(new Set(keys).size).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v1.2: issue_opened
+// ---------------------------------------------------------------------------
+
+function makeIssueOpened(
+  overrides: Partial<IssueOpenedActivity> = {},
+): IssueOpenedActivity {
+  return {
+    type: "issue_opened",
+    node_id: "I_kwDOABC456",
+    number: 99,
+    owner: "anthropics",
+    repo: "usrcp",
+    title: "Telemetry pipeline crashes on long PR titles",
+    body: "Reproduction:\n1. Create a PR with a 1000-char title.\n2. Watch logs.",
+    url: "https://github.com/anthropics/usrcp/issues/99",
+    author_login: "chad",
+    created_at: "2026-05-17T10:00:00Z",
+    updated_at: "2026-05-17T10:00:00Z",
+    state: "open",
+    org: "anthropics",
+    ...overrides,
+  };
+}
+
+describe("captureGitHubActivity - issue_opened", () => {
+  let ledger: FakeLedger;
+  beforeEach(() => { ledger = new FakeLedger(); });
+
+  it("captures with the same channel_id format as PRs", () => {
+    const result = captureGitHubActivity(ledger, makeIssueOpened(), CONFIG);
+    expect(result.captured).toBe(true);
+    const e = ledger.events[0];
+    expect(e.intent).toBe("issue_opened");
+    expect(e.summary).toBe("anthropics/usrcp#99: Telemetry pipeline crashes on long PR titles");
+    expect(e.idempotencyKey).toBe("github:issue:anthropics/usrcp#99");
+    expect(e.channel_id).toBe("anthropics/usrcp#99");
+    expect(e.tags).toEqual(["github", "issue", "anthropics/usrcp"]);
+  });
+
+  it("uses a distinct idempotency namespace from PRs (issue #42 vs PR #42 can never collide in GitHub but we still namespace defensively)", () => {
+    // GitHub guarantees these can't collide in the same repo, but
+    // the namespace is still distinct as a sanity check.
+    captureGitHubActivity(ledger, makeActivity({ number: 42 }), CONFIG);
+    captureGitHubActivity(ledger, makeIssueOpened({ number: 42 }), CONFIG);
+    const keys = ledger.events.map((e) => e.idempotencyKey);
+    expect(keys[0]).toBe("github:pr:anthropics/usrcp#42");
+    expect(keys[1]).toBe("github:issue:anthropics/usrcp#42");
+  });
+
+  it("respects the org allowlist", () => {
+    const cfg = { ...CONFIG, allowlisted_orgs: ["other"] };
+    const result = captureGitHubActivity(ledger, makeIssueOpened(), cfg);
+    expect(result.captured).toBe(false);
+  });
+
+  it("skips an issue with an empty title", () => {
+    const result = captureGitHubActivity(ledger, makeIssueOpened({ title: "" }), CONFIG);
+    expect(result.captured).toBe(false);
+    expect(result).toMatchObject({ captured: false, reason: "empty_title" });
+  });
+
+  it("captures the full body in detail (not just the summary slice)", () => {
+    const longBody = "Detailed issue body ".repeat(50);
+    captureGitHubActivity(ledger, makeIssueOpened({ body: longBody }), CONFIG);
+    expect(ledger.events[0].detail!.body).toBe(longBody);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v1.2: issue_commented
+// ---------------------------------------------------------------------------
+
+function makeIssueComment(
+  overrides: Partial<IssueCommentActivity> = {},
+): IssueCommentActivity {
+  return {
+    type: "issue_commented",
+    comment_id: 1234567890,
+    node_id: "IC_kwDOABC789",
+    owner: "anthropics",
+    repo: "usrcp",
+    issue_number: 42,
+    issue_title: "Add the GitHub adapter",
+    is_pr_parent: true,
+    url: "https://github.com/anthropics/usrcp/pull/42#issuecomment-1234567890",
+    issue_url: "https://github.com/anthropics/usrcp/pull/42",
+    body: "Looks good. One thought on the cursor strategy: maybe stash the previous tick's max for debugging?",
+    author_login: "chad",
+    created_at: "2026-05-17T11:00:00Z",
+    updated_at: "2026-05-17T11:00:00Z",
+    org: "anthropics",
+    ...overrides,
+  };
+}
+
+describe("captureGitHubActivity - issue_commented", () => {
+  let ledger: FakeLedger;
+  beforeEach(() => { ledger = new FakeLedger(); });
+
+  it("captures with the comment_id as the idempotency key and parent's channel_id", () => {
+    const result = captureGitHubActivity(ledger, makeIssueComment(), CONFIG);
+    expect(result.captured).toBe(true);
+    const e = ledger.events[0];
+    expect(e.intent).toBe("issue_commented");
+    expect(e.idempotencyKey).toBe("github:issue-comment:1234567890");
+    expect(e.channel_id).toBe("anthropics/usrcp#42");
+    // thread_id = comment ID so the timeline can dedupe at thread level.
+    expect((e as any).thread_id).toBe("1234567890");
+  });
+
+  it("summary fronts with parent identifier + first 80 chars of body", () => {
+    captureGitHubActivity(ledger, makeIssueComment(), CONFIG);
+    const e = ledger.events[0];
+    expect(e.summary.startsWith("anthropics/usrcp#42 comment: Looks good. One thought on the cursor")).toBe(true);
+  });
+
+  it("ellipsizes long comment first lines at 80 chars", () => {
+    const longLine = "x".repeat(500);
+    captureGitHubActivity(ledger, makeIssueComment({ body: longLine }), CONFIG);
+    const e = ledger.events[0];
+    // After ellipsis, the body chunk in the summary is 80 chars
+    // ("comment: " + 80 = the visible portion).
+    expect(e.summary).toContain("comment: " + "x".repeat(79) + "…");
+  });
+
+  it("uses the first line only (drops anything after a newline)", () => {
+    captureGitHubActivity(
+      ledger,
+      makeIssueComment({ body: "TL;DR ship it\n\nMore detail below..." }),
+      CONFIG,
+    );
+    expect(ledger.events[0].summary).toBe("anthropics/usrcp#42 comment: TL;DR ship it");
+  });
+
+  it("tags 'pull-request' when the parent is a PR, 'issue' otherwise", () => {
+    captureGitHubActivity(ledger, makeIssueComment({ is_pr_parent: true }), CONFIG);
+    captureGitHubActivity(
+      ledger,
+      makeIssueComment({ is_pr_parent: false, comment_id: 999 }),
+      CONFIG,
+    );
+    expect(ledger.events[0].tags).toContain("pull-request");
+    expect(ledger.events[1].tags).toContain("issue");
+  });
+
+  it("groups under the same channel_id as a pr_opened on the parent PR", () => {
+    captureGitHubActivity(ledger, makeActivity({ number: 42 }), CONFIG);
+    captureGitHubActivity(ledger, makeIssueComment(), CONFIG);
+    expect(ledger.events[0].channel_id).toBe(ledger.events[1].channel_id);
+    expect(ledger.events[0].channel_id).toBe("anthropics/usrcp#42");
+  });
+
+  it("skips a comment with empty body", () => {
+    const result = captureGitHubActivity(ledger, makeIssueComment({ body: "" }), CONFIG);
+    expect(result.captured).toBe(false);
+    expect(result).toMatchObject({ captured: false, reason: "empty_body" });
+  });
+
+  it("captures the full comment body in detail (no truncation in stored detail)", () => {
+    const longBody = "Detail ".repeat(200);
+    captureGitHubActivity(ledger, makeIssueComment({ body: longBody }), CONFIG);
+    expect(ledger.events[0].detail!.body).toBe(longBody);
+  });
+
+  it("respects the org allowlist", () => {
+    const cfg = { ...CONFIG, allowlisted_orgs: ["other"] };
+    const result = captureGitHubActivity(ledger, makeIssueComment(), cfg);
+    expect(result.captured).toBe(false);
+    expect(result).toMatchObject({ captured: false, reason: "org_not_allowlisted" });
   });
 });
