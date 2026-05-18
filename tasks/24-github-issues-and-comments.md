@@ -26,7 +26,7 @@ your GitHub participation from the ledger without re-querying GitHub.
 | Should `issue_commented` on a PR share channel_id with the PR? | Yes - `<owner>/<repo>#<number>` for both | GitHub uses one numbering namespace per repo. PR #42 and issue #42 can't coexist in the same repo. `getRecentEventsByChannel` returns the PR's open, terminal state, AND your conversation-tab comments in one shot. |
 | Inline review comments (the ones on diff hunks)? | Out of scope | Different endpoint (`pulls.listReviewComments`). Defer to v1.3 (reviews). |
 | Strict-greater-than cursor filter? | Yes | `since` on the REST endpoint is inclusive on second-precision. A comment exactly at the cursor would re-arrive every tick. Idempotency would dedupe but the filter keeps the data clean. |
-| Comment-list failure on one candidate? | Log + skip that candidate | A 404 (private repo) shouldn't kill the tick. Other candidates still process; cursor for the failed issue stays put. |
+| Comment-list failure on one candidate? | Log + skip that candidate, AND pin the cursor at the input value | A 404 (private repo) shouldn't kill the tick. But if we let other candidates' comments advance the cursor, the failed candidate's comments would be skipped forever on retry. Pinning the cursor + idempotency on the captured ones lets the next tick re-process the entire window cleanly. (Codex round-1 review on PR #59 found this; see test "partial failure pins the cursor at the input value".) |
 
 ## Surface area
 
@@ -53,7 +53,7 @@ your GitHub participation from the ledger without re-querying GitHub.
 
 ## Verification
 
-- `(cd packages/usrcp-github && npm test)` -> 66/66 pass (was 45 in v1.1).
+- `(cd packages/usrcp-github && npm test)` -> 67/67 pass (was 45 in v1.1).
 - `(cd packages/usrcp-local && npm test)` -> 422/422 (unchanged - no usrcp-local files touched).
 
 ## Out of scope (still)

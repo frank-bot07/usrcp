@@ -77,7 +77,7 @@ export interface PollTickResult {
   merged: { captured: number; skipped: number; newCursor: string };
   closed: { captured: number; skipped: number; newCursor: string };
   issue_opened: { captured: number; skipped: number; newCursor: string };
-  issue_commented: { captured: number; skipped: number; newCursor: string };
+  issue_commented: { captured: number; skipped: number; newCursor: string; failures: number };
 }
 
 interface BaseFields {
@@ -272,19 +272,25 @@ async function pollIssuesOpened(
  * Search returns issues sorted by updated_at desc, which is fine -
  * we don't need order for correctness because idempotency dedupes.
  *
- * Cursor advance is the latest emitted comment's `created_at`. A
- * candidate issue with no qualifying comments doesn't advance the
- * cursor (idempotency keeps the re-query cheap).
+ * Cursor advance is the latest emitted comment's `created_at` ONLY
+ * IF every candidate fetch succeeded. If ANY candidate's
+ * `listComments` failed (404/500/rate-limit), we keep the cursor
+ * at the input value so the next tick re-fetches the entire window.
+ * Idempotency keys dedupe successfully-captured comments on the
+ * retry tick. Without this, a transient failure on candidate A
+ * combined with success on candidate B would advance the cursor
+ * past A's comment time, permanently losing A's comment.
  */
 async function pollIssueComments(
   ledger: CaptureLedger,
   octokit: Octokit,
   config: GitHubConfig,
   sinceIso: string,
-): Promise<{ captured: number; skipped: number; newCursor: string }> {
+): Promise<{ captured: number; skipped: number; newCursor: string; failures: number }> {
   let captured = 0;
   let skipped = 0;
   let newCursor = sinceIso;
+  let failures = 0;
 
   const q = [
     `commenter:${config.github_login}`,
@@ -313,12 +319,14 @@ async function pollIssueComments(
       );
     } catch (err) {
       // 404 = repo went private / deleted; 410 = repo archived;
-      // anything else we just skip this candidate so the rest can
-      // still process. The cursor stays put for this issue.
+      // 5xx / rate-limit = transient. We skip this candidate so the
+      // rest can still process, but we'll also pin the tick's cursor
+      // so the next tick retries the whole window (codex review #59).
       console.error(
         `[usrcp-github] listComments(${base.owner}/${base.repo}#${base.number}) failed: ` +
         (err instanceof Error ? err.message : String(err)),
       );
+      failures++;
       continue;
     }
 
@@ -358,7 +366,12 @@ async function pollIssueComments(
       }
     }
   }
-  return { captured, skipped, newCursor };
+  // If any candidate fetch failed, pin the cursor at the input value
+  // so the next tick re-processes the entire window. Successfully-
+  // captured comments dedupe via idempotency keys; the failed
+  // candidate's comments get another shot.
+  if (failures > 0) newCursor = sinceIso;
+  return { captured, skipped, newCursor, failures };
 }
 
 export async function pollOnce(
@@ -464,14 +477,16 @@ async function main() {
       const totalSkipped =
         result.opened.skipped + result.merged.skipped + result.closed.skipped +
         result.issue_opened.skipped + result.issue_commented.skipped;
-      if (totalCaptured > 0 || totalSkipped > 0) {
+      if (totalCaptured > 0 || totalSkipped > 0 || result.issue_commented.failures > 0) {
+        const ic = result.issue_commented;
+        const icFailNote = ic.failures > 0 ? `,f=${ic.failures} (cursor pinned)` : "";
         console.error(
           `[usrcp-github] tick: ` +
           `opened={c=${result.opened.captured},s=${result.opened.skipped}} ` +
           `merged={c=${result.merged.captured},s=${result.merged.skipped}} ` +
           `closed={c=${result.closed.captured},s=${result.closed.skipped}} ` +
           `issue_opened={c=${result.issue_opened.captured},s=${result.issue_opened.skipped}} ` +
-          `issue_commented={c=${result.issue_commented.captured},s=${result.issue_commented.skipped}}`,
+          `issue_commented={c=${ic.captured},s=${ic.skipped}${icFailNote}}`,
         );
       }
     } catch (err) {

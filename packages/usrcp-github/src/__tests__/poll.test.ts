@@ -429,8 +429,58 @@ describe("pollOnce - issue_commented (v1.2)", () => {
     const result = await pollOnce(ledger, octokit as any, CONFIG, neutralCursors());
 
     expect(result.issue_commented.captured).toBe(1);
+    expect(result.issue_commented.failures).toBe(1);
     expect(ledger.events).toHaveLength(1);
     expect(ledger.events[0].idempotencyKey).toBe("github:issue-comment:500");
+  });
+
+  it("partial failure pins the cursor at the input value (codex PR #59 review)", async () => {
+    // Two candidates, both with new comments by the user. listComments
+    // succeeds for #2 but fails for #1. Without the pin, the cursor
+    // would advance past #2's comment time, and on the next tick
+    // listComments(#1, since=newCursor) would skip #1's earlier
+    // comment forever.
+    const ledger = new FakeLedger();
+    const candidates = [
+      makeIssueSearchItem({ number: 1, updated_at: "2026-05-17T11:00:00Z" }),
+      makeIssueSearchItem({ number: 2, updated_at: "2026-05-17T12:00:00Z" }),
+    ];
+    const search = { issuesAndPullRequests: Symbol("s") };
+    const listComments = Symbol("lc");
+    const octokit = {
+      search,
+      issues: { listComments },
+      paginate: async (endpoint: unknown, params: any) => {
+        if (endpoint === search.issuesAndPullRequests) {
+          return params.q.includes("commenter:") ? candidates : [];
+        }
+        if (endpoint === listComments) {
+          if (params.issue_number === 1) throw new Error("simulated 500");
+          return [
+            {
+              id: 700,
+              user: { login: "chad" },
+              body: "from #2, post-cursor",
+              html_url: "",
+              created_at: "2026-05-17T11:30:00Z",
+              updated_at: "2026-05-17T11:30:00Z",
+              node_id: "IC_q",
+            },
+          ];
+        }
+        throw new Error("unexpected");
+      },
+    };
+
+    const cursors = neutralCursors(); // "2026-05-16T00:00:00Z"
+    const result = await pollOnce(ledger, octokit as any, CONFIG, cursors);
+
+    // #2's comment was captured for completeness this tick.
+    expect(result.issue_commented.captured).toBe(1);
+    expect(result.issue_commented.failures).toBe(1);
+    // CRITICAL: the cursor MUST NOT advance, so the next tick retries
+    // the entire window and can re-fetch #1's comments.
+    expect(result.issue_commented.newCursor).toBe(cursors.issue_commented);
   });
 
   it("advances cursor only when at least one comment was emitted (not on candidate-only matches)", async () => {
