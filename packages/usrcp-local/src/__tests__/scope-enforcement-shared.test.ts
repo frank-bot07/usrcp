@@ -13,7 +13,7 @@
  * caller wiring.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
@@ -252,6 +252,9 @@ describe("registerToolsWithScopes (shared) - direct wrapper exercise", () => {
         throw new Error("simulated audit-table failure");
       },
     };
+    // Silence the new default-onAuditFailure warn for this assertion
+    // (we test the warn behavior below).
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     registerToolsWithScopes(
       server,
       [
@@ -271,6 +274,130 @@ describe("registerToolsWithScopes (shared) - direct wrapper exercise", () => {
     const result = await registered["t_loose"].handler({ domain: "coding" }, {});
     expect(result.content[0].text).toBe("{}");
     expect(calls).toEqual(["handler-ran"]);
+    warnSpy.mockRestore();
+  });
+
+  // --- Codex Tier-2 #4: best-effort audit failures must leave a breadcrumb ---
+
+  it("strictAudit:false emits a console.warn by default when logAudit throws", async () => {
+    const { server, registered } = makeFakeServer();
+    const failingLedger = {
+      logAudit() {
+        throw new Error("disk full");
+      },
+    };
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    registerToolsWithScopes(
+      server,
+      [makeDef({ name: "t_warn", mutating: false })],
+      { readScopes: ["coding"], agentId: "agent-alice" } as ServeOptions,
+      failingLedger,
+      { strictAudit: false },
+    );
+    await registered["t_warn"].handler({ domain: "coding" }, {});
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const msg = warnSpy.mock.calls[0][0] as string;
+    expect(msg).toContain("tool=t_warn");
+    expect(msg).toContain("agent=agent-alice");
+    expect(msg).toContain("read=[coding]");
+    expect(msg).toContain("disk full");
+    expect(msg).toContain("strictAudit:false");
+    warnSpy.mockRestore();
+  });
+
+  it("strictAudit:false routes audit failures through a caller-supplied onAuditFailure", async () => {
+    const { server, registered } = makeFakeServer();
+    const captured: Array<{ msg: string; ctx: any }> = [];
+    const failingLedger = {
+      logAudit() {
+        throw new Error("simulated logAudit failure");
+      },
+    };
+    registerToolsWithScopes(
+      server,
+      [makeDef({ name: "t_callback", mutating: false })],
+      { readScopes: ["coding"], agentId: "agent-bob" } as ServeOptions,
+      failingLedger,
+      {
+        strictAudit: false,
+        onAuditFailure: (err, ctx) => {
+          captured.push({ msg: err instanceof Error ? err.message : String(err), ctx });
+        },
+      },
+    );
+    await registered["t_callback"].handler({ domain: "coding" }, {});
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0].msg).toBe("simulated logAudit failure");
+    expect(captured[0].ctx).toMatchObject({
+      toolName: "t_callback",
+      agentId: "agent-bob",
+    });
+    expect(captured[0].ctx.scopeRepr).toContain("read=[coding]");
+  });
+
+  it("strictAudit:false tolerates an onAuditFailure that itself throws (handler still runs)", async () => {
+    const { server, registered } = makeFakeServer();
+    const calls: string[] = [];
+    const failingLedger = {
+      logAudit() {
+        throw new Error("primary audit failure");
+      },
+    };
+    registerToolsWithScopes(
+      server,
+      [
+        makeDef({
+          name: "t_double_fail",
+          mutating: false,
+          handler: async () => {
+            calls.push("handler-ran");
+            return { content: [{ type: "text" as const, text: "{}" }] };
+          },
+        }),
+      ],
+      { readScopes: ["coding"], agentId: "agent-c" } as ServeOptions,
+      failingLedger,
+      {
+        strictAudit: false,
+        onAuditFailure: () => {
+          throw new Error("callback itself blew up");
+        },
+      },
+    );
+    const result = await registered["t_double_fail"].handler({ domain: "coding" }, {});
+    expect(result.content[0].text).toBe("{}");
+    expect(calls).toEqual(["handler-ran"]);
+  });
+
+  it("strictAudit (default) does NOT invoke onAuditFailure - errors propagate verbatim", async () => {
+    // The callback is irrelevant in strict mode: a logAudit throw
+    // takes the call down before any handler or callback runs.
+    const { server, registered } = makeFakeServer();
+    const callbackCalls: number[] = [];
+    const failingLedger = {
+      logAudit() {
+        throw new Error("strict audit failure");
+      },
+    };
+    registerToolsWithScopes(
+      server,
+      [makeDef({ name: "t_strict_cb", mutating: false })],
+      { readScopes: ["coding"], agentId: "a1" } as ServeOptions,
+      failingLedger,
+      {
+        // strictAudit defaults to true; the callback should be ignored.
+        onAuditFailure: () => {
+          callbackCalls.push(1);
+        },
+      },
+    );
+    await expect(
+      registered["t_strict_cb"].handler({ domain: "coding" }, {}),
+    ).rejects.toThrow(/strict audit failure/);
+    expect(callbackCalls).toEqual([]);
   });
 
   it("write-tools check writeScopes; read-tools check readScopes (asymmetric routing)", async () => {
