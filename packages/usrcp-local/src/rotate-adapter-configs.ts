@@ -24,6 +24,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import {
   type AdapterManifest,
+  BUILTIN_ADAPTERS,
   getRegisteredAdapters,
   getRotateKeyAdapterValues,
   resolveAdapterPackageName,
@@ -33,20 +34,31 @@ import {
  * Convenience accessor for the rotate-key participation set. Derived
  * from manifest.supportsRotateKey - see registry.ts. Kept exported
  * under the old name so callers that imported it pre-marketplace
- * still resolve.
+ * still resolve. Reads through `~/.usrcp/adapters.json` per call so
+ * external adapters participate at rotation time.
  */
 export function getAdaptersWithEncryptedConfig(): string[] {
   return getRotateKeyAdapterValues();
 }
 
 /**
- * @deprecated since the marketplace registry landed - re-derive via
- * getAdaptersWithEncryptedConfig() (or call getRotateKeyAdapterValues
- * directly) so external adapters in `~/.usrcp/adapters.json` are
- * included. The static export is kept for backward compatibility only.
+ * @deprecated since the marketplace registry landed (PR #62) - re-derive
+ * via getAdaptersWithEncryptedConfig() so external adapters in
+ * `~/.usrcp/adapters.json` are included. Kept here as a stable
+ * snapshot of the in-tree adapters at the time of the refactor, for
+ * backward compatibility with any pre-#62 consumer that imported the
+ * constant expecting a fixed set.
+ *
+ * IMPORTANT: this snapshot is derived from BUILTIN_ADAPTERS, not from
+ * the live registry. Codex round-3 review on PR #62 caught the first
+ * cut reading the external file at import time - that made the
+ * snapshot non-deterministic across machines AND introduced unwanted
+ * disk I/O at module load for any consumer that imports this module.
+ * The snapshot belongs to the in-tree contract; external adapters use
+ * the dynamic getter above.
  */
 export const ADAPTERS_WITH_ENCRYPTED_CONFIG: ReadonlyArray<string> = Object.freeze(
-  getRotateKeyAdapterValues(),
+  getRotateKeyAdapterValues([...BUILTIN_ADAPTERS]),
 );
 
 export interface AdapterReencryptResult {
