@@ -459,4 +459,30 @@ describe("fsyncFile / fsyncDir (PR #71 - power-loss durability helpers)", () => 
     const { fsyncDir } = await import("../encryption.js");
     expect(() => fsyncDir(path.join(tmpDir, "missing-subdir"))).not.toThrow();
   });
+
+  it("mkdirpDurable creates a deep chain and leaves every level mode-0o700 readable", async () => {
+    const { mkdirpDurable } = await import("../encryption.js");
+    const target = path.join(tmpDir, "a", "b", "c", "d");
+    mkdirpDurable(target, 0o700);
+    expect(fs.statSync(target).isDirectory()).toBe(true);
+    // Every level on the new chain exists and is reachable - the fsync
+    // walk happens internally; we just verify the mkdir-p semantic is
+    // preserved on top of it.
+    for (const p of [
+      path.join(tmpDir, "a"),
+      path.join(tmpDir, "a", "b"),
+      path.join(tmpDir, "a", "b", "c"),
+      path.join(tmpDir, "a", "b", "c", "d"),
+    ]) {
+      expect(fs.statSync(p).isDirectory()).toBe(true);
+    }
+  });
+
+  it("mkdirpDurable is a no-op when the target already exists", async () => {
+    const { mkdirpDurable } = await import("../encryption.js");
+    const target = path.join(tmpDir, "already-here");
+    fs.mkdirSync(target, { recursive: true });
+    expect(() => mkdirpDurable(target, 0o700)).not.toThrow();
+    expect(fs.statSync(target).isDirectory()).toBe(true);
+  });
 });

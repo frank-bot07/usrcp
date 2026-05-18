@@ -36,6 +36,7 @@ import {
   safeWriteFile,
   fsyncFile,
   fsyncDir,
+  mkdirpDurable,
   deriveAndVerifyMasterKey,
   deriveGlobalEncryptionKey,
   setUserSlug,
@@ -180,13 +181,17 @@ function sweepStaleStagingDirs(userDir: string): void {
       // Aside copy exists. If keys/ also exists, the prior pairJoin finished
       // the staging-to-keys rename but died before unlinking the aside; just
       // delete the aside. If keys/ is missing, restore from the aside (we
-      // died between the two renames).
+      // died between the two renames). fsync the parent dir after each
+      // mutation so the recovery itself is power-loss-durable on this
+      // boot (Codex round-2 P2 on PR #71).
       const asidePath = path.join(userDir, name);
       try {
         if (fs.existsSync(keysDir)) {
           fs.rmSync(asidePath, { recursive: true, force: true });
+          fsyncDir(userDir);
         } else {
           fs.renameSync(asidePath, keysDir);
+          fsyncDir(userDir);
         }
       } catch {
         // If recovery fails, leave the aside in place for manual inspection.
@@ -570,7 +575,13 @@ async function pairJoinAfterDecrypt(
   // canonical path. Sweep any stale staging dirs from prior crashed
   // runs first so they don't accumulate.
   const userDir = path.dirname(keysDir);
-  fs.mkdirSync(userDir, { recursive: true, mode: 0o700 });
+  // mkdirpDurable rather than plain mkdirSync: on a brand-new
+  // install, the entire ~/.usrcp/users/<slug>/ chain may be created
+  // here. Without fsyncing each parent in the new chain, a power
+  // loss after pair-join returns could lose one or more chain
+  // links and leave the freshly committed keys/ unreachable.
+  // (Codex round-2 P2 on PR #71.)
+  mkdirpDurable(userDir, 0o700);
   sweepStaleStagingDirs(userDir);
 
   const stagingDir = fs.mkdtempSync(path.join(userDir, PAIR_STAGING_PREFIX));
