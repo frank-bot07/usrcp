@@ -308,6 +308,22 @@ export function loadExternalAdapters(
       continue;
     }
 
+    // External adapters MUST declare setupFunction. The dispatcher
+    // routes everything through it except the three builtin-internal
+    // adapters (terminal / mcp-agent / openclaw), and external
+    // adapters are forbidden from claiming builtinInternal (already
+    // rejected above). So an external entry without setupFunction
+    // is advertised in the wizard / --adapter validation but cannot
+    // actually run - codex round-4 review on PR #62 caught this.
+    // Reject at load time so the wizard never offers a dead adapter.
+    if (m.setupFunction === undefined) {
+      console.error(
+        `[usrcp] Warning: external adapter "${m.value}" is missing required field 'setupFunction'; ignoring entry. ` +
+          `(External adapters cannot be builtinInternal, so the dispatcher needs an explicit function name.)`,
+      );
+      continue;
+    }
+
     out.push(m);
   }
   return out;

@@ -138,11 +138,36 @@ describe("loadExternalAdapters (~/.usrcp/adapters.json)", () => {
       // Missing 'name' - rejected.
       { value: "x", blurb: "..." } as Partial<AdapterManifest>,
       // Good - accepted.
-      { value: "good", name: "Good", blurb: "ok" },
+      { value: "good", name: "Good", blurb: "ok", setupFunction: "runGoodSetup" },
     ]);
     const ext = loadExternalAdapters();
     expect(ext).toHaveLength(1);
     expect(ext[0].value).toBe("good");
+  });
+
+  it("rejects external entries missing setupFunction (codex PR #62 round-4)", () => {
+    // The dispatcher routes external adapters through their
+    // setupFunction string. Without it the wizard / --adapter
+    // validation would advertise the adapter but the dispatcher
+    // would fail at invocation time. Reject at load time so
+    // operators see the problem in the warning log, not as a
+    // mid-wizard crash. (Built-in adapters can omit setupFunction
+    // only when they're builtinInternal; external adapters can
+    // never claim builtinInternal, so the check is unconditional
+    // for the external path.)
+    writeRegistry([
+      // No setupFunction - rejected even though required fields are present.
+      { value: "no-fn", name: "No Fn", blurb: "..." } as Partial<AdapterManifest>,
+      // setupFunction present + non-empty - accepted.
+      {
+        value: "has-fn",
+        name: "Has Fn",
+        blurb: "...",
+        setupFunction: "runHasFnSetup",
+      },
+    ]);
+    const ext = loadExternalAdapters();
+    expect(ext.map((m) => m.value)).toEqual(["has-fn"]);
   });
 
   it("rejects external adapters that claim builtinInternal", () => {
@@ -221,6 +246,7 @@ describe("loadExternalAdapters (~/.usrcp/adapters.json)", () => {
         value: "ok",
         name: "OK",
         blurb: "...",
+        setupFunction: "runOkSetup",
       },
     ]);
     const ext = loadExternalAdapters();
@@ -311,7 +337,12 @@ describe("getRegisteredAdapters (builtin + external)", () => {
   });
 
   it("skipExternal=true bypasses the JSON read (test affordance)", () => {
-    writeRegistry([{ value: "notion", name: "Notion", blurb: "..." }]);
+    // Use a valid manifest so the loader would accept it normally;
+    // the assertion proves skipExternal short-circuits the JSON
+    // read, not that the manifest is malformed.
+    writeRegistry([
+      { value: "notion", name: "Notion", blurb: "...", setupFunction: "runNotionSetup" },
+    ]);
     const all = getRegisteredAdapters({ skipExternal: true });
     expect(all.length).toBe(BUILTIN_ADAPTERS.length);
     expect(findAdapter("notion", all)).toBeUndefined();
