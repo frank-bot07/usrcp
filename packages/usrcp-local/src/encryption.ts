@@ -486,17 +486,36 @@ export function prepareKeyRotation(
 /**
  * Commit key rotation files to disk.
  * Called ONLY after database re-encryption succeeds.
+ *
+ * Power-loss durability: each file write is fsync'd before the next
+ * one runs, and the set of parent directories touched is fsync'd
+ * once at the end. Without this, the rotateKey path was atomic in
+ * the SIGKILL sense (the existing rotation_state.pending_key
+ * recovery handles partial commit) but not durable: a power loss
+ * after rotateKey returned could leave the new key files
+ * un-flushed and the next boot could read stale master.salt /
+ * master.verify pointing at the OLD master key, breaking
+ * decryption of data already re-encrypted under the new key.
+ * Same shape as pair-join's fsync discipline in PR #71.
  */
 export function commitKeyRotation(
   pendingFiles: { path: string; content: Buffer; mode: number }[]
 ): void {
+  const parentDirs = new Set<string>();
   for (const file of pendingFiles) {
     if (file.content.length === 0) {
-      // Delete the file (e.g., removing dev key in passphrase mode)
+      // Delete the file (e.g., removing dev key in passphrase mode).
       try { fs.unlinkSync(file.path); } catch {}
     } else {
       safeWriteFile(file.path, file.content, file.mode);
+      fsyncFile(file.path);
     }
+    parentDirs.add(path.dirname(file.path));
+  }
+  // fsync every directory we touched so the new entries (or the
+  // unlink of the old dev-key file) are durably linked.
+  for (const dir of parentDirs) {
+    fsyncDir(dir);
   }
 }
 
