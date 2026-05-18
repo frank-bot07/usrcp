@@ -552,6 +552,176 @@ describe("pairJoin", () => {
   });
 });
 
+describe("pairJoin atomic-write safety (PR #66)", () => {
+  async function makeBundleOnServer(): Promise<{
+    pairingString: string;
+    code: string;
+    state: StubServerState;
+  }> {
+    const { userDir, publicKey, privateKey } = initDeviceA();
+    const state: StubServerState = { bundles: new Map(), ownerForPost: publicKey };
+    const r = await pairInit({
+      userDir,
+      publicKeyPem: publicKey,
+      privateKeyPem: privateKey,
+      endpoint: "http://stub",
+      fetchImpl: stubFetch(state),
+    });
+    return { pairingString: r.pairingString, code: r.code, state };
+  }
+
+  it("never creates the canonical keys/ dir when the passphrase is wrong", async () => {
+    const { pairingString, state } = await makeBundleOnServer();
+
+    process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-pair-test-deviceB-"));
+    setUserSlug("default");
+    const bUserDir = path.join(process.env.HOME!, ".usrcp", "users", "default");
+    const bKeysDir = path.join(bUserDir, "keys");
+
+    await expect(
+      pairJoin(pairingString, {
+        userDir: bUserDir,
+        passphrase: "wrong-on-purpose",
+        endpoint: "http://stub",
+        fetchImpl: stubFetch(state),
+      })
+    ).rejects.toBeInstanceOf(WrongPassphrase);
+
+    // The new flow validates the passphrase in memory and bails before
+    // creating keys/. The pre-PR-#66 flow would have created keys/ and
+    // populated it with all six files, then rolled them back via the
+    // snapshot-restore path, leaving keys/ as an empty dir.
+    expect(fs.existsSync(bKeysDir)).toBe(false);
+  });
+
+  it("rejects a bundle whose private_pem_enc was sealed under a different master key without writing keys/", async () => {
+    const { pairingString, code, state } = await makeBundleOnServer();
+
+    // Replace private_pem_enc with ciphertext encrypted under a
+    // completely different master key. The bundle's salt+verify still
+    // validate under PASSPHRASE, but the new in-memory sanity check
+    // decrypts private_pem_enc with the derived global key and rejects.
+    const sourceCipher = state.bundles.get(code)!.encrypted_bundle;
+    expect(sourceCipher.startsWith("enc:")).toBe(true);
+
+    // Decrypt the source bundle so we can re-emit a tampered version.
+    const { secret } = parsePairingString(pairingString);
+    const pairKey = deriveFromPairingSecret(code, secret);
+    const sourceJson = decrypt(sourceCipher, pairKey);
+    const parsed = JSON.parse(sourceJson) as {
+      schema_v: number;
+      salt: string;
+      verify: string;
+      identity: { user_id: string; public_key: string; created_at: string };
+      private_pem_enc: string;
+    };
+    // Replace private_pem_enc with ciphertext encrypted under the
+    // pairing key itself (which is NOT what the master key should be).
+    parsed.private_pem_enc = encrypt("BEGIN FAKE PRIVATE KEY PEM", pairKey);
+    zeroBuffer(pairKey);
+    const tampered = encrypt(JSON.stringify(parsed), deriveFromPairingSecret(code, secret));
+    state.bundles.get(code)!.encrypted_bundle = tampered;
+
+    process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-pair-test-deviceB-"));
+    setUserSlug("default");
+    const bUserDir = path.join(process.env.HOME!, ".usrcp", "users", "default");
+    const bKeysDir = path.join(bUserDir, "keys");
+
+    await expect(
+      pairJoin(pairingString, {
+        userDir: bUserDir,
+        passphrase: PASSPHRASE,
+        endpoint: "http://stub",
+        fetchImpl: stubFetch(state),
+      })
+    ).rejects.toBeInstanceOf(InvalidPairingCode);
+
+    expect(fs.existsSync(bKeysDir)).toBe(false);
+  });
+
+  it("leaves no keys-pair-staging.* sibling after a successful pairJoin", async () => {
+    const { pairingString, state } = await makeBundleOnServer();
+
+    process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-pair-test-deviceB-"));
+    setUserSlug("default");
+    const bUserDir = path.join(process.env.HOME!, ".usrcp", "users", "default");
+
+    await pairJoin(pairingString, {
+      userDir: bUserDir,
+      passphrase: PASSPHRASE,
+      endpoint: "http://stub",
+      fetchImpl: stubFetch(state),
+    });
+
+    const siblings = fs.readdirSync(bUserDir);
+    expect(siblings.some((n) => n.startsWith("keys-pair-staging."))).toBe(false);
+    expect(siblings.some((n) => n.startsWith("keys-replaced-by-pair."))).toBe(false);
+    expect(siblings).toContain("keys");
+  });
+
+  it("sweeps stale keys-pair-staging.* dirs from a prior crashed pairJoin", async () => {
+    const { pairingString, state } = await makeBundleOnServer();
+
+    process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-pair-test-deviceB-"));
+    setUserSlug("default");
+    const bUserDir = path.join(process.env.HOME!, ".usrcp", "users", "default");
+    fs.mkdirSync(bUserDir, { recursive: true, mode: 0o700 });
+    // Simulate a SIGKILLed prior pairJoin: a staging dir with a partial
+    // set of files survives in the userDir.
+    const orphan = path.join(bUserDir, "keys-pair-staging.deadbeef");
+    fs.mkdirSync(orphan, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(orphan, "master.salt"), "garbage");
+
+    await pairJoin(pairingString, {
+      userDir: bUserDir,
+      passphrase: PASSPHRASE,
+      endpoint: "http://stub",
+      fetchImpl: stubFetch(state),
+    });
+
+    expect(fs.existsSync(orphan)).toBe(false);
+    // The successful pairJoin still committed a valid keys/ dir.
+    expect(fs.existsSync(path.join(bUserDir, "keys", "identity.json"))).toBe(true);
+  });
+
+  it("restores keys/ from a keys-replaced-by-pair.* orphan when the prior pairJoin died between renames", async () => {
+    // Set up a fresh deviceA pairing to give pairJoin something to claim.
+    const { pairingString, state } = await makeBundleOnServer();
+
+    // Build deviceB userDir in an isolated tmp tree. Simulate the
+    // SIGKILL-between-renames state: keys/ is absent and a
+    // keys-replaced-by-pair.* sibling holds the prior identity.
+    const bTmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-pair-test-deviceB-"));
+    const bUserDir = path.join(bTmpHome, ".usrcp", "users", "default");
+    const bKeysDir = path.join(bUserDir, "keys");
+    const asidePath = path.join(bUserDir, "keys-replaced-by-pair.deadbeef");
+    fs.mkdirSync(asidePath, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(
+      path.join(asidePath, "identity.json"),
+      '{"user_id":"u_priorB","public_key":"prior","created_at":""}'
+    );
+    fs.writeFileSync(path.join(asidePath, "master.salt"), "prior-salt");
+
+    // Run pairJoin without force - the recovery sweep restores keys/
+    // from the aside BEFORE the pre-flight identity.json check runs,
+    // so the pre-flight then refuses without force.
+    await expect(
+      pairJoin(pairingString, {
+        userDir: bUserDir,
+        passphrase: PASSPHRASE,
+        endpoint: "http://stub",
+        fetchImpl: stubFetch(state),
+      })
+    ).rejects.toThrow(/already exists/);
+
+    expect(fs.existsSync(bKeysDir)).toBe(true);
+    expect(fs.readFileSync(path.join(bKeysDir, "identity.json"), "utf-8")).toContain("u_priorB");
+    expect(fs.existsSync(asidePath)).toBe(false);
+
+    fs.rmSync(bTmpHome, { recursive: true, force: true });
+  });
+});
+
 describe("pairStatus / pairCancel", () => {
   it("uses just the 8-digit code (the secret is not needed for management)", async () => {
     const { userDir, publicKey, privateKey } = initDeviceA();

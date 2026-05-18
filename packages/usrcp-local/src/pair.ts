@@ -34,12 +34,13 @@ import {
   decrypt,
   deriveFromPairingSecret,
   safeWriteFile,
-  initializeMasterKey,
+  deriveAndVerifyMasterKey,
+  deriveGlobalEncryptionKey,
   setUserSlug,
   getUserSlug,
   zeroBuffer,
 } from "./encryption.js";
-import { getDecryptedPrivateKeyPem, type LedgerIdentity } from "./crypto.js";
+import { type LedgerIdentity } from "./crypto.js";
 
 const PAIRING_BUNDLE_SCHEMA_V = 2;
 const MIN_BUNDLE_LEN = 16;
@@ -142,6 +143,89 @@ async function signedFetch(
 
 function keysDirOf(userDir: string): string {
   return path.join(userDir, "keys");
+}
+
+const PAIR_STAGING_PREFIX = "keys-pair-staging.";
+const PAIR_REPLACED_PREFIX = "keys-replaced-by-pair.";
+
+/**
+ * Sweep orphan pair-join staging directories from prior crashed runs.
+ * Called at the start of every pairJoin so a SIGKILL during the
+ * write-to-staging phase does not leave the userDir littered.
+ *
+ * Also detects the (rare) replaced-by-pair-aside orphan that signals
+ * a SIGKILL between the "rename existing keys/ aside" and "rename
+ * staging into keys/" steps of a force-overwrite. In that case the
+ * staging dir is incomplete (we crashed before its rename), so we
+ * restore the original keys/ from the renamed-aside copy.
+ */
+function sweepStaleStagingDirs(userDir: string): void {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(userDir);
+  } catch {
+    return;
+  }
+  const keysDir = keysDirOf(userDir);
+  for (const name of entries) {
+    if (name.startsWith(PAIR_STAGING_PREFIX)) {
+      try {
+        fs.rmSync(path.join(userDir, name), { recursive: true, force: true });
+      } catch {
+        // Best-effort sweep; a leftover staging dir is harmless beyond disk use.
+      }
+    } else if (name.startsWith(PAIR_REPLACED_PREFIX)) {
+      // Aside copy exists. If keys/ also exists, the prior pairJoin finished
+      // the staging-to-keys rename but died before unlinking the aside; just
+      // delete the aside. If keys/ is missing, restore from the aside (we
+      // died between the two renames).
+      const asidePath = path.join(userDir, name);
+      try {
+        if (fs.existsSync(keysDir)) {
+          fs.rmSync(asidePath, { recursive: true, force: true });
+        } else {
+          fs.renameSync(asidePath, keysDir);
+        }
+      } catch {
+        // If recovery fails, leave the aside in place for manual inspection.
+      }
+    }
+  }
+}
+
+/**
+ * Atomically replace keysDir with stagingDir.
+ *
+ * Fresh-pair case (keysDir does not exist): single fs.renameSync,
+ * atomic on POSIX.
+ *
+ * Force-overwrite case (keysDir exists): rename existing keysDir aside
+ * to keys-replaced-by-pair.<rand>/, rename stagingDir into keysDir,
+ * then rm the aside. A SIGKILL in this window is recovered by
+ * sweepStaleStagingDirs on the next pairJoin.
+ */
+function commitStagingDir(stagingDir: string, keysDir: string): void {
+  if (!fs.existsSync(keysDir)) {
+    fs.renameSync(stagingDir, keysDir);
+    return;
+  }
+  const userDir = path.dirname(keysDir);
+  const asideName = PAIR_REPLACED_PREFIX + crypto.randomBytes(8).toString("hex");
+  const asidePath = path.join(userDir, asideName);
+  fs.renameSync(keysDir, asidePath);
+  try {
+    fs.renameSync(stagingDir, keysDir);
+  } catch (err) {
+    // Restore original keysDir before propagating.
+    try { fs.renameSync(asidePath, keysDir); } catch {}
+    throw err;
+  }
+  try {
+    fs.rmSync(asidePath, { recursive: true, force: true });
+  } catch {
+    // The new keys/ is already committed; an orphan aside is harmless
+    // and will be cleaned by the next pairJoin's sweep.
+  }
 }
 
 function readBundleSources(userDir: string): PairingBundle {
@@ -338,6 +422,17 @@ export async function pairJoin(
   try {
     const fetchImpl = opts.fetchImpl ?? fetch;
     const keysDir = keysDirOf(opts.userDir);
+
+    // Recovery sweep BEFORE the pre-flight check. If a prior pairJoin
+    // crashed after renaming the old keys/ aside but before committing
+    // the new staging dir, sweepStaleStagingDirs restores keys/ from
+    // the aside. The pre-flight check below then correctly refuses
+    // without --force, instead of letting the user silently overwrite a
+    // recoverable identity.
+    if (fs.existsSync(opts.userDir)) {
+      sweepStaleStagingDirs(opts.userDir);
+    }
+
     const identityPath = path.join(keysDir, "identity.json");
     if (fs.existsSync(identityPath) && !opts.force) {
       throw new Error(
@@ -369,7 +464,7 @@ export async function pairJoin(
     }
 
     key = deriveFromPairingSecret(code, secret);
-    return await pairJoinAfterDecrypt(ciphertext, key, opts, keysDir, identityPath);
+    return await pairJoinAfterDecrypt(ciphertext, key, opts, keysDir);
   } finally {
     zeroBuffer(secret);
     if (key) zeroBuffer(key);
@@ -380,8 +475,7 @@ async function pairJoinAfterDecrypt(
   ciphertext: string,
   key: Buffer,
   opts: PairJoinOpts,
-  keysDir: string,
-  identityPath: string
+  keysDir: string
 ): Promise<{ user_id: string; public_key: string }> {
   // Key is zeroed by the caller's outer try/finally, which also handles
   // the secret. We just use it here and never let it out of scope.
@@ -410,94 +504,92 @@ async function pairJoinAfterDecrypt(
     throw new Error("pairJoin: bundle private_pem_enc is not ciphertext.");
   }
 
-  fs.mkdirSync(keysDir, { recursive: true, mode: 0o700 });
+  const saltBytes = Buffer.from(bundle.salt, "base64");
+  const verifyBytes = Buffer.from(bundle.verify, "base64");
 
-  // Snapshot the prior on-disk state of every path we're about to write so
-  // a failed pairJoin (wrong passphrase, malformed bundle, etc.) can restore
-  // the original keys/ rather than leaving the user identity-less. Without
-  // this, --force or a partially-populated keys/ dir would lose their
-  // contents on rollback: safeWriteFile renames a tmp file over the target,
-  // clobbering the original, and then the rollback unlinks the new file too.
-  const writtenPaths: string[] = [];
-  const priorState = new Map<string, { content: Buffer; mode: number } | null>();
-  const writeAndTrack = (p: string, content: Buffer, mode: number) => {
-    if (!priorState.has(p)) {
-      if (fs.existsSync(p)) {
-        try {
-          priorState.set(p, {
-            content: fs.readFileSync(p),
-            mode: fs.statSync(p).mode & 0o7777,
-          });
-        } catch {
-          priorState.set(p, null);
-        }
-      } else {
-        priorState.set(p, null);
-      }
-    }
-    safeWriteFile(p, content, mode);
-    writtenPaths.push(p);
-  };
-
+  // === Phase 1: in-memory validation (no disk writes) ===========
+  //
+  // The pre-PR-#66 implementation wrote all six key files to their final
+  // canonical paths first and only then ran initializeMasterKey() to
+  // validate the passphrase. The snapshot/restore rollback caught the
+  // common case (wrong passphrase throws WrongPassphrase, files are
+  // restored), but a SIGKILL anywhere between the first write and the
+  // rollback could leave a partial identity on disk - bad enough to
+  // confuse `initializeMasterKey()` on the next start. Validating
+  // entirely in memory before touching disk closes that window.
+  let masterKey: Buffer;
   try {
-    writeAndTrack(path.join(keysDir, "master.salt"), Buffer.from(bundle.salt, "base64"), 0o600);
-    writeAndTrack(path.join(keysDir, "master.verify"), Buffer.from(bundle.verify, "base64"), 0o600);
-    writeAndTrack(path.join(keysDir, "mode"), Buffer.from("passphrase"), 0o600);
-    writeAndTrack(
-      path.join(keysDir, "private.pem"),
+    masterKey = deriveAndVerifyMasterKey(opts.passphrase, saltBytes, verifyBytes);
+  } catch (err) {
+    if (err instanceof Error && /Invalid passphrase/i.test(err.message)) {
+      throw new WrongPassphrase();
+    }
+    throw err;
+  }
+  try {
+    // Sanity-check that private_pem_enc actually decrypts under the
+    // master key derived from (passphrase, salt, verify). A bundle whose
+    // verify hash matches but whose private_pem_enc was sealed under a
+    // different master key would otherwise commit unreadable keys to
+    // disk; here we catch it without writing anything.
+    const globalKey = deriveGlobalEncryptionKey(masterKey);
+    try {
+      decrypt(bundle.private_pem_enc, globalKey);
+    } catch {
+      throw new InvalidPairingCode(
+        "Bundle private_pem_enc does not decrypt under the bundle's verify-hash master key."
+      );
+    } finally {
+      zeroBuffer(globalKey);
+    }
+  } finally {
+    zeroBuffer(masterKey);
+  }
+
+  // === Phase 2: stage all key files in a sibling directory ======
+  //
+  // Writing into a temp sibling and then atomically renaming gives us
+  // SIGKILL safety: at every moment the canonical keysDir either has
+  // the prior (untouched) contents or the new fully-written contents.
+  // The intermediate "partial set of files" state never reaches the
+  // canonical path. Sweep any stale staging dirs from prior crashed
+  // runs first so they don't accumulate.
+  const userDir = path.dirname(keysDir);
+  fs.mkdirSync(userDir, { recursive: true, mode: 0o700 });
+  sweepStaleStagingDirs(userDir);
+
+  const stagingDir = fs.mkdtempSync(path.join(userDir, PAIR_STAGING_PREFIX));
+  try {
+    fs.chmodSync(stagingDir, 0o700);
+    safeWriteFile(path.join(stagingDir, "master.salt"), saltBytes, 0o600);
+    safeWriteFile(path.join(stagingDir, "master.verify"), verifyBytes, 0o600);
+    safeWriteFile(path.join(stagingDir, "mode"), Buffer.from("passphrase"), 0o600);
+    safeWriteFile(
+      path.join(stagingDir, "private.pem"),
       Buffer.from(bundle.private_pem_enc, "utf8"),
       0o600
     );
-    writeAndTrack(
-      path.join(keysDir, "public.pem"),
+    safeWriteFile(
+      path.join(stagingDir, "public.pem"),
       Buffer.from(bundle.identity.public_key, "utf8"),
       0o644
     );
-    writeAndTrack(
-      identityPath,
+    safeWriteFile(
+      path.join(stagingDir, "identity.json"),
       Buffer.from(JSON.stringify(bundle.identity, null, 2), "utf8"),
       0o600
     );
 
-    // End-to-end validation: derive the master key from the passphrase via the
-    // bundled salt + verify, then decrypt private.pem with it. Any failure here
-    // means the user typed the wrong passphrase; roll back.
-    let masterKey: Buffer;
-    try {
-      masterKey = initializeMasterKey(opts.passphrase);
-    } catch (err) {
-      if (err instanceof Error && /Invalid passphrase/i.test(err.message)) {
-        throw new WrongPassphrase();
-      }
-      throw err;
-    }
-    try {
-      getDecryptedPrivateKeyPem(masterKey); // throws on bad decrypt
-    } finally {
-      zeroBuffer(masterKey);
-    }
-
-    return {
-      user_id: bundle.identity.user_id,
-      public_key: bundle.identity.public_key,
-    };
+    commitStagingDir(stagingDir, keysDir);
   } catch (err) {
-    // Rollback: restore the pre-existing content where the file existed
-    // before we wrote, otherwise unlink. Best-effort: if restore fails for
-    // any reason, leave the file as-is rather than risk destroying both
-    // versions; the user can re-run pairJoin.
-    for (const p of writtenPaths) {
-      const prior = priorState.get(p) ?? null;
-      if (prior) {
-        try {
-          safeWriteFile(p, prior.content, prior.mode);
-        } catch { /* best effort */ }
-      } else {
-        try { fs.unlinkSync(p); } catch { /* best effort */ }
-      }
-    }
+    try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch {}
     throw err;
   }
+
+  return {
+    user_id: bundle.identity.user_id,
+    public_key: bundle.identity.public_key,
+  };
 }
 
 // --- pairStatus / pairCancel ---
