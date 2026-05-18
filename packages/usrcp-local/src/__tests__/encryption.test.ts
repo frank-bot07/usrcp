@@ -394,6 +394,35 @@ describe("Key Rotation (encryption module)", () => {
     const written = fs.readFileSync(path.join(keysDir, "master.key"));
     expect(written.toString()).toBe("test-key-data-32-bytes-exactly!!");
   });
+
+  it("commitKeyRotation handles a mixed write-and-delete batch (PR #72 durability)", () => {
+    // The passphrase-mode rotation queues both writes (salt, verify,
+    // mode, key.version) AND a delete (master.key, length-0 content
+    // means unlink). This exercises both code paths in the
+    // commitKeyRotation loop and confirms the fsync discipline
+    // doesn't blow up on the unlink branch.
+    const keysDir = path.join(tmpHome, ".usrcp", "keys");
+    fs.mkdirSync(keysDir, { recursive: true });
+    // Pre-existing master.key from a prior dev-mode install that we
+    // want commitKeyRotation to remove.
+    fs.writeFileSync(path.join(keysDir, "master.key"), Buffer.from("old-dev-mode-key"), { mode: 0o600 });
+
+    const pendingFiles = [
+      { path: path.join(keysDir, "master.salt"), content: Buffer.alloc(32, 0x11), mode: 0o600 },
+      { path: path.join(keysDir, "master.verify"), content: Buffer.alloc(32, 0x22), mode: 0o600 },
+      { path: path.join(keysDir, "mode"), content: Buffer.from("passphrase"), mode: 0o600 },
+      // length-0 = unlink
+      { path: path.join(keysDir, "master.key"), content: Buffer.alloc(0), mode: 0o600 },
+      { path: path.join(keysDir, "key.version"), content: Buffer.from("2"), mode: 0o600 },
+    ];
+
+    expect(() => commitKeyRotation(pendingFiles)).not.toThrow();
+    expect(fs.existsSync(path.join(keysDir, "master.salt"))).toBe(true);
+    expect(fs.existsSync(path.join(keysDir, "master.verify"))).toBe(true);
+    expect(fs.readFileSync(path.join(keysDir, "mode"), "utf-8")).toBe("passphrase");
+    expect(fs.existsSync(path.join(keysDir, "master.key"))).toBe(false);
+    expect(fs.readFileSync(path.join(keysDir, "key.version"), "utf-8")).toBe("2");
+  });
 });
 
 describe("passphrase mode initialization", () => {

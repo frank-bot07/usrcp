@@ -20,6 +20,8 @@ import {
   zeroBuffer,
   safeWriteFile,
   getUserDir,
+  commitKeyRotation,
+  deserializePendingKeyFiles,
 } from "../encryption.js";
 import { ensurePrivateKeyEncrypted, getIdentity as getIdent, initializeIdentity as initIdent } from "../crypto.js";
 import { resumeAdapterRotationIfPending } from "../rotate-adapter-configs.js";
@@ -43,6 +45,46 @@ export class Ledger {
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     this.db.pragma("secure_delete = ON");
+    // Migrate FIRST so rotation_state.pending_files_json (PR #72)
+    // exists for the pre-init recovery probe below. migrate() only
+    // touches DB schema; it does not reference masterKey or read
+    // any key files, so it is safe to call before
+    // initializeMasterKey.
+    this.migrate();
+
+    // Pre-init rotation recovery (Codex round-1 P1 on PR #72): if a
+    // previous rotateKey committed the DB transaction (rows
+    // re-encrypted under the new master key; rotation_state.
+    // pending_key set) but died before commitKeyRotation wrote the
+    // new key-file set, the canonical master.salt / master.verify
+    // still derive the OLD key. initializeMasterKey with the user's
+    // NEW passphrase would throw "Invalid passphrase" against the
+    // stale verify hash, locking the user out even though the
+    // recovery material is durably in rotation_state.
+    //
+    // Resolution: replay the pending key-file set BEFORE
+    // initializeMasterKey runs, so initializeMasterKey reads the
+    // post-rotation canonical files and the user's NEW passphrase
+    // validates. The in-memory masterKey install + audit-log entry
+    // happen in the post-init block below.
+    const rotationRow = this.db.prepare(
+      "SELECT pending_key, pending_version, pending_files_json FROM rotation_state WHERE id = 1"
+    ).get() as any;
+    let durableReplay = false;
+    if (rotationRow?.pending_key && rotationRow.pending_files_json) {
+      try {
+        const pending = deserializePendingKeyFiles(rotationRow.pending_files_json);
+        commitKeyRotation(pending);
+        durableReplay = true;
+      } catch (err) {
+        console.warn(
+          `[usrcp] pre-init rotation replay failed: ${
+            err instanceof Error ? err.message : String(err)
+          }. Falling back to legacy master.key-only recovery in the post-init block.`
+        );
+      }
+    }
+
     this.masterKey = initializeMasterKey(passphrase);
     // Initialize identity if needed (requires master key for private key encryption)
     if (!getIdent()) {
@@ -50,22 +92,43 @@ export class Ledger {
     }
     // Encrypt legacy plaintext private keys
     ensurePrivateKeyEncrypted(this.masterKey);
-    this.migrate();
 
-    // Key rotation recovery — if a rotation was interrupted, recover the new key
-    const rotationRow = this.db.prepare("SELECT pending_key, pending_version FROM rotation_state WHERE id = 1").get() as any;
+    // Post-init rotation recovery: install pending_key as the
+    // in-memory masterKey (a no-op buffer-copy when durableReplay
+    // already wrote the new key-file set, since initializeMasterKey
+    // just derived the same value), then clear rotation_state. For
+    // legacy DBs with pending_key but no pending_files_json, write
+    // master.key as the dev-mode-only recovery (passphrase-mode
+    // legacy rows would have thrown above and never reached here).
     if (rotationRow && rotationRow.pending_key) {
       const oldKey = this.masterKey;
       this.masterKey = Buffer.from(rotationRow.pending_key);
       // Zero the old key buffer — prevent heap residue
       zeroBuffer(oldKey);
-      const keysDir = path.join(getUserDir(), "keys");
-      fs.mkdirSync(keysDir, { recursive: true });
-      safeWriteFile(path.join(keysDir, "master.key"), this.masterKey, 0o600);
-      this.db.prepare("UPDATE rotation_state SET pending_key = NULL, pending_version = NULL WHERE id = 1").run();
-      this.logAudit("key_rotation_recovery", ["system"]);
+      if (!durableReplay) {
+        const keysDir = path.join(getUserDir(), "keys");
+        fs.mkdirSync(keysDir, { recursive: true });
+        safeWriteFile(path.join(keysDir, "master.key"), this.masterKey, 0o600);
+      }
+      this.db.prepare(
+        "UPDATE rotation_state SET pending_key = NULL, pending_version = NULL, pending_files_json = NULL WHERE id = 1"
+      ).run();
+      this.logAudit(
+        "key_rotation_recovery",
+        ["system"],
+        undefined,
+        durableReplay ? "mode=durable-replay" : "mode=legacy-master-key-only"
+      );
       this.rebuildBlindIndex();
     }
+
+    // Data migrations that need this.masterKey (e.g. blind-index
+    // rebuild for older DBs that have events but no blind_index
+    // rows). Split out of migrate() in PR #72 because migrate() now
+    // runs BEFORE initializeMasterKey to make rotation_state.
+    // pending_files_json available for the pre-init recovery
+    // replay. (Codex round-2 P1.)
+    this.migrateData();
 
     // Adapter-config rotation recovery: if a previous rotateKey was
     // killed AFTER commitKeyRotation but BEFORE all adapter configs
@@ -456,6 +519,20 @@ export class Ledger {
       // Column already exists
     }
 
+    // PR #72 migration: add pending_files_json to rotation_state so
+    // recovery can replay the FULL target key-file set (master.salt,
+    // master.verify, mode, key.version, etc.) rather than only
+    // writing master.key. Without this column, a passphrase-mode
+    // rotation that committed the DB transaction but died before
+    // commitKeyRotation would brick the user: the DB is re-encrypted
+    // under the new key, but the canonical master.salt/verify still
+    // derive the OLD key. Codex round-1 P1 on PR #72.
+    try {
+      this.db.exec("ALTER TABLE rotation_state ADD COLUMN pending_files_json TEXT");
+    } catch {
+      // Column already exists
+    }
+
     // v0.1.3: Drop FTS5 table — replaced by blind index to prevent plaintext leakage
     this.db.exec("DROP TABLE IF EXISTS timeline_fts");
 
@@ -490,7 +567,21 @@ export class Ledger {
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS idx_events_channel_hash ON timeline_events(channel_hash) WHERE channel_hash IS NOT NULL"
     );
+  }
 
+  /**
+   * Data migrations that REQUIRE this.masterKey. Split out of
+   * migrate() in PR #72 so schema-only setup can run before
+   * initializeMasterKey (the pre-init rotation-recovery replay
+   * depends on rotation_state.pending_files_json existing).
+   * Codex round-2 P1: rebuildBlindIndex() decrypts event fields and
+   * derives blind-index keys from this.masterKey, so calling it
+   * from inside migrate() before initializeMasterKey assigned
+   * this.masterKey would crash or produce bad crypto state. This
+   * method runs AFTER initializeMasterKey + the post-init recovery
+   * block.
+   */
+  private migrateData(): void {
     // Rebuild blind index if empty but events exist
     const blindCount = this.db
       .prepare("SELECT COUNT(*) as c FROM blind_index")

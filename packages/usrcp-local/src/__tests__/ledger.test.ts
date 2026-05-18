@@ -546,6 +546,128 @@ describe("Key Rotation", () => {
     recoveredLedger.close();
   });
 
+  it("recovers a passphrase-mode rotation that crashed between DB commit and commitKeyRotation (Codex P1 on PR #72)", async () => {
+    // The Codex P1: in passphrase mode, if the DB transaction commits
+    // pending_key but the process dies before commitKeyRotation
+    // writes the new master.salt / master.verify / mode files, the
+    // canonical key-file set still derives the OLD master key.
+    // initializeMasterKey on next boot prioritizes mode="passphrase"
+    // and ignores any recovered master.key. Result pre-PR-#72-followup:
+    // DB encrypted under NEW key, files derive OLD key, no
+    // pending_key checkpoint -> bricked.
+    //
+    // Fix: rotation_state.pending_files_json now stores the full
+    // target file set inside the same DB transaction as pending_key,
+    // and recovery replays it via commitKeyRotation.
+
+    // Build a fresh passphrase-mode Ledger in an isolated HOME so the
+    // canonical key files write to a tmp dir, not the developer's
+    // real ~/.usrcp.
+    const origHome = process.env.HOME;
+    const isoHome = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-passphrase-recover-"));
+    process.env.HOME = isoHome;
+    try {
+      const isoDbPath = path.join(isoHome, "ledger.db");
+      const isoLedger = new Ledger(isoDbPath, "alice-original-passphrase");
+      isoLedger.updateIdentity({ display_name: "Passphrase Recovery Test" });
+
+      // Force commitKeyRotation to fail AFTER the DB transaction
+      // commits but BEFORE the key files land on disk.
+      vi.mocked(encryption.commitKeyRotation).mockImplementationOnce(() => {
+        throw new Error("simulated disk failure mid-rotation");
+      });
+      expect(() => isoLedger.rotateKey("bob-new-passphrase")).toThrow(
+        /simulated disk failure mid-rotation/
+      );
+      // Restore the real commitKeyRotation so recovery (which is what
+      // we're testing) gets the unmocked implementation.
+      const { commitKeyRotation: realCommit } =
+        await vi.importActual<typeof import("../encryption.js")>("../encryption.js");
+      vi.mocked(encryption.commitKeyRotation).mockImplementation(realCommit);
+
+      isoLedger.close();
+
+      // Reopen with the NEW passphrase. If recovery worked, the
+      // canonical master.salt + master.verify now derive the NEW key
+      // and the Ledger constructor finishes cleanly. Display name
+      // round-trips because the DB rows are decryptable under the
+      // recovered key.
+      const recovered = new Ledger(isoDbPath, "bob-new-passphrase");
+      try {
+        expect(recovered.getIdentity().display_name).toBe("Passphrase Recovery Test");
+        const rotation = (recovered as any).db
+          .prepare("SELECT pending_key, pending_files_json FROM rotation_state")
+          .get() as any;
+        expect(rotation.pending_key).toBe(null);
+        expect(rotation.pending_files_json).toBe(null);
+      } finally {
+        recovered.close();
+      }
+    } finally {
+      process.env.HOME = origHome;
+      try { fs.rmSync(isoHome, { recursive: true, force: true }); } catch {}
+    }
+  });
+
+  it("reopens a ledger with events but an empty blind_index (Codex P1 on PR #72 round-2)", async () => {
+    // Codex round-2 P1 surfaced this: PR #72 moved migrate() ahead
+    // of initializeMasterKey so rotation_state.pending_files_json
+    // is queryable for the pre-init recovery probe. But migrate()
+    // historically also contained the blind-index rebuild for
+    // legacy DBs that have events but no blind_index rows, and
+    // that rebuild decrypts event fields via this.masterKey -
+    // which is not yet assigned at migrate() time. Moving
+    // migrate() up would have called rebuildBlindIndex() against
+    // an undefined masterKey and crashed.
+    //
+    // Fix: split the schema migration from the data-rebuild step
+    // (migrateData), and call migrateData AFTER initializeMasterKey
+    // + post-init recovery installs the final masterKey.
+    const origHome = process.env.HOME;
+    const isoHome = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-blind-rebuild-"));
+    process.env.HOME = isoHome;
+    try {
+      const isoDbPath = path.join(isoHome, "ledger.db");
+      // Step 1: create a ledger and add events (this populates
+      // blind_index via the normal append path).
+      const seed = new Ledger(isoDbPath, "test-passphrase");
+      seed.appendEvent(
+        {
+          domain: "test",
+          summary: "needs blind-index entries",
+          intent: "exercise the rebuild path",
+          outcome: "success",
+        },
+        "test"
+      );
+      seed.close();
+
+      // Step 2: open the DB directly and wipe blind_index, simulating
+      // a legacy ledger that has events but no blind tokens.
+      const Database = (await import("better-sqlite3")).default;
+      const raw = new Database(isoDbPath);
+      raw.prepare("DELETE FROM blind_index").run();
+      raw.close();
+
+      // Step 3: reopen via the Ledger constructor. The new ordering
+      // must NOT call rebuildBlindIndex before initializeMasterKey
+      // sets this.masterKey. After this constructor returns, the
+      // blind_index should be repopulated.
+      const reopened = new Ledger(isoDbPath, "test-passphrase");
+      try {
+        const blindCount = (reopened as any).db
+          .prepare("SELECT COUNT(*) as c FROM blind_index")
+          .get() as any;
+        expect(blindCount.c).toBeGreaterThan(0);
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      process.env.HOME = origHome;
+      try { fs.rmSync(isoHome, { recursive: true, force: true }); } catch {}
+    }
+  });
+
   it("invokes onKeysReady with both keys after commit, before in-memory swap", () => {
     let observed: { oldKey: Buffer; newKey: Buffer; oldSameAsCurrent: boolean } | null = null;
 

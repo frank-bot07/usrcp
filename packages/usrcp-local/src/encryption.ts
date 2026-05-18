@@ -483,20 +483,96 @@ export function prepareKeyRotation(
   return { oldKey: currentKey, newKey, version: newVersion, pendingFiles };
 }
 
+export interface PendingKeyFile {
+  path: string;
+  content: Buffer;
+  mode: number;
+}
+
+/**
+ * Serialize a pendingFiles array for durable storage inside the
+ * rotation_state row. Without this, a passphrase-mode rotation that
+ * commits the DB transaction (re-encrypts all rows under the new
+ * key, sets rotation_state.pending_key) but dies before
+ * commitKeyRotation rewrites the on-disk key file set leaves the DB
+ * encrypted under the new key while the canonical master.salt /
+ * master.verify still derive the OLD key. The recovery path can't
+ * undo the DB re-encryption, so it MUST be able to replay the
+ * exact target file set; serializing pendingFiles into the same
+ * row that holds pending_key keeps the two atomic.
+ *
+ * Sensitivity: in dev mode the serialized blob contains the new
+ * master.key bytes - same security boundary as the canonical
+ * keys/master.key file itself. In passphrase mode the blob
+ * contains master.salt + master.verify + "passphrase" mode
+ * marker, none of which is secret on its own.
+ *
+ * Codex round-1 P1 on PR #72.
+ */
+export function serializePendingKeyFiles(pendingFiles: PendingKeyFile[]): string {
+  return JSON.stringify(
+    pendingFiles.map((f) => ({
+      path: f.path,
+      content_b64: f.content.toString("base64"),
+      mode: f.mode,
+    })),
+  );
+}
+
+export function deserializePendingKeyFiles(json: string): PendingKeyFile[] {
+  const raw = JSON.parse(json) as Array<{ path: string; content_b64: string; mode: number }>;
+  if (!Array.isArray(raw)) {
+    throw new Error("deserializePendingKeyFiles: not an array");
+  }
+  return raw.map((entry) => {
+    if (
+      typeof entry?.path !== "string" ||
+      typeof entry?.content_b64 !== "string" ||
+      typeof entry?.mode !== "number"
+    ) {
+      throw new Error("deserializePendingKeyFiles: malformed entry");
+    }
+    return {
+      path: entry.path,
+      content: Buffer.from(entry.content_b64, "base64"),
+      mode: entry.mode,
+    };
+  });
+}
+
 /**
  * Commit key rotation files to disk.
  * Called ONLY after database re-encryption succeeds.
+ *
+ * Power-loss durability: each file write is fsync'd before the next
+ * one runs, and the set of parent directories touched is fsync'd
+ * once at the end. Without this, the rotateKey path was atomic in
+ * the SIGKILL sense (the existing rotation_state.pending_key
+ * recovery handles partial commit) but not durable: a power loss
+ * after rotateKey returned could leave the new key files
+ * un-flushed and the next boot could read stale master.salt /
+ * master.verify pointing at the OLD master key, breaking
+ * decryption of data already re-encrypted under the new key.
+ * Same shape as pair-join's fsync discipline in PR #71.
  */
 export function commitKeyRotation(
   pendingFiles: { path: string; content: Buffer; mode: number }[]
 ): void {
+  const parentDirs = new Set<string>();
   for (const file of pendingFiles) {
     if (file.content.length === 0) {
-      // Delete the file (e.g., removing dev key in passphrase mode)
+      // Delete the file (e.g., removing dev key in passphrase mode).
       try { fs.unlinkSync(file.path); } catch {}
     } else {
       safeWriteFile(file.path, file.content, file.mode);
+      fsyncFile(file.path);
     }
+    parentDirs.add(path.dirname(file.path));
+  }
+  // fsync every directory we touched so the new entries (or the
+  // unlink of the old dev-key file) are durably linked.
+  for (const dir of parentDirs) {
+    fsyncDir(dir);
   }
 }
 
