@@ -626,10 +626,17 @@ function resolveTransport(): "http" | "stdio" {
 
 /**
  * Parse the per-process scope-enforcement flags:
- *   --scopes=<csv>      domain allowlist
- *   --readonly          strip mutating tools
- *   --no-audit          hide the audit-log tool
- *   --agent-id=<name>   logged with every call; required when --scopes is set
+ *   --scopes=<csv>         symmetric domain allowlist (legacy)
+ *   --read-scopes=<csv>    NEW asymmetric read allowlist
+ *   --write-scopes=<csv>   NEW asymmetric write allowlist (must be subset of read)
+ *   --readonly             strip mutating tools (same as --write-scopes=)
+ *   --no-audit             hide the audit-log tool
+ *   --agent-id=<name>      logged with every call; required when any scope flag is set
+ *
+ * `--scopes` is mutually exclusive with `--read-scopes`/`--write-scopes`;
+ * pick one style. With the asymmetric pair, `--read-scopes X` alone
+ * implies "no writes", and `--write-scopes X` alone implies
+ * unrestricted reads (the operator opts into a write-only restriction).
  *
  * Returns an empty options object when no flags are present, which preserves
  * the pre-flag behavior of `usrcp serve` (full access, all tools).
@@ -637,23 +644,44 @@ function resolveTransport(): "http" | "stdio" {
 function resolveServeOptions(): ServeOptions {
   const opts: ServeOptions = {};
 
-  const scopesArg = getArg("scopes");
-  if (scopesArg !== undefined) {
-    const parsed = scopesArg
+  const parseScopeCsv = (raw: string, flagName: string): string[] => {
+    const parsed = raw
       .split(",")
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
-    if (parsed.length === 0) {
-      console.error(`  Error: --scopes was given but is empty. Pass a comma-separated domain list, e.g. --scopes=coding,personal.`);
-      process.exit(1);
-    }
     for (const s of parsed) {
       if (s.length > 100) {
         console.error(`  Error: scope "${s.slice(0, 20)}..." exceeds 100 chars.`);
         process.exit(1);
       }
     }
-    opts.scopes = parsed;
+    if (parsed.length === 0) {
+      console.error(
+        `  Error: --${flagName} was given but is empty. Pass a comma-separated domain list, e.g. --${flagName}=coding,personal.`,
+      );
+      process.exit(1);
+    }
+    return parsed;
+  };
+
+  const scopesArg = getArg("scopes");
+  if (scopesArg !== undefined) {
+    opts.scopes = parseScopeCsv(scopesArg, "scopes");
+  }
+  const readScopesArg = getArg("read-scopes");
+  if (readScopesArg !== undefined) {
+    opts.readScopes = parseScopeCsv(readScopesArg, "read-scopes");
+  }
+  const writeScopesArg = getArg("write-scopes");
+  if (writeScopesArg !== undefined) {
+    opts.writeScopes = parseScopeCsv(writeScopesArg, "write-scopes");
+  }
+
+  if (scopesArg !== undefined && (readScopesArg !== undefined || writeScopesArg !== undefined)) {
+    console.error(
+      `  Error: --scopes is mutually exclusive with --read-scopes / --write-scopes. Pick one style.`,
+    );
+    process.exit(1);
   }
 
   if (hasFlag("readonly")) opts.readonly = true;
@@ -674,8 +702,14 @@ function resolveServeOptions(): ServeOptions {
 
   // Agents must be identifiable when scope is enforced — otherwise the
   // per-call audit row carries no useful attribution.
-  if (opts.scopes && !opts.agentId) {
-    console.error(`  Error: --scopes requires --agent-id=<name> for audit attribution.`);
+  const anyScopeFlag =
+    opts.scopes !== undefined ||
+    opts.readScopes !== undefined ||
+    opts.writeScopes !== undefined;
+  if (anyScopeFlag && !opts.agentId) {
+    console.error(
+      `  Error: --scopes / --read-scopes / --write-scopes require --agent-id=<name> for audit attribution.`,
+    );
     process.exit(1);
   }
 
@@ -686,6 +720,8 @@ function resolveServeOptions(): ServeOptions {
 function formatScopeBanner(o: ServeOptions): string {
   const flags: string[] = [];
   if (o.scopes) flags.push(`scopes=[${o.scopes.join(",")}]`);
+  if (o.readScopes) flags.push(`read-scopes=[${o.readScopes.join(",")}]`);
+  if (o.writeScopes) flags.push(`write-scopes=[${o.writeScopes.join(",")}]`);
   if (o.readonly) flags.push("readonly");
   if (o.noAudit) flags.push("no-audit");
   if (!o.agentId && flags.length === 0) return "";
@@ -1304,12 +1340,21 @@ switch (command) {
                             Or set USRCP_PASSPHRASE environment variable
 
   serve scope-enforcement (per-process; for restricting one agent's access):
-    --scopes=<csv>          Domain allowlist (e.g. coding,personal). Tools that
-                            target other domains are refused with OUT_OF_SCOPE.
+    --scopes=<csv>          Symmetric domain allowlist (e.g. coding,personal).
+                            Tools targeting other domains return OUT_OF_SCOPE.
+                            Affects BOTH reads and writes. Legacy shorthand;
+                            mutually exclusive with --read-scopes/--write-scopes.
+    --read-scopes=<csv>     Asymmetric read allowlist. Used alone, implies
+                            "no writes anywhere" (read-only on these domains).
+    --write-scopes=<csv>    Asymmetric write allowlist. Used alone, implies
+                            unrestricted reads. When both --read-scopes and
+                            --write-scopes are set, writes must be a subset
+                            of reads (writes need reads on the same domain).
     --readonly              Drop mutating tools (append, update, rotate, set_fact).
+                            Equivalent to an empty --write-scopes.
     --no-audit              Hide usrcp_audit_log so the agent can't read history.
-    --agent-id=<name>       Logged with every tool call. Required when --scopes
-                            is set. Default unflagged: full access, no agent ID.
+    --agent-id=<name>       Logged with every tool call. Required when any
+                            scope flag is set. Default unflagged: full access.
 
   Multi-user:
     usrcp init --user=frank
@@ -1320,8 +1365,19 @@ switch (command) {
     usrcp init --passphrase "my secret phrase"
     USRCP_PASSPHRASE="my secret phrase" usrcp serve
 
-  Scoped agent example:
-    usrcp serve --agent-id=cursor-coding --scopes=coding --readonly --no-audit
+  Scoped agent examples:
+    # Read-only Cursor agent on coding/work, no audit access:
+    usrcp serve --agent-id=cursor-readonly --read-scopes=coding,work --no-audit
+
+    # Personal-domain writer that can also read everything for context:
+    usrcp serve --agent-id=personal-writer --write-scopes=personal
+
+    # Symmetric legacy: full read+write on coding only:
+    usrcp serve --agent-id=cursor-coding --scopes=coding
+
+    # Read coding+work, write only personal (asymmetric subset):
+    usrcp serve --agent-id=mixed-agent --read-scopes=coding,work,personal --write-scopes=personal
+
     # Generate the matching MCP config snippet:
     usrcp setup --adapter=mcp-agent
   `);
