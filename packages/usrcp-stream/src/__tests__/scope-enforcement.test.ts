@@ -587,3 +587,72 @@ describe("createStreamServer forwards asymmetric scopes (PR #61 round-2 fix)", (
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Regression: stream_prewarm cross-surface read must honor the read
+// allowlist. codex PR #61 round-4 caught this end-to-end leak.
+// ---------------------------------------------------------------------------
+
+describe("stream_prewarm respects readScopes (PR #61 round-4 fix)", () => {
+  it("a read-scoped agent calling prewarm gets only in-scope cross-surface content", async () => {
+    // Seed events across three surfaces from an unscoped server.
+    const seed = new McpServer({ name: "seed", version: "0" });
+    const seedReg = registerStreamTools(seed, {
+      masterKey,
+      userDir: tmpDir,
+      embedder: new FakeEmbedder(),
+    });
+    await callTool(seed, "stream_capture", {
+      surface: "cursor",
+      channel_ref: { w: "/p" },
+      side: "outbound",
+      author_ref: { id: "u1" },
+      content: "PUBLIC_CURSOR_CONTENT",
+      content_kind: "text",
+      ts_ms: Date.now() - 60_000,
+    });
+    await callTool(seed, "stream_capture", {
+      surface: "telegram",
+      channel_ref: { c: "x" },
+      side: "outbound",
+      author_ref: { id: "u1" },
+      content: "SECRET_TELEGRAM_LEAK",
+      content_kind: "text",
+      ts_ms: Date.now() - 30_000,
+    });
+    await callTool(seed, "stream_capture", {
+      surface: "discord",
+      channel_ref: { guild: "g", channel: "c" },
+      side: "outbound",
+      author_ref: { id: "u1" },
+      content: "discord active",
+      content_kind: "text",
+      ts_ms: Date.now(),
+    });
+    seedReg.shutdown();
+
+    // Read scope = cursor + discord (NOT telegram).
+    server = new McpServer({ name: "t", version: "0.0.0" });
+    registration = registerStreamTools(server, {
+      masterKey,
+      userDir: tmpDir,
+      embedder: new FakeEmbedder(),
+      serveOptions: {
+        readScopes: ["cursor", "discord"],
+        writeScopes: [],   // explicitly forbid writes so the existing
+                           // allowlist gate doesn't strip prewarm too.
+        agentId: "a1",
+      },
+    });
+
+    const res = parseResponse(await callTool(server, "stream_prewarm", {
+      target_surface: "discord",
+      window_min: 60,
+    }));
+    expect(res.status).toBe("ok");
+    expect(res.summary).toContain("PUBLIC_CURSOR_CONTENT");
+    // CRITICAL: telegram content must NOT appear in the handoff.
+    expect(res.summary).not.toContain("SECRET_TELEGRAM_LEAK");
+    expect(res.source_surfaces).toEqual(["cursor"]);
+  });
+});

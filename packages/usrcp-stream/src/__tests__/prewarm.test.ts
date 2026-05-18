@@ -181,3 +181,169 @@ describe("pre-warm", () => {
     expect(fallback.summary).toContain("the answer is forty-two");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Read-scope wall (codex PR #61 round-4): the cross-surface pull that
+// powers prewarm needs to honor the read allowlist, or a scoped agent
+// can call prewarm({target_surface: in-scope}) and receive content from
+// out-of-scope surfaces in the handoff.
+// ---------------------------------------------------------------------------
+
+describe("pre-warm allowedSurfaces wall", () => {
+  it("excludes events from surfaces outside the read allowlist (thread-linkage path)", async () => {
+    const now = Date.now();
+
+    // Capture cross-surface events under a shared entity_ref so the
+    // thread-linkage branch fires.
+    await captureEvent(
+      { handle, embedder: null },
+      {
+        surface: "cursor",
+        channel_ref: { workspace: "/p" },
+        side: "outbound",
+        author_ref: { id: "u1" },
+        content: "PUBLIC_CURSOR_NOTE",
+        content_kind: "text",
+        ts_ms: now - 60 * 1000,
+        entity_refs: ["thread-a"],
+      }
+    );
+    await captureEvent(
+      { handle, embedder: null },
+      {
+        surface: "telegram",
+        channel_ref: { c: "x" },
+        side: "outbound",
+        author_ref: { id: "u1" },
+        content: "SECRET_TELEGRAM_LEAK",
+        content_kind: "text",
+        ts_ms: now - 30 * 1000,
+        entity_refs: ["thread-a"],
+      }
+    );
+    await captureEvent(
+      { handle, embedder: null },
+      {
+        surface: "discord",
+        channel_ref: { guild: "g", channel: "c" },
+        side: "outbound",
+        author_ref: { id: "u1" },
+        content: "discord ping",
+        content_kind: "text",
+        ts_ms: now,
+        entity_refs: ["thread-a"],
+      }
+    );
+
+    // Agent's read scope: cursor + discord (NOT telegram).
+    const result = await prewarm(
+      handle,
+      {
+        target_surface: "discord",
+        window_min: 30,
+        now,
+        allowedSurfaces: ["cursor", "discord"],
+      }
+    );
+
+    expect(result.source_surfaces).toEqual(["cursor"]);
+    expect(result.summary).toContain("PUBLIC_CURSOR_NOTE");
+    expect(result.summary).not.toContain("SECRET_TELEGRAM_LEAK");
+  });
+
+  it("excludes events from surfaces outside the allowlist (fallback path, no thread linkage)", async () => {
+    const now = Date.now();
+    // No entity_refs - prewarm takes the fallback "any recent activity" branch.
+    await captureEvent(
+      { handle, embedder: null },
+      {
+        surface: "cursor",
+        channel_ref: { w: "x" },
+        side: "outbound",
+        author_ref: { id: "u1" },
+        content: "PUBLIC_CURSOR_NOTE",
+        content_kind: "text",
+        ts_ms: now - 60 * 1000,
+      }
+    );
+    await captureEvent(
+      { handle, embedder: null },
+      {
+        surface: "telegram",
+        channel_ref: { c: "x" },
+        side: "outbound",
+        author_ref: { id: "u1" },
+        content: "SECRET_TELEGRAM_LEAK",
+        content_kind: "text",
+        ts_ms: now - 30 * 1000,
+      }
+    );
+
+    const result = await prewarm(
+      handle,
+      {
+        target_surface: "discord",
+        window_min: 30,
+        now,
+        allowedSurfaces: ["cursor", "discord"],
+      }
+    );
+
+    expect(result.source_surfaces).toEqual(["cursor"]);
+    expect(result.summary).not.toContain("SECRET_TELEGRAM_LEAK");
+  });
+
+  it("returns empty result when allowedSurfaces is exactly [target_surface] (no 'other' surfaces in scope)", async () => {
+    const now = Date.now();
+    await captureEvent(
+      { handle, embedder: null },
+      {
+        surface: "cursor",
+        channel_ref: { w: "x" },
+        side: "outbound",
+        author_ref: { id: "u1" },
+        content: "out of scope",
+        content_kind: "text",
+        ts_ms: now - 60 * 1000,
+      }
+    );
+
+    const result = await prewarm(
+      handle,
+      {
+        target_surface: "discord",
+        window_min: 30,
+        now,
+        allowedSurfaces: ["discord"], // only target itself
+      }
+    );
+
+    expect(result.events_count).toBe(0);
+    expect(result.source_surfaces).toEqual([]);
+    expect(result.summary).toContain("no recent activity");
+  });
+
+  it("undefined allowedSurfaces = legacy unrestricted behavior (no regression)", async () => {
+    const now = Date.now();
+    await captureEvent(
+      { handle, embedder: null },
+      {
+        surface: "telegram",
+        channel_ref: { c: "x" },
+        side: "outbound",
+        author_ref: { id: "u1" },
+        content: "telegram content",
+        content_kind: "text",
+        ts_ms: now - 60 * 1000,
+      }
+    );
+
+    // No allowedSurfaces => prior behavior.
+    const result = await prewarm(
+      handle,
+      { target_surface: "discord", window_min: 30, now }
+    );
+    expect(result.events_count).toBe(1);
+    expect(result.source_surfaces).toEqual(["telegram"]);
+  });
+});

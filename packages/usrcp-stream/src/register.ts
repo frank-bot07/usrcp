@@ -101,7 +101,15 @@ export function registerStreamTools(
     streamRecall(handle, embedder, { allowedScopes: readScopes }),
     streamThread(handle, { allowedScopes: readScopes }),
     streamActiveSurface(handle),
-    streamPrewarm(handle, { summarizer: options.prewarmSummarizer }),
+    // streamPrewarm needs the read allowlist too: the wrapper only
+    // checks target_surface, but the handler intentionally pulls from
+    // OTHER surfaces. Without the explicit cross-surface filter, a
+    // read-scoped agent could call prewarm and receive content from
+    // out-of-scope surfaces (codex round-4 review on PR #61).
+    streamPrewarm(handle, {
+      summarizer: options.prewarmSummarizer,
+      allowedScopes: readScopes,
+    }),
     streamStatus(handle, embedder),
   ];
 

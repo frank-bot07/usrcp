@@ -98,6 +98,40 @@ Fix: CLI parses `--read-scopes` / `--write-scopes` (same CSV shape as `--scopes`
 
 Help text updated to advertise both new flags with their semantics.
 
+## Codex round-4 fix (P1, follow-on)
+
+Round-4 caught a pre-existing cross-surface leak that the asymmetric work made more salient. `stream_prewarm` is classified `domain-scoped` with `scopeOf=[target_surface]` - the wrapper accepts "is target_surface in my read allowlist?" and stops. But the prewarm handler INTENTIONALLY pulls events from surfaces OTHER than the target (that's the whole point: build a pivot summary from where the user came from). With `--read-scopes=discord`, the wrapper accepted `prewarm({target_surface: "discord"})` but the handler then read Telegram and Slack events from the database to build the handoff. Real cross-surface leak.
+
+This bug pre-existed the asymmetric flags (it would have been there with `--scopes` too), but PR #61's asymmetric model makes it more salient: an operator setting `--read-scopes=discord` has explicitly opted into a narrow read scope and would be surprised to see Telegram content in a prewarm response.
+
+Fix in three layers:
+
+1. `surface/prewarm.ts`: new `allowedSurfaces?: string[]` option on `PrewarmOptions`. When set, both SQL queries (the thread-linkage branch and the fallback "any recent activity" branch) gain a `surface IN (?, ?, ...)` clause that intersects against the allowlist minus `target_surface`. Short-circuit when the intersection is empty (avoids the `IN ()` SQLite syntax problem).
+2. `tools/stream-prewarm.ts`: new `allowedScopes?: string[]` option on `PrewarmToolOptions`, plumbed down to `prewarm()` as `allowedSurfaces`.
+3. `register.ts`: pass `allowedScopes: readScopes` when constructing `streamPrewarm`.
+
+The leak applied to all three caller chains (unified `usrcp serve`, programmatic `createStreamServer`, standalone CLI) because they all flow through the same `register.ts → streamPrewarm`. Single-point fix.
+
+Tests:
+
+- `prewarm.test.ts`: +4 tests for the new `allowedSurfaces` option (thread-linkage branch, fallback branch, exactly-target-surface short-circuit, undefined-as-legacy).
+- `scope-enforcement.test.ts`: +1 end-to-end test that seeds three surfaces, opens a server with `readScopes: ["cursor", "discord"]`, calls `stream_prewarm` via the MCP wrapper, and asserts the response includes only in-scope content.
+
+Tests: usrcp-stream 116 -> 121.
+
+## Four bypass paths, all now closed
+
+After four codex rounds, the asymmetric scope work covers every entry point AND every cross-surface read in the chain:
+
+| # | Path | Round | Fix |
+|---|---|---|---|
+| 1 | `usrcp serve` -> `registerStreamTools` wrapper | 1 | Extend `StreamServeOptions`, add `resolveStreamScopes`. |
+| 2 | Standalone `createStreamServer()` programmatic | 2 | Forward `opts` verbatim instead of cherry-picking. |
+| 3 | Standalone `usrcp-stream serve` CLI | 3 | Parse the two new CLI flags. |
+| 4 | `stream_prewarm` cross-surface DB query | 4 | Pass `allowedSurfaces` into the SQL filter. |
+
+Each round caught a real bypass; this is the value of multi-round adversarial review.
+
 ## What this enables (worked examples)
 
 ```bash
