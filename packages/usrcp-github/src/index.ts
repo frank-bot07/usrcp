@@ -3,16 +3,21 @@
  * usrcp-github: capture-only adapter for PRs authored by the configured
  * user, filtered to optional allowlisted orgs.
  *
- * Polls the GitHub REST search API (issuesAndPullRequests) with
- * `author:<login> type:pr created:><cursor>`. Search is rate-limited
- * to 30 req/min for authenticated users; polling at 600s with one
- * paginated query per tick is well under the cap.
+ * Polls the GitHub REST search API (issuesAndPullRequests) with three
+ * queries per tick:
+ *   1. `author:X type:pr created:><opened_cursor>`         - pr_opened
+ *   2. `author:X type:pr is:merged merged:><merged_cursor>` - pr_merged
+ *   3. `author:X type:pr is:closed is:unmerged closed:><closed_cursor>` - pr_closed
+ *
+ * Search is rate-limited to 30 req/min for authenticated users; three
+ * paginated queries per 600s tick is well under the cap.
  *
  * Recursive setTimeout (not setInterval): a slow tick must delay the
  * next one, not queue overlapping ticks.
  *
- * created cursor: capture-only fires once per PR. State changes
- * (merged, closed, reviewed) come in a future v1.1.
+ * Cursors advance independently. The same PR may appear in queries
+ * (1) on one tick and (2)/(3) on a later tick; idempotency keys are
+ * per (PR, activity-type) so each event lands once.
  */
 
 import { execSync } from "node:child_process";
@@ -21,18 +26,23 @@ import { Ledger } from "usrcp-local/dist/ledger/index.js";
 import {
   loadConfig,
   preflightConfig,
-  saveLastSyncedAt,
-  flushLastSyncedAt,
+  saveCursors,
+  flushCursors,
   type GitHubConfig,
 } from "./config.js";
-import { captureGitHubActivity, type PullRequestActivity } from "./capture.js";
+import {
+  captureGitHubActivity,
+  type CaptureLedger,
+  type PullRequestActivity,
+  type PullRequestStateChangeActivity,
+} from "./capture.js";
 
 function hasFlag(name: string): boolean {
   return process.argv.includes(`--${name}`);
 }
 
-// First-run lookback when last_synced_at is unset, so activity from
-// the gap between `usrcp setup` and the daemon coming up isn't lost.
+// First-run lookback when a cursor is unset, so activity from the gap
+// between `usrcp setup` and the daemon coming up isn't lost.
 const FIRST_RUN_LOOKBACK_MS = 5 * 60 * 1000;
 
 /**
@@ -47,71 +57,100 @@ function parseRepoUrl(url: string): { owner: string; repo: string } | null {
   return { owner: m[1], repo: m[2] };
 }
 
-interface PollResult {
-  newCursor: string;
-  captured: number;
-  skipped: number;
+function orgQualifiers(config: GitHubConfig): string[] {
+  if (config.allowlisted_orgs.length === 0) return [];
+  return config.allowlisted_orgs.map((o) => `org:${o}`);
 }
 
-export async function pollOnce(
-  ledger: { appendEvent: Parameters<typeof captureGitHubActivity>[0]["appendEvent"] },
+interface CursorState {
+  opened: string;
+  merged: string;
+  closed: string;
+}
+
+export interface PollTickResult {
+  opened: { captured: number; skipped: number; newCursor: string };
+  merged: { captured: number; skipped: number; newCursor: string };
+  closed: { captured: number; skipped: number; newCursor: string };
+}
+
+/**
+ * Octokit search result items are typed loosely; pulling out the
+ * fields we need into a narrower shape makes the per-query mapping
+ * trivial and gives us one place to handle missing data.
+ */
+function toBaseFields(item: any): {
+  node_id: string;
+  number: number;
+  owner: string;
+  repo: string;
+  title: string;
+  body: string | null;
+  url: string;
+  author_login: string;
+  created_at: string;
+  updated_at: string;
+  org: string | null;
+} | null {
+  if (!item.pull_request) return null;
+  const parsed = parseRepoUrl(item.repository_url);
+  if (!parsed) return null;
+  if (!item.user) return null;
+  return {
+    node_id: item.node_id,
+    number: item.number,
+    owner: parsed.owner,
+    repo: parsed.repo,
+    title: item.title,
+    body: item.body ?? null,
+    url: item.html_url,
+    author_login: item.user.login,
+    created_at: item.created_at,
+    updated_at: item.updated_at,
+    org: parsed.owner,
+  };
+}
+
+async function runQuery(
+  octokit: Octokit,
+  q: string,
+  sort: "created" | "updated",
+): Promise<any[]> {
+  return octokit.paginate(octokit.search.issuesAndPullRequests, {
+    q,
+    sort,
+    order: "asc",
+    per_page: 100,
+  });
+}
+
+async function pollOpened(
+  ledger: CaptureLedger,
   octokit: Octokit,
   config: GitHubConfig,
   sinceIso: string,
-): Promise<PollResult> {
+): Promise<{ captured: number; skipped: number; newCursor: string }> {
   let captured = 0;
   let skipped = 0;
   let newCursor = sinceIso;
 
-  // GitHub's search query syntax: scope by author + type + created
-  // window, plus optional org allowlist (server-side filter).
-  const qParts = [
+  const q = [
     `author:${config.github_login}`,
     "type:pr",
     `created:>${sinceIso}`,
-  ];
-  if (config.allowlisted_orgs.length > 0) {
-    for (const org of config.allowlisted_orgs) {
-      qParts.push(`org:${org}`);
-    }
-  }
-  const q = qParts.join(" ");
-
-  const items = await octokit.paginate(octokit.search.issuesAndPullRequests, {
-    q,
-    sort: "created",
-    order: "asc",
-    per_page: 100,
-  });
+    ...orgQualifiers(config),
+  ].join(" ");
+  const items = await runQuery(octokit, q, "created");
 
   for (const item of items) {
-    if (!item.pull_request) continue;
-    const parsed = parseRepoUrl(item.repository_url);
-    if (!parsed) continue;
-    if (!item.user) continue;
-
-    // Search API returns the issue-shaped view of a PR. `pull_request.merged_at`
-    // is present iff the PR has been merged. `repository_url` is the only
-    // hint at the owning org, and GitHub doesn't return an explicit
-    // org-vs-user flag - we treat any owner login as the org slug for
-    // allowlist purposes. captureGitHubActivity re-checks.
+    const base = toBaseFields(item);
+    if (!base) continue;
     const activity: PullRequestActivity = {
       type: "pr_opened",
-      node_id: item.node_id,
-      number: item.number,
-      owner: parsed.owner,
-      repo: parsed.repo,
-      title: item.title,
-      body: item.body ?? null,
-      url: item.html_url,
-      author_login: item.user.login,
-      created_at: item.created_at,
-      updated_at: item.updated_at,
+      ...base,
       state: item.state === "closed" ? "closed" : "open",
       merged: !!item.pull_request.merged_at,
-      org: parsed.owner,
     };
-
     const outcome = captureGitHubActivity(ledger, activity, config);
     if (outcome.captured) {
       captured++;
@@ -120,8 +159,79 @@ export async function pollOnce(
       skipped++;
     }
   }
+  return { captured, skipped, newCursor };
+}
 
-  return { newCursor, captured, skipped };
+async function pollTerminal(
+  ledger: CaptureLedger,
+  octokit: Octokit,
+  config: GitHubConfig,
+  variant: "pr_merged" | "pr_closed",
+  sinceIso: string,
+): Promise<{ captured: number; skipped: number; newCursor: string }> {
+  let captured = 0;
+  let skipped = 0;
+  let newCursor = sinceIso;
+
+  const variantQ =
+    variant === "pr_merged"
+      ? ["is:merged", `merged:>${sinceIso}`]
+      : ["is:closed", "is:unmerged", `closed:>${sinceIso}`];
+  const q = [
+    `author:${config.github_login}`,
+    "type:pr",
+    ...variantQ,
+    ...orgQualifiers(config),
+  ].join(" ");
+  const items = await runQuery(octokit, q, "updated");
+
+  for (const item of items) {
+    const base = toBaseFields(item);
+    if (!base) continue;
+    // GitHub returns `merged_at` only for actually-merged PRs; for
+    // closed-without-merge the cursor field is `closed_at`. Either
+    // way we read the appropriate field for the cursor advance.
+    const stateAt =
+      variant === "pr_merged"
+        ? (item.pull_request.merged_at as string | null)
+        : (item.closed_at as string | null);
+    // GitHub guarantees these fields are present for the matching
+    // filter (is:merged -> merged_at; is:closed -> closed_at). Skip
+    // anything that violates the guarantee rather than poisoning the
+    // cursor.
+    if (!stateAt) continue;
+
+    const activity: PullRequestStateChangeActivity = {
+      type: variant,
+      ...base,
+      state_at: stateAt,
+    };
+    const outcome = captureGitHubActivity(ledger, activity, config);
+    if (outcome.captured) {
+      captured++;
+      if (stateAt > newCursor) newCursor = stateAt;
+    } else {
+      skipped++;
+    }
+  }
+  return { captured, skipped, newCursor };
+}
+
+export async function pollOnce(
+  ledger: CaptureLedger,
+  octokit: Octokit,
+  config: GitHubConfig,
+  cursors: CursorState,
+): Promise<PollTickResult> {
+  // Three independent queries run in parallel - each has its own
+  // server-side cursor filter so they don't waste each other's
+  // pagination budget.
+  const [opened, merged, closed] = await Promise.all([
+    pollOpened(ledger, octokit, config, cursors.opened),
+    pollTerminal(ledger, octokit, config, "pr_merged", cursors.merged),
+    pollTerminal(ledger, octokit, config, "pr_closed", cursors.closed),
+  ]);
+  return { opened, merged, closed };
 }
 
 async function main() {
@@ -154,10 +264,15 @@ async function main() {
     }`,
   );
 
-  let cursor =
-    config.last_synced_at ??
-    new Date(Date.now() - FIRST_RUN_LOOKBACK_MS).toISOString();
-  console.error(`[usrcp-github] starting cursor: ${cursor}`);
+  const firstRunIso = new Date(Date.now() - FIRST_RUN_LOOKBACK_MS).toISOString();
+  const cursors: CursorState = {
+    opened: config.last_synced_at ?? firstRunIso,
+    merged: config.last_merged_at ?? firstRunIso,
+    closed: config.last_closed_at ?? firstRunIso,
+  };
+  console.error(
+    `[usrcp-github] starting cursors: opened=${cursors.opened} merged=${cursors.merged} closed=${cursors.closed}`,
+  );
 
   let stopping = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -165,13 +280,35 @@ async function main() {
   const tick = async () => {
     if (stopping) return;
     try {
-      const { newCursor, captured, skipped } = await pollOnce(ledger, octokit, config, cursor);
-      if (newCursor !== cursor) {
-        cursor = newCursor;
-        saveLastSyncedAt(cursor, masterKey);
+      const result = await pollOnce(ledger, octokit, config, cursors);
+      const advances: Partial<Record<
+        "last_synced_at" | "last_merged_at" | "last_closed_at",
+        string
+      >> = {};
+      if (result.opened.newCursor !== cursors.opened) {
+        cursors.opened = result.opened.newCursor;
+        advances.last_synced_at = cursors.opened;
       }
-      if (captured > 0 || skipped > 0) {
-        console.error(`[usrcp-github] tick: captured=${captured} skipped=${skipped} cursor=${cursor}`);
+      if (result.merged.newCursor !== cursors.merged) {
+        cursors.merged = result.merged.newCursor;
+        advances.last_merged_at = cursors.merged;
+      }
+      if (result.closed.newCursor !== cursors.closed) {
+        cursors.closed = result.closed.newCursor;
+        advances.last_closed_at = cursors.closed;
+      }
+      if (Object.keys(advances).length > 0) {
+        saveCursors(advances, masterKey);
+      }
+      const totalCaptured = result.opened.captured + result.merged.captured + result.closed.captured;
+      const totalSkipped = result.opened.skipped + result.merged.skipped + result.closed.skipped;
+      if (totalCaptured > 0 || totalSkipped > 0) {
+        console.error(
+          `[usrcp-github] tick: opened={c=${result.opened.captured},s=${result.opened.skipped}} ` +
+          `merged={c=${result.merged.captured},s=${result.merged.skipped}} ` +
+          `closed={c=${result.closed.captured},s=${result.closed.skipped}} ` +
+          `cursors=[o=${cursors.opened} m=${cursors.merged} c=${cursors.closed}]`,
+        );
       }
     } catch (err) {
       console.error(`[usrcp-github] poll error: ${err instanceof Error ? err.message : err}`);
@@ -189,7 +326,7 @@ async function main() {
     stopping = true;
     console.error(`[usrcp-github] ${signal} received, shutting down.`);
     if (timer !== undefined) clearTimeout(timer);
-    flushLastSyncedAt();
+    flushCursors();
     try { ledger.close(); } catch { /* ignore */ }
     process.exit(0);
   };

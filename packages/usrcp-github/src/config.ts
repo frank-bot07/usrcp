@@ -27,9 +27,33 @@ export interface GitHubConfig {
   domain: string;
   /** Polling interval in seconds (default 600 = 10 min). */
   poll_interval_s: number;
-  /** ISO timestamp; queries use `created:>{last_synced_at}`. */
+  /**
+   * Cursor for `pr_opened` events. The PR-opened query uses
+   * `created:>{last_synced_at}`. Named for v1 backwards compatibility;
+   * "synced_at" is misleading now that there are three cursors, but
+   * renaming would orphan existing on-disk configs.
+   */
   last_synced_at?: string;
+  /**
+   * Cursor for `pr_merged` events. The PR-merged query uses
+   * `merged:>{last_merged_at}`. Added in v1.1.
+   */
+  last_merged_at?: string;
+  /**
+   * Cursor for `pr_closed` (without merge) events. The query uses
+   * `closed:>{last_closed_at} is:unmerged`. Added in v1.1.
+   */
+  last_closed_at?: string;
 }
+
+/**
+ * Field names of the three cursors, kept centralized so the save /
+ * flush plumbing doesn't drift from the GitHubConfig shape.
+ */
+export type GitHubCursorField =
+  | "last_synced_at"
+  | "last_merged_at"
+  | "last_closed_at";
 
 const CONFIG_FILENAME = "github-config.json";
 
@@ -225,44 +249,74 @@ export function reencryptConfigUnderNewKey(
   }
 }
 
-let _pendingTs: string | undefined;
+type PendingCursors = Partial<Record<GitHubCursorField, string>>;
+
+let _pendingCursors: PendingCursors = {};
 let _pendingMasterKey: Buffer | undefined;
 let _flushTimer: ReturnType<typeof setTimeout> | undefined;
 
-export function saveLastSyncedAt(ts: string, masterKey: Buffer): void {
-  _pendingTs = ts;
+/**
+ * Stage cursor advances and debounce a write 500ms out. Multiple
+ * calls inside the window coalesce - only the latest value for each
+ * field hits disk. A subsequent call with a different masterKey
+ * replaces the pending one (no realistic case where the key would
+ * mid-flight differ, but be explicit).
+ */
+export function saveCursors(
+  cursors: PendingCursors,
+  masterKey: Buffer,
+): void {
+  for (const k of Object.keys(cursors) as GitHubCursorField[]) {
+    const v = cursors[k];
+    if (v !== undefined) _pendingCursors[k] = v;
+  }
   _pendingMasterKey = masterKey;
   if (_flushTimer !== undefined) clearTimeout(_flushTimer);
   _flushTimer = setTimeout(() => {
     _flushTimer = undefined;
-    flushLastSyncedAt();
+    flushCursors();
   }, 500);
 }
 
-export function flushLastSyncedAt(): void {
-  if (_pendingTs === undefined || !_pendingMasterKey) return;
+export function flushCursors(): void {
+  const pending = _pendingCursors;
+  const masterKey = _pendingMasterKey;
+  // Reset state regardless of write outcome - a failed write should
+  // not leave stale pending state across the next save call.
+  _pendingCursors = {};
+  _pendingMasterKey = undefined;
+  if (!masterKey || Object.keys(pending).length === 0) return;
+
   const existing = readPartialConfig();
   // Bail if the on-disk config is gone or stripped - better to lose
-  // the cursor than overwrite a missing token with empty strings.
+  // a cursor than overwrite a missing token with empty strings.
   if (
     !existing.github_token ||
     !existing.github_login ||
     !existing.domain ||
     typeof existing.poll_interval_s !== "number"
   ) {
-    _pendingTs = undefined;
     return;
   }
   try {
     const decrypted: GitHubConfig = {
       ...(existing as GitHubConfig),
-      github_token: maybeDecryptSecret(existing.github_token!, _pendingMasterKey),
+      github_token: maybeDecryptSecret(existing.github_token!, masterKey),
       allowlisted_orgs: existing.allowlisted_orgs ?? [],
-      last_synced_at: _pendingTs,
+      ...pending,
     };
-    writeGitHubConfig(decrypted, _pendingMasterKey);
+    writeGitHubConfig(decrypted, masterKey);
   } catch {
     // Non-fatal: next restart may re-process a few PRs.
   }
-  _pendingTs = undefined;
+}
+
+/** @deprecated since v1.1 - use `saveCursors({ last_synced_at: ts }, key)`. */
+export function saveLastSyncedAt(ts: string, masterKey: Buffer): void {
+  saveCursors({ last_synced_at: ts }, masterKey);
+}
+
+/** @deprecated since v1.1 - use `flushCursors()`. */
+export function flushLastSyncedAt(): void {
+  flushCursors();
 }

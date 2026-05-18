@@ -3,6 +3,7 @@ import {
   captureGitHubActivity,
   type CaptureLedger,
   type PullRequestActivity,
+  type PullRequestStateChangeActivity,
 } from "../capture.js";
 import type { GitHubConfig } from "../config.js";
 
@@ -149,7 +150,7 @@ describe("captureGitHubActivity", () => {
     expect(result.captured).toBe(true);
   });
 
-  it("records merged + state metadata so the future v1.1 layer can use it", () => {
+  it("records merged + state metadata for downstream consumers", () => {
     captureGitHubActivity(
       ledger,
       makeActivity({ state: "closed", merged: true }),
@@ -157,5 +158,104 @@ describe("captureGitHubActivity", () => {
     );
     expect(ledger.events[0].detail!.merged).toBe(true);
     expect(ledger.events[0].detail!.state).toBe("closed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v1.1: terminal state changes (pr_merged, pr_closed)
+// ---------------------------------------------------------------------------
+
+function makeMergedActivity(
+  overrides: Partial<PullRequestStateChangeActivity> = {},
+): PullRequestStateChangeActivity {
+  return {
+    type: "pr_merged",
+    node_id: "PR_kwDOABC123",
+    number: 42,
+    owner: "anthropics",
+    repo: "usrcp",
+    title: "Add the GitHub adapter",
+    url: "https://github.com/anthropics/usrcp/pull/42",
+    author_login: "chad",
+    created_at: "2026-05-17T10:00:00Z",
+    updated_at: "2026-05-17T14:00:00Z",
+    state_at: "2026-05-17T14:00:00Z",
+    org: "anthropics",
+    ...overrides,
+  };
+}
+
+function makeClosedActivity(
+  overrides: Partial<PullRequestStateChangeActivity> = {},
+): PullRequestStateChangeActivity {
+  return makeMergedActivity({ type: "pr_closed", ...overrides });
+}
+
+describe("captureGitHubActivity - pr_merged", () => {
+  let ledger: FakeLedger;
+  beforeEach(() => { ledger = new FakeLedger(); });
+
+  it("captures with `merged:` verb in the summary and a distinct idempotency key", () => {
+    const result = captureGitHubActivity(ledger, makeMergedActivity(), CONFIG);
+    expect(result.captured).toBe(true);
+    const e = ledger.events[0];
+    expect(e.summary).toBe("anthropics/usrcp#42 merged: Add the GitHub adapter");
+    expect(e.intent).toBe("pr_merged");
+    expect(e.idempotencyKey).toBe("github:pr-merged:anthropics/usrcp#42");
+    // Same channel_id as pr_opened so the timeline groups them.
+    expect(e.channel_id).toBe("anthropics/usrcp#42");
+    expect(e.tags).toEqual(["github", "pull-request", "anthropics/usrcp", "merged"]);
+    expect(e.detail!.state_at).toBe("2026-05-17T14:00:00Z");
+  });
+
+  it("respects the org allowlist same as pr_opened", () => {
+    const cfg: GitHubConfig = { ...CONFIG, allowlisted_orgs: ["other"] };
+    const result = captureGitHubActivity(ledger, makeMergedActivity(), cfg);
+    expect(result.captured).toBe(false);
+    expect(ledger.events).toHaveLength(0);
+  });
+
+  it("truncates summary at 200 chars with an ellipsis", () => {
+    const longTitle = "x".repeat(500);
+    captureGitHubActivity(ledger, makeMergedActivity({ title: longTitle }), CONFIG);
+    expect(ledger.events[0].summary.length).toBe(200);
+    expect(ledger.events[0].summary.endsWith("…")).toBe(true);
+  });
+
+  it("groups with a same-PR pr_opened under the same channel_id", () => {
+    // Simulating the realistic two-event sequence.
+    captureGitHubActivity(ledger, makeActivity(), CONFIG);
+    captureGitHubActivity(ledger, makeMergedActivity(), CONFIG);
+    expect(ledger.events).toHaveLength(2);
+    expect(ledger.events[0].channel_id).toBe(ledger.events[1].channel_id);
+    expect(ledger.events[0].channel_id).toBe("anthropics/usrcp#42");
+    // Distinct idempotency keys so they BOTH land in the ledger.
+    expect(ledger.events[0].idempotencyKey).toBe("github:pr:anthropics/usrcp#42");
+    expect(ledger.events[1].idempotencyKey).toBe("github:pr-merged:anthropics/usrcp#42");
+  });
+});
+
+describe("captureGitHubActivity - pr_closed (without merge)", () => {
+  let ledger: FakeLedger;
+  beforeEach(() => { ledger = new FakeLedger(); });
+
+  it("captures with `closed:` verb in the summary and a distinct idempotency key", () => {
+    const result = captureGitHubActivity(ledger, makeClosedActivity(), CONFIG);
+    expect(result.captured).toBe(true);
+    const e = ledger.events[0];
+    expect(e.summary).toBe("anthropics/usrcp#42 closed: Add the GitHub adapter");
+    expect(e.intent).toBe("pr_closed");
+    expect(e.idempotencyKey).toBe("github:pr-closed:anthropics/usrcp#42");
+    expect(e.tags).toEqual(["github", "pull-request", "anthropics/usrcp", "closed"]);
+  });
+
+  it("uses a different idempotency key from pr_merged - so a closed-then-reopened-then-merged PR could fire both terminal events without dedup", () => {
+    // (Realistically pr_closed -> reopen -> pr_merged is possible.
+    // GitHub doesn't let us un-merge, so pr_merged is genuinely
+    // terminal, but a PR closed without merge can later be merged.)
+    captureGitHubActivity(ledger, makeClosedActivity(), CONFIG);
+    captureGitHubActivity(ledger, makeMergedActivity(), CONFIG);
+    const keys = ledger.events.map((e) => e.idempotencyKey);
+    expect(new Set(keys).size).toBe(2);
   });
 });
