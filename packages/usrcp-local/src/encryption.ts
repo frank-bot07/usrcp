@@ -187,6 +187,52 @@ export function safeWriteFile(filePath: string, content: Buffer, mode: number): 
   fs.renameSync(tmpPath, filePath);
 }
 
+/**
+ * fsync a file's data + inode to disk. Used at durability boundaries
+ * (pair-join key-file writes) where SIGKILL safety alone is not
+ * enough: a power loss between the write returning and the kernel
+ * flushing buffer-cache could lose the data. On POSIX (Darwin/Linux)
+ * this issues fsync(2); on filesystems / platforms where fsync is
+ * not supported the open or fsync call may fail, which we swallow:
+ * the rename is still atomic in the SIGKILL sense, just not
+ * durable past a kernel-level crash.
+ */
+export function fsyncFile(filePath: string): void {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(filePath, "r");
+    fs.fsyncSync(fd);
+  } catch {
+    // Best-effort: see jsdoc.
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* swallow */ }
+    }
+  }
+}
+
+/**
+ * fsync a directory so its entry list (added/removed/renamed files)
+ * is durably on disk. POSIX-only; on Windows or filesystems that
+ * reject opening a directory for reading this is a no-op. Used at
+ * the rename boundaries in pair-join so that a power loss after a
+ * rename returns successfully does not leave the parent directory
+ * with a stale view of which children exist.
+ */
+export function fsyncDir(dirPath: string): void {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(dirPath, "r");
+    fs.fsyncSync(fd);
+  } catch {
+    // Best-effort: see jsdoc.
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* swallow */ }
+    }
+  }
+}
+
 function generateVerifyHash(masterKey: Buffer): Buffer {
   return crypto
     .createHmac("sha256", masterKey)

@@ -427,3 +427,36 @@ describe("passphrase mode initialization", () => {
     expect(key1.equals(key2)).toBe(true);
   });
 });
+
+describe("fsyncFile / fsyncDir (PR #71 - power-loss durability helpers)", () => {
+  let tmpDir: string;
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-fsync-test-"));
+  });
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("fsyncFile returns cleanly for a real file (POSIX path)", async () => {
+    const { fsyncFile } = await import("../encryption.js");
+    const p = path.join(tmpDir, "thing.txt");
+    fs.writeFileSync(p, "hello");
+    expect(() => fsyncFile(p)).not.toThrow();
+  });
+
+  it("fsyncFile swallows errors for a non-existent path (best-effort contract)", async () => {
+    const { fsyncFile } = await import("../encryption.js");
+    expect(() => fsyncFile(path.join(tmpDir, "nope.txt"))).not.toThrow();
+  });
+
+  it("fsyncDir returns cleanly for a real directory (POSIX path)", async () => {
+    const { fsyncDir } = await import("../encryption.js");
+    fs.writeFileSync(path.join(tmpDir, "child"), "x");
+    expect(() => fsyncDir(tmpDir)).not.toThrow();
+  });
+
+  it("fsyncDir swallows errors for a non-existent path", async () => {
+    const { fsyncDir } = await import("../encryption.js");
+    expect(() => fsyncDir(path.join(tmpDir, "missing-subdir"))).not.toThrow();
+  });
+});
