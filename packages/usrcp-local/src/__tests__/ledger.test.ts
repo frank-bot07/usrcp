@@ -609,6 +609,58 @@ describe("Key Rotation", () => {
     }
   });
 
+  it("re-encrypts private.pem under the new master key so getDecryptedPrivateKeyPem still works after rotate (PR #73)", async () => {
+    // Pre-PR-#73 latent bug: rotateKey rotated the DB and the
+    // master-key file set but never touched private.pem. The Ed25519
+    // identity key stayed sealed under the OLD globalKey, and any
+    // post-rotation call to getDecryptedPrivateKeyPem would throw a
+    // GCM auth-tag mismatch - effectively orphaning the identity
+    // used for cloud-sync signing.
+    //
+    // Fix: prepareReencryptedPrivatePem builds a re-keyed entry that
+    // gets appended to pendingFiles, so the new private.pem is
+    // written by commitKeyRotation alongside master.salt/verify/mode
+    // AND captured in rotation_state.pending_files_json for crash
+    // recovery.
+    //
+    // Isolated HOME so the test doesn't interact with the developer's
+    // real ~/.usrcp - critical here because prior tests in this suite
+    // may have left private.pem sealed under a stale key from rotateKey
+    // calls that didn't have this fix.
+    const origHome = process.env.HOME;
+    const isoHome = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-pem-rotate-"));
+    process.env.HOME = isoHome;
+    try {
+      const isoDbPath = path.join(isoHome, "ledger.db");
+      const isoLedger = new Ledger(isoDbPath, "alice-passphrase");
+      const { getDecryptedPrivateKeyPem } = await import("../crypto.js");
+      const pemBefore = getDecryptedPrivateKeyPem((isoLedger as any).masterKey);
+      expect(pemBefore).toContain("BEGIN PRIVATE KEY");
+
+      isoLedger.rotateKey("bob-passphrase");
+
+      // After rotation, the in-memory masterKey is the NEW key. The
+      // private.pem on disk MUST be decryptable under it.
+      const pemAfter = getDecryptedPrivateKeyPem((isoLedger as any).masterKey);
+      expect(pemAfter).toBe(pemBefore);
+      isoLedger.close();
+
+      // Sanity-check via a fresh constructor too: reopening with the
+      // new passphrase should let getDecryptedPrivateKeyPem succeed
+      // without round-tripping in-memory state.
+      const reopened = new Ledger(isoDbPath, "bob-passphrase");
+      try {
+        const pemAfterReopen = getDecryptedPrivateKeyPem((reopened as any).masterKey);
+        expect(pemAfterReopen).toBe(pemBefore);
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      process.env.HOME = origHome;
+      try { fs.rmSync(isoHome, { recursive: true, force: true }); } catch {}
+    }
+  });
+
   it("reopens a ledger with events but an empty blind_index (Codex P1 on PR #72 round-2)", async () => {
     // Codex round-2 P1 surfaced this: PR #72 moved migrate() ahead
     // of initializeMasterKey so rotation_state.pending_files_json

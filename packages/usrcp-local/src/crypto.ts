@@ -2,7 +2,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { deriveGlobalEncryptionKey, encrypt, decrypt, isEncrypted, getUserDir, safeWriteFile } from "./encryption.js";
+import { deriveGlobalEncryptionKey, encrypt, decrypt, isEncrypted, getUserDir, safeWriteFile, zeroBuffer, type PendingKeyFile } from "./encryption.js";
 
 function getKeysDir(): string {
   return path.join(getUserDir(), "keys");
@@ -96,6 +96,69 @@ export function getIdentity(): LedgerIdentity | null {
     return JSON.parse(fs.readFileSync(identityPath, "utf-8"));
   } catch {
     return null;
+  }
+}
+
+/**
+ * Re-encrypt private.pem under a new master key as part of a
+ * rotateKey commit. Returns a PendingKeyFile entry the caller
+ * appends to the rotation's pendingFiles array; commitKeyRotation
+ * then writes it durably alongside the master.salt / master.verify
+ * / mode / key.version entries.
+ *
+ * Pre-this-helper, rotateKey rotated the DB rows AND the master-
+ * key file set but left private.pem sealed under the OLD globalKey.
+ * Any subsequent getDecryptedPrivateKeyPem(newMasterKey) would fail
+ * (GCM auth tag mismatch) - effectively erasing the Ed25519
+ * identity used for cloud-sync signing.
+ *
+ * Returns null when:
+ *   - private.pem doesn't exist (no identity yet)
+ *   - private.pem is plaintext (legacy pre-v0.1.3) - the next
+ *     ensurePrivateKeyEncrypted() will pick it up under the new key
+ */
+export function prepareReencryptedPrivatePem(
+  oldMasterKey: Buffer,
+  newMasterKey: Buffer,
+): PendingKeyFile | null {
+  const privPath = path.join(getKeysDir(), "private.pem");
+  if (!fs.existsSync(privPath)) return null;
+  const content = fs.readFileSync(privPath, "utf-8");
+  if (!isEncrypted(content)) return null;
+
+  const oldGlobalKey = deriveGlobalEncryptionKey(oldMasterKey);
+  const newGlobalKey = deriveGlobalEncryptionKey(newMasterKey);
+  try {
+    let plain: string;
+    try {
+      plain = decrypt(content, oldGlobalKey);
+    } catch (err) {
+      // private.pem on disk was sealed under a DIFFERENT master
+      // key than the one rotateKey is rotating away from. The most
+      // common cause is a ledger whose identity is already
+      // orphaned from a prior incomplete rotation (the latent bug
+      // this helper was added to prevent going forward). Log so
+      // the operator can recover the identity by re-running
+      // `usrcp setup` or by pairing from another device, but do
+      // NOT block the data-rotation - the DB rows still need to
+      // re-encrypt successfully, and stale private.pem is no worse
+      // post-rotation than pre-rotation.
+      console.warn(
+        `[usrcp] rotateKey: private.pem did not decrypt under the current master key (${
+          err instanceof Error ? err.message : String(err)
+        }). Skipping re-encryption; the identity may already be orphaned. Re-run \`usrcp setup\` or pair from another device to restore.`
+      );
+      return null;
+    }
+    const reencrypted = encrypt(plain, newGlobalKey);
+    return {
+      path: privPath,
+      content: Buffer.from(reencrypted, "utf-8"),
+      mode: 0o600,
+    };
+  } finally {
+    zeroBuffer(oldGlobalKey);
+    zeroBuffer(newGlobalKey);
   }
 }
 
