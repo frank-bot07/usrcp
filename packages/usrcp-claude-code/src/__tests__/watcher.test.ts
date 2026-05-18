@@ -221,4 +221,91 @@ describe("watcher", () => {
     expect(stats.errors).toBeGreaterThanOrEqual(2);
     expect(stats.eventsCaptured).toBe(2);
   });
+
+  // --- Offset pruning (PR #68 / Codex Tier-2 #5) ---
+
+  it("prunes a file_offsets entry whose JSONL was deleted from disk", async () => {
+    fs.writeFileSync(
+      sessionFile,
+      jsonl(userTurn("u1", "2026-05-15T17:00:00Z", "live session"))
+    );
+    // Pre-populate file_offsets with a stale entry for a session
+    // that no longer exists on disk (compacted by Claude Code, etc).
+    const stale = path.join(projectADir, "session-old-gone.jsonl");
+    config.file_offsets[stale] = 12345;
+
+    const watcher = makeWatcher(config, streamClient, { projectsDir: projectsRoot });
+    const stats = await watcher.poll();
+
+    expect(stats.offsetsPruned).toBe(1);
+    expect(config.file_offsets).not.toHaveProperty(stale);
+    // Live session still tracked with a fresh offset.
+    expect(config.file_offsets[sessionFile]).toBeGreaterThan(0);
+  });
+
+  it("does NOT prune entries from a project dir that failed readdirSync (transient)", async () => {
+    // Simulate a transient mount issue by allowlisting a project
+    // whose directory does not exist on disk this tick. The
+    // pre-existing offset entry for a file under that dir must
+    // NOT be removed, because the directory might come back.
+    const missingProject = "/work/proj-missing";
+    config.allowlisted_projects = [PROJECT_A, missingProject];
+    const missingDir = path.join(projectsRoot, encodeProjectDir(missingProject));
+    const missingFile = path.join(missingDir, "session.jsonl");
+    config.file_offsets[missingFile] = 999;
+
+    fs.writeFileSync(
+      sessionFile,
+      jsonl(userTurn("u1", "2026-05-15T17:00:00Z", "from proj-a"))
+    );
+
+    const watcher = makeWatcher(config, streamClient, { projectsDir: projectsRoot });
+    const stats = await watcher.poll();
+
+    expect(stats.offsetsPruned).toBe(0);
+    expect(config.file_offsets[missingFile]).toBe(999);
+  });
+
+  it("does NOT prune an entry from a project dir that isn't allowlisted", async () => {
+    // file_offsets might carry an entry from a previously-allowlisted
+    // project that the user de-allowlisted. Don't drop those: the
+    // user may re-allowlist, and we'd want to resume mid-stream
+    // rather than re-scan the whole history.
+    const formerlyAllowlistedDir = path.join(
+      projectsRoot,
+      encodeProjectDir("/work/proj-deallowlisted")
+    );
+    fs.mkdirSync(formerlyAllowlistedDir, { recursive: true });
+    const formerlyFile = path.join(formerlyAllowlistedDir, "session.jsonl");
+    fs.writeFileSync(formerlyFile, jsonl(userTurn("u1", "2026-05-15T17:00:00Z", "old")));
+    config.file_offsets[formerlyFile] = 50;
+
+    fs.writeFileSync(
+      sessionFile,
+      jsonl(userTurn("u1", "2026-05-15T17:00:00Z", "live"))
+    );
+
+    const watcher = makeWatcher(config, streamClient, { projectsDir: projectsRoot });
+    const stats = await watcher.poll();
+
+    expect(stats.offsetsPruned).toBe(0);
+    expect(config.file_offsets[formerlyFile]).toBe(50);
+  });
+
+  it("prunes multiple stale entries in a single tick", async () => {
+    fs.writeFileSync(
+      sessionFile,
+      jsonl(userTurn("u1", "2026-05-15T17:00:00Z", "live"))
+    );
+    // Three stale entries under an allowlisted project dir.
+    for (const stale of ["a-gone.jsonl", "b-gone.jsonl", "c-gone.jsonl"]) {
+      config.file_offsets[path.join(projectADir, stale)] = 100;
+    }
+
+    const watcher = makeWatcher(config, streamClient, { projectsDir: projectsRoot });
+    const stats = await watcher.poll();
+
+    expect(stats.offsetsPruned).toBe(3);
+    expect(Object.keys(config.file_offsets)).toEqual([sessionFile]);
+  });
 });
