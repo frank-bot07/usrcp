@@ -1,43 +1,53 @@
 /**
  * Adapter-config re-encryption hook for `usrcp_rotate_key`.
  *
- * Each adapter package whose setup wizard encrypts secrets at rest
- * exports `reencryptConfigUnderNewKey(oldKey, newKey)`. The Ledger's
- * `rotateKey` invokes this dispatcher right after committing the
- * new master key to disk; without it, every adapter would fail to
- * decrypt its config on the next boot (the AES-GCM envelope is
- * derived from the *master* key via HKDF, and the master key just
- * changed).
+ * Each adapter whose setup wizard encrypts secrets at rest exports
+ * `reencryptConfigUnderNewKey(oldKey, newKey)` from its config module.
+ * The Ledger's `rotateKey` invokes this dispatcher right after
+ * committing the new master key to disk; without it, every adapter
+ * would fail to decrypt its config on the next boot (the AES-GCM
+ * envelope is derived from the *master* key via HKDF, and the master
+ * key just changed).
  *
  * Per-adapter helpers are sync, atomic per-file (tmp + rename).
  * This dispatcher is sync too so the caller doesn't have to make
  * rotateKey async.
  *
- * Adapter packages are loaded via `createRequire` from their
- * compiled `dist/config.js`, matching the dispatch pattern in
- * `setup.ts`. Adapters NOT in `ADAPTERS_WITH_ENCRYPTED_CONFIG` are
- * skipped silently - terminal/imessage/obsidian have no secrets
- * encrypted under the master key today.
+ * The list of participating adapters is derived from the central
+ * registry: any AdapterManifest with `supportsRotateKey: true` shows
+ * up here. (The previous hardcoded `ADAPTERS_WITH_ENCRYPTED_CONFIG`
+ * array had to be hand-synced with the master-key gate in setup.ts -
+ * the manifest-derived approach eliminates that drift class.)
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import {
+  type AdapterManifest,
+  getRegisteredAdapters,
+  getRotateKeyAdapterValues,
+  resolveAdapterPackageName,
+} from "./adapters/registry.js";
 
 /**
- * Adapters that expose a `reencryptConfigUnderNewKey` export.
- * Must match the set in `setup.ts:ADAPTERS_REQUIRING_MASTER_KEY` -
- * an adapter whose wizard encrypts secrets at rest also needs its
- * configs re-encrypted on rotate.
+ * Convenience accessor for the rotate-key participation set. Derived
+ * from manifest.supportsRotateKey - see registry.ts. Kept exported
+ * under the old name so callers that imported it pre-marketplace
+ * still resolve.
  */
-export const ADAPTERS_WITH_ENCRYPTED_CONFIG: ReadonlyArray<string> = [
-  "google-calendar",
-  "gmail",
-  "linear",
-  "discord",
-  "slack",
-  "telegram",
-  "github",
-];
+export function getAdaptersWithEncryptedConfig(): string[] {
+  return getRotateKeyAdapterValues();
+}
+
+/**
+ * @deprecated since the marketplace registry landed - re-derive via
+ * getAdaptersWithEncryptedConfig() (or call getRotateKeyAdapterValues
+ * directly) so external adapters in `~/.usrcp/adapters.json` are
+ * included. The static export is kept for backward compatibility only.
+ */
+export const ADAPTERS_WITH_ENCRYPTED_CONFIG: ReadonlyArray<string> = Object.freeze(
+  getRotateKeyAdapterValues(),
+);
 
 export interface AdapterReencryptResult {
   /** Adapters whose on-disk config was successfully re-encrypted. */
@@ -50,17 +60,43 @@ export interface AdapterReencryptResult {
 
 /**
  * For tests / non-monorepo deployments: resolve an adapter package's
- * config module path. Defaults to the monorepo layout
- * (`packages/usrcp-<name>/dist/config.js`).
+ * config module path. The default resolver checks the monorepo
+ * layout first (packages/<pkg>/dist/config.js) and falls back to
+ * `require.resolve(<pkg>/dist/config.js)` so external adapters
+ * registered via `~/.usrcp/adapters.json` resolve cleanly.
  */
 export type AdapterModuleResolver = (adapter: string) => string;
 
+function lookupManifest(adapter: string, manifests: AdapterManifest[]): AdapterManifest | undefined {
+  return manifests.find((m) => m.value === adapter);
+}
+
 const defaultResolver: AdapterModuleResolver = (adapter) => {
+  const manifests = getRegisteredAdapters();
+  const manifest = lookupManifest(adapter, manifests);
+  // Builtin-internal adapters don't live in a sibling package, so
+  // they should never reach this resolver (their reencrypt helpers
+  // don't exist). The dispatcher filters them out via
+  // getRotateKeyAdapterValues, but we defend here too.
+  if (manifest && manifest.builtinInternal) {
+    return ""; // signals "skip" to the caller's existsSync check
+  }
+  const pkg = manifest ? resolveAdapterPackageName(manifest) : `usrcp-${adapter}`;
+  if (!pkg) return "";
   // __dirname when compiled lives in packages/usrcp-local/dist/.
-  // Two levels up gets us to packages/.
+  // Two levels up gets us to packages/. We check the monorepo path
+  // first (in-tree adapters); the caller's existsSync gate falls
+  // through to the npm-resolved path via the per-call helper below.
   const localPkgDir = path.resolve(__dirname, "..");
   const monoRoot = path.resolve(localPkgDir, "..");
-  return path.join(monoRoot, `usrcp-${adapter}`, "dist", "config.js");
+  const monoPath = path.join(monoRoot, pkg, "dist", "config.js");
+  if (fs.existsSync(monoPath)) return monoPath;
+  // External adapter: resolve through npm.
+  try {
+    return require.resolve(`${pkg}/dist/config.js`);
+  } catch {
+    return "";
+  }
 };
 
 interface ReencryptableModule {
@@ -76,7 +112,10 @@ export function reencryptAdapterConfigs(opts: {
   adapters?: ReadonlyArray<string>;
 }): AdapterReencryptResult {
   const resolver = opts.resolveModulePath ?? defaultResolver;
-  const adapters = opts.adapters ?? ADAPTERS_WITH_ENCRYPTED_CONFIG;
+  // Re-derive the list per call so external adapters added at
+  // runtime via `~/.usrcp/adapters.json` participate in rotation
+  // without restarting the daemon.
+  const adapters = opts.adapters ?? getRotateKeyAdapterValues();
 
   const rotated: string[] = [];
   const absent: string[] = [];
@@ -84,9 +123,11 @@ export function reencryptAdapterConfigs(opts: {
 
   for (const adapter of adapters) {
     const modulePath = resolver(adapter);
-    if (!fs.existsSync(modulePath)) {
+    if (!modulePath || !fs.existsSync(modulePath)) {
       // Adapter package not installed in this checkout. That's
-      // fine - skip, don't fail rotation.
+      // fine - skip, don't fail rotation. The defaultResolver
+      // returns "" for unresolvable packages (e.g. external adapter
+      // registered but its npm package isn't installed yet).
       continue;
     }
     let mod: ReencryptableModule;

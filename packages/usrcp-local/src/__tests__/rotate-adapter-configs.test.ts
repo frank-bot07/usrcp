@@ -189,12 +189,13 @@ describe("reencryptAdapterConfigs", () => {
   });
 });
 
-describe("ADAPTERS_WITH_ENCRYPTED_CONFIG", () => {
-  it("matches the master-key-requiring adapter set", () => {
-    // Sanity that we don't forget to keep these in sync. The
-    // setup-time list is in setup.ts:ADAPTERS_REQUIRING_MASTER_KEY;
-    // the rotate-time list is here. Any adapter that encrypts at
-    // setup must also re-encrypt at rotate.
+describe("ADAPTERS_WITH_ENCRYPTED_CONFIG (legacy snapshot)", () => {
+  it("preserves the historical static snapshot for back-compat", () => {
+    // After the marketplace registry refactor (PR #62), this is
+    // derived from BUILTIN_ADAPTERS.supportsRotateKey rather than
+    // hardcoded. The snapshot is still asserted explicitly here so
+    // a regression that quietly removes an adapter's supportsRotateKey
+    // flag fails this test loudly.
     expect(new Set(ADAPTERS_WITH_ENCRYPTED_CONFIG)).toEqual(
       new Set(["google-calendar", "gmail", "linear", "discord", "slack", "telegram", "github"]),
     );
