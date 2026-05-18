@@ -49,8 +49,27 @@ This PR adds asymmetric read/write scope flags so operators can carve out narrow
 
 ## Verification
 
-- `(cd packages/usrcp-local && npm test)` -> 432/432 pass (was 422 in main).
-- No adapter packages changed; their tests are unaffected.
+- `(cd packages/usrcp-local && npm test)` -> 433/433 pass (was 422 in main).
+- `(cd packages/usrcp-stream && npm test)` -> 114/114 pass (was 107 in main).
+- Other adapter packages: unaffected.
+
+## Codex round-1 fixes (P1, P2)
+
+Codex caught two issues in round-1:
+
+**P1**: usrcp-stream's `registerStreamTools` had its own copy of the scope-enforcement wrapper and only read `serveOptions.scopes` / `serveOptions.readonly` - not the new `readScopes` / `writeScopes`. Result: an agent launched with `--read-scopes=coding` would correctly strip `usrcp_append_event` (local) but `stream_capture` would remain unscoped, and `--write-scopes=personal` would leave `stream_recall` able to read every surface. Real scope bypass.
+
+Fix: Extended `StreamServeOptions` with `readScopes` / `writeScopes`. Added `resolveStreamScopes` (mirrors usrcp-local's `resolveScopes` inline rather than importing - keeps the packages loosely coupled across version boundaries; the semantics MUST stay in sync). Switched the wrapper to route reads through `readScopes` and writes through `writeScopes` based on `def.mutating`, matching the local-side logic. Switched `streamRecall` / `streamThread` scope-wall injection to use `readScopes` (it's a multi-domain-read).
+
+usrcp-local's createServer already passes the full `opts` to stream, so no caller-side change was needed once stream understood the new fields.
+
+7 new stream tests cover: tools-list stripping under `--read-scopes` alone, read constraint enforcement, unrestricted-reads-under-write-only, asymmetric subset enforcement on stream tools, mutex error, write ⊆ read validation.
+
+**P2**: Legacy callers passing `createServer({ scopes: [] })` previously got "unrestricted both ways" (the old `effectiveScopes` returned undefined for any empty array). The first cut of this PR left `writeScopes: []`, which would strip every mutating tool - a regression for any caller relying on the empty-array convenience.
+
+Fix: Normalize `opts.scopes = []` to `undefined` BEFORE the legacy alias step. Explicit `writeScopes: []` still means "no writes" (its dedicated sentinel for `--readonly` parity); only the legacy-`--scopes` path gets the empty-as-unrestricted convenience.
+
+1 new local test locks the legacy `--scopes=[]` shape so this can't regress.
 
 ## What this enables (worked examples)
 

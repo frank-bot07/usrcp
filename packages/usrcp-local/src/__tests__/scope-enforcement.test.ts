@@ -628,6 +628,29 @@ describe("asymmetric scopes (readScopes / writeScopes)", () => {
     }
   });
 
+  it("legacy --scopes=[] preserves the pre-asymmetric 'unrestricted both ways' meaning (codex PR #61 round-1)", () => {
+    // Pre-asymmetric `effectiveScopes` returned undefined for an
+    // empty array, leaving BOTH reads and writes unrestricted. The
+    // first cut of this PR accidentally left writeScopes=[], which
+    // would have stripped every mutating tool from any caller that
+    // had been doing `createServer({ scopes: [] })`. Lock the
+    // backward-compat shape.
+    const { server, shutdown } = createServer(undefined, {
+      scopes: [],
+      // No agent-id required because empty scopes is unrestricted.
+    });
+    try {
+      const tools = listTools(server);
+      // All 12 tools registered (no stripping).
+      expect(tools).toHaveLength(12);
+      // Mutating tools still present.
+      expect(tools).toContain("usrcp_append_event");
+      expect(tools).toContain("usrcp_set_fact");
+    } finally {
+      shutdown();
+    }
+  });
+
   it("empty --read-scopes is normalized to unrestricted (matches legacy --scopes= behavior)", () => {
     const { server, shutdown } = createServer(undefined, {
       readScopes: [],

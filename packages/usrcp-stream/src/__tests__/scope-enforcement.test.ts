@@ -349,3 +349,170 @@ describe("scope enforcement (Model A)", () => {
     expect(tools).toContain("stream_status");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Asymmetric scopes (PR #61): readScopes + writeScopes propagate to stream
+// tools the same way they do for usrcp-local. Without this, the stream
+// register would have only enforced legacy `scopes`/`readonly` and bypassed
+// the new flags entirely. Codex round-1 review on PR #61 caught this.
+// ---------------------------------------------------------------------------
+
+describe("asymmetric scopes (PR #61 round-1 fix)", () => {
+  it("--read-scopes alone strips mutating stream tools from tools/list", () => {
+    server = new McpServer({ name: "t", version: "0.0.0" });
+    registration = registerStreamTools(server, {
+      masterKey,
+      userDir: tmpDir,
+      embedder: new FakeEmbedder(),
+      serveOptions: { readScopes: ["discord"], agentId: "a1" },
+    });
+    const tools = Object.keys((server as AnyServer)._registeredTools);
+    // Mutating tools stripped because writeScopes defaults to [].
+    expect(tools).not.toContain("stream_capture");
+    // Read tools still registered.
+    expect(tools).toContain("stream_recall");
+    expect(tools).toContain("stream_thread");
+    expect(tools).toContain("stream_active_surface");
+    expect(tools).toContain("stream_status");
+  });
+
+  it("--read-scopes constrains stream_recall to the listed surfaces", async () => {
+    server = new McpServer({ name: "t", version: "0.0.0" });
+    registration = registerStreamTools(server, {
+      masterKey,
+      userDir: tmpDir,
+      embedder: new FakeEmbedder(),
+      serveOptions: { readScopes: ["discord"], agentId: "a1" },
+    });
+    const denied = parseResponse(await callTool(server, "stream_recall", {
+      query: "anything",
+      surface: "telegram",
+    }));
+    expect(denied.status).toBe("out_of_scope");
+  });
+
+  it("--write-scopes alone allows stream_capture only on the listed surfaces", async () => {
+    server = new McpServer({ name: "t", version: "0.0.0" });
+    registration = registerStreamTools(server, {
+      masterKey,
+      userDir: tmpDir,
+      embedder: new FakeEmbedder(),
+      serveOptions: { writeScopes: ["discord"], agentId: "a1" },
+    });
+    const ok = parseResponse(await callTool(server, "stream_capture", {
+      surface: "discord",
+      channel_ref: { c: "1" },
+      side: "inbound",
+      author_ref: { id: "u1" },
+      content: "allowed",
+      content_kind: "text",
+      ts_ms: Date.now(),
+    }));
+    expect(ok.status).toBe("ok");
+
+    const denied = parseResponse(await callTool(server, "stream_capture", {
+      surface: "telegram",
+      channel_ref: { chatId: 1 },
+      side: "inbound",
+      author_ref: { id: "u1" },
+      content: "blocked",
+      content_kind: "text",
+      ts_ms: Date.now(),
+    }));
+    expect(denied.status).toBe("out_of_scope");
+  });
+
+  it("--write-scopes alone leaves stream_recall unrestricted (reads any surface)", async () => {
+    server = new McpServer({ name: "t", version: "0.0.0" });
+    registration = registerStreamTools(server, {
+      masterKey,
+      userDir: tmpDir,
+      embedder: new FakeEmbedder(),
+      serveOptions: { writeScopes: ["discord"], agentId: "a1" },
+    });
+    // Recall on a surface the writer doesn't have write access to
+    // should still work because reads are unrestricted.
+    const recall = parseResponse(await callTool(server, "stream_recall", {
+      query: "x",
+      surface: "telegram",
+    }));
+    // Either an empty hits array (no data) or a non-out_of_scope status.
+    expect(recall.status).not.toBe("out_of_scope");
+  });
+
+  it("read+write asymmetric subset enforces both ways on stream tools", async () => {
+    server = new McpServer({ name: "t", version: "0.0.0" });
+    registration = registerStreamTools(server, {
+      masterKey,
+      userDir: tmpDir,
+      embedder: new FakeEmbedder(),
+      serveOptions: {
+        readScopes: ["discord", "telegram"],
+        writeScopes: ["discord"],
+        agentId: "a1",
+      },
+    });
+    // Read on either allowlisted surface works.
+    const recallOk = parseResponse(await callTool(server, "stream_recall", {
+      query: "x",
+      surface: "telegram",
+    }));
+    expect(recallOk.status).not.toBe("out_of_scope");
+
+    // Write to telegram (in readScopes but NOT writeScopes) - rejected.
+    const writeBad = parseResponse(await callTool(server, "stream_capture", {
+      surface: "telegram",
+      channel_ref: { chatId: 1 },
+      side: "inbound",
+      author_ref: { id: "u1" },
+      content: "blocked",
+      content_kind: "text",
+      ts_ms: Date.now(),
+    }));
+    expect(writeBad.status).toBe("out_of_scope");
+
+    // Write to discord (in both) - accepted.
+    const writeOk = parseResponse(await callTool(server, "stream_capture", {
+      surface: "discord",
+      channel_ref: { c: "1" },
+      side: "inbound",
+      author_ref: { id: "u1" },
+      content: "allowed",
+      content_kind: "text",
+      ts_ms: Date.now(),
+    }));
+    expect(writeOk.status).toBe("ok");
+  });
+
+  it("rejects --scopes combined with --read-scopes at register time", () => {
+    server = new McpServer({ name: "t", version: "0.0.0" });
+    expect(() =>
+      registerStreamTools(server, {
+        masterKey,
+        userDir: tmpDir,
+        embedder: new FakeEmbedder(),
+        serveOptions: {
+          scopes: ["discord"],
+          readScopes: ["discord"],
+          agentId: "a1",
+        },
+      }),
+    ).toThrow(/mutually exclusive/);
+  });
+
+  it("rejects writeScopes containing a domain not in readScopes", () => {
+    server = new McpServer({ name: "t", version: "0.0.0" });
+    expect(() =>
+      registerStreamTools(server, {
+        masterKey,
+        userDir: tmpDir,
+        embedder: new FakeEmbedder(),
+        serveOptions: {
+          readScopes: ["discord"],
+          writeScopes: ["telegram"], // not in readScopes
+          agentId: "a1",
+        },
+      }),
+    ).toThrow(/not in readScopes/);
+  });
+});

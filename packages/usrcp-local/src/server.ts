@@ -206,13 +206,22 @@ export function resolveScopes(opts: ServeOptions): ResolvedScopes {
     );
   }
 
+  // Legacy --scopes empty array historically meant "unrestricted both
+  // ways" (pre-asymmetric `effectiveScopes` returned undefined for any
+  // empty array). Preserve that: treat `scopes: []` the same as
+  // `scopes: undefined` so an empty CSV doesn't accidentally lock the
+  // agent out. NOTE: this empty-as-unrestricted convenience is ONLY
+  // for the legacy --scopes flag - explicit `writeScopes: []` still
+  // means "no writes" (its dedicated sentinel for --readonly parity).
+  const legacyScopes =
+    opts.scopes !== undefined && opts.scopes.length > 0 ? opts.scopes : undefined;
+
   let readScopes: string[] | undefined = opts.readScopes;
   let writeScopes: string[] | undefined = opts.writeScopes;
 
-  // Legacy --scopes: set both to the same value.
-  if (opts.scopes !== undefined) {
-    readScopes = opts.scopes;
-    writeScopes = opts.scopes;
+  if (legacyScopes !== undefined) {
+    readScopes = legacyScopes;
+    writeScopes = legacyScopes;
   }
 
   // Asymmetric default: --read-scopes alone means "no writes". Without
@@ -231,10 +240,9 @@ export function resolveScopes(opts: ServeOptions): ResolvedScopes {
     writeScopes = [];
   }
 
-  // Empty-array normalization for reads: treat `--read-scopes=` /
-  // `--scopes=` as "unrestricted" so the operator doesn't lock
-  // themselves out by passing an empty CSV. Writes use [] as the
-  // sentinel for "no writes", so we do NOT normalize writes here.
+  // Empty-array normalization for the new flags: treat `--read-scopes=`
+  // as "unrestricted" the same way `--scopes=` works. Writes use [] as
+  // the sentinel for "no writes", so we do NOT normalize writes here.
   if (readScopes !== undefined && readScopes.length === 0) {
     readScopes = undefined;
   }
