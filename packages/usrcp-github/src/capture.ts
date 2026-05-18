@@ -206,6 +206,37 @@ function truncateSummary(text: string): string {
   return text.slice(0, SUMMARY_MAX_CHARS - 1) + "…";
 }
 
+/**
+ * Body fields stored in detail go through the ledger's 64KB
+ * serialized-detail cap. A single oversize body (auto-generated
+ * PR descriptions, dependency-update blobs, manifest pastes) would
+ * cause `appendEvent` to throw, the github adapter's tick to
+ * abort mid-iteration, and the cursor to NOT advance - so the next
+ * tick re-attempts the same offending event forever.
+ *
+ * Cap bodies at 16KB before storage. Append an explicit truncation
+ * marker so the body is self-describing: agents reading the event
+ * see exactly what was elided and how much. 16KB covers the 95th
+ * percentile of real PR/issue bodies (most are <2KB) and leaves
+ * generous headroom for the other detail fields plus the JSON
+ * encoding overhead.
+ *
+ * Surfaced by the PR #65 content-filter audit
+ * (tasks/29-github-content-audit.md).
+ */
+const BODY_MAX_CHARS = 16 * 1024;
+const BODY_TRUNCATION_MARKER = "\n\n[...usrcp: body truncated, original was";
+
+function truncateBody(text: string | null): string | null {
+  if (text === null) return null;
+  if (text.length <= BODY_MAX_CHARS) return text;
+  // Leave room for the marker so the final string still respects
+  // the cap. The marker is short enough to fit comfortably.
+  const marker = `${BODY_TRUNCATION_MARKER} ${text.length} chars]`;
+  const room = BODY_MAX_CHARS - marker.length;
+  return text.slice(0, room) + marker;
+}
+
 function orgGated(
   activity: { org: string | null },
   config: GitHubConfig,
@@ -265,7 +296,7 @@ function captureOpened(
         owner: activity.owner,
         repo: activity.repo,
         title: activity.title,
-        body: activity.body,
+        body: truncateBody(activity.body),
         url: activity.url,
         author_login: activity.author_login,
         created_at: activity.created_at,
@@ -357,7 +388,7 @@ function captureIssueOpened(
         owner: activity.owner,
         repo: activity.repo,
         title: activity.title,
-        body: activity.body,
+        body: truncateBody(activity.body),
         url: activity.url,
         author_login: activity.author_login,
         created_at: activity.created_at,
@@ -417,7 +448,7 @@ function captureComment(
         issue_number: activity.issue_number,
         issue_title: activity.issue_title,
         is_pr_parent: activity.is_pr_parent,
-        body: activity.body,
+        body: truncateBody(activity.body) ?? "",
         url: activity.url,
         issue_url: activity.issue_url,
         author_login: activity.author_login,
@@ -476,7 +507,7 @@ function captureReview(
         pr_title: activity.pr_title,
         pr_author_login: activity.pr_author_login,
         state: activity.state,
-        body: activity.body,
+        body: truncateBody(activity.body) ?? "",
         url: activity.url,
         pr_url: activity.pr_url,
         reviewer_login: activity.reviewer_login,

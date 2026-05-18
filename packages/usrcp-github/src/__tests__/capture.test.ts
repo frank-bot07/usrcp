@@ -547,3 +547,72 @@ describe("captureGitHubActivity - pr_reviewed", () => {
     expect(ledger.events[0].detail!.reviewer_login).toBe("chad");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Content-filter audit (tasks/29): body fields are capped at 16KB
+// before storage so a pathological PR/issue/comment/review body
+// doesn't bust the ledger's 64KB detail cap and infinite-loop the
+// poller's cursor.
+// ---------------------------------------------------------------------------
+
+describe("body truncation (PR #65 content audit)", () => {
+  let ledger: FakeLedger;
+  beforeEach(() => { ledger = new FakeLedger(); });
+
+  function bigBody(charCount: number): string {
+    return "x".repeat(charCount);
+  }
+
+  it("pr_opened body is truncated when over 16KB", () => {
+    const huge = bigBody(70_000);
+    captureGitHubActivity(ledger, makeActivity({ body: huge }), CONFIG);
+    const stored = ledger.events[0].detail!.body as string;
+    expect(stored.length).toBeLessThanOrEqual(16 * 1024);
+    expect(stored).toContain("[...usrcp: body truncated, original was 70000 chars]");
+  });
+
+  it("pr_opened body passes through unchanged when under 16KB", () => {
+    const normal = bigBody(1_500);
+    captureGitHubActivity(ledger, makeActivity({ body: normal }), CONFIG);
+    expect(ledger.events[0].detail!.body).toBe(normal);
+  });
+
+  it("pr_opened body=null is preserved as null", () => {
+    captureGitHubActivity(ledger, makeActivity({ body: null }), CONFIG);
+    expect(ledger.events[0].detail!.body).toBeNull();
+  });
+
+  it("issue_opened body is truncated when over 16KB", () => {
+    const huge = bigBody(70_000);
+    captureGitHubActivity(ledger, makeIssueOpened({ body: huge }), CONFIG);
+    const stored = ledger.events[0].detail!.body as string;
+    expect(stored.length).toBeLessThanOrEqual(16 * 1024);
+    expect(stored).toContain("[...usrcp: body truncated");
+  });
+
+  it("issue_commented body is truncated when over 16KB", () => {
+    const huge = bigBody(70_000);
+    captureGitHubActivity(ledger, makeIssueComment({ body: huge }), CONFIG);
+    const stored = ledger.events[0].detail!.body as string;
+    expect(stored.length).toBeLessThanOrEqual(16 * 1024);
+    expect(stored).toContain("[...usrcp: body truncated");
+  });
+
+  it("pr_reviewed body is truncated when over 16KB", () => {
+    const huge = bigBody(70_000);
+    captureGitHubActivity(ledger, makeReview({ body: huge }), CONFIG);
+    const stored = ledger.events[0].detail!.body as string;
+    expect(stored.length).toBeLessThanOrEqual(16 * 1024);
+    expect(stored).toContain("[...usrcp: body truncated");
+  });
+
+  it("truncated body is well-formed JSON when serialized (would have busted the 64KB ledger cap pre-fix)", () => {
+    // Sanity: the post-truncation detail object should serialize
+    // to well under the 64KB ledger cap. Pre-fix, a 70KB body
+    // produced ~70KB of body + maybe 1KB of other fields >> 64KB.
+    const huge = bigBody(70_000);
+    captureGitHubActivity(ledger, makeActivity({ body: huge }), CONFIG);
+    const serialized = JSON.stringify(ledger.events[0].detail);
+    expect(serialized.length).toBeLessThan(64 * 1024);
+  });
+});
