@@ -82,6 +82,22 @@ Fix: forward `opts` verbatim to `registerStreamTools` instead of cherry-picking 
 
 Tests: usrcp-stream 114 -> 116.
 
+## Codex round-3 fix (P1, follow-on)
+
+Round-3 spotted the third bypass path in the same chain: the standalone `usrcp-stream serve` CLI in `packages/usrcp-stream/src/index.ts` only parsed `--scopes`, `--readonly`, `--no-audit`, `--agent-id`. The new `--read-scopes` and `--write-scopes` flags were advertised in the help text but the CLI dropped them on the floor.
+
+Three bypass paths in the chain, all now closed:
+
+| # | Path | Caught by | Fixed |
+|---|---|---|---|
+| 1 | `usrcp serve` → stream registerStreamTools | round-1 | Extended `StreamServeOptions` + added `resolveStreamScopes`. |
+| 2 | Standalone `createStreamServer()` programmatic API | round-2 | Forward `opts` verbatim instead of cherry-picking fields. |
+| 3 | Standalone `usrcp-stream serve` CLI | round-3 | Parse the two new CLI flags. |
+
+Fix: CLI parses `--read-scopes` / `--write-scopes` (same CSV shape as `--scopes`) and forwards to `createStreamServer`. The downstream stream resolver already rejects mixing legacy `--scopes` with the asymmetric flags, so no duplicate validation at the CLI layer.
+
+Help text updated to advertise both new flags with their semantics.
+
 ## What this enables (worked examples)
 
 ```bash
