@@ -32,81 +32,31 @@ const MAX_SEARCH_QUERY = 200; // search input
  * user controls what each agent sees at the MCP config layer (no hidden
  * tokens). Not a substitute for cryptographic capability tokens (Model B).
  */
-export interface ServeOptions {
-  /**
-   * Legacy symmetric domain allowlist. Sets BOTH `readScopes` and
-   * `writeScopes` to the same value. Empty array is treated as
-   * unrestricted. Mutually exclusive with `readScopes` / `writeScopes`
-   * (caller must not mix them).
-   */
-  scopes?: string[];
-  /**
-   * Domains the agent is allowed to READ from. Undefined = unrestricted.
-   * Empty array is normalized to undefined (unrestricted reads).
-   *
-   * When set alone (without `writeScopes` or legacy `scopes`),
-   * defaults `writeScopes` to `[]` (no writes anywhere). This means
-   * `--read-scopes X` on its own is a "read-only on X" shorthand.
-   */
-  readScopes?: string[];
-  /**
-   * Domains the agent is allowed to WRITE to. Undefined = unrestricted.
-   * Empty array (`[]`) means "no writes anywhere" - equivalent to
-   * `readonly: true`. When both `readScopes` and `writeScopes` are
-   * set as non-empty allowlists, `writeScopes` must be a subset of
-   * `readScopes` (writes require reads on the same domain).
-   */
-  writeScopes?: string[];
-  /**
-   * Strip mutating tools from the registered tool list. Equivalent
-   * to `writeScopes: []`. If both are set, this still wins.
-   */
-  readonly?: boolean;
-  /** Hide the audit-log tool so agents can't read other agents' history. */
-  noAudit?: boolean;
-  /** Identifier logged with every tool call. Required when any scope flag is set. */
-  agentId?: string;
-}
-
-// ----------------------------------------------------------------------------
-// Internal types — tool registry
-// ----------------------------------------------------------------------------
-
 /**
- * Each tool is one of these kinds, which determines how scope enforcement
- * applies in `registerAll`.
- *   global-read       — always allowed regardless of scopes (e.g. status)
- *   global-mutation   — refused outright when scopes is set (rotate_key,
- *                       update_identity, update_preferences). These touch
- *                       state shared across every domain.
- *   audit-read        — readonly but suppressed by --no-audit
- *   domain-scoped     — operates on a single (or finite) set of domains;
- *                       scopeOf(params) must be a subset of opts.scopes
- *   multi-domain-read — reads across many domains; handler is responsible
- *                       for filtering its own output to opts.scopes (the
- *                       wrapper still rejects explicit out-of-scope filters)
+ * Re-export the shared scope types so existing local-side consumers
+ * (CLI flag parsing in index.ts, tests) keep their import paths.
+ * The implementations live in scope-enforcement.ts so usrcp-stream
+ * can share them without depending on this file (which pulls in
+ * heavy MCP / ledger dependencies).
  */
-type ToolKind =
-  | "global-read"
-  | "global-mutation"
-  | "audit-read"
-  | "domain-scoped"
-  | "multi-domain-read";
+export {
+  type ServeOptions,
+  type ResolvedScopes,
+  type ToolKind,
+  type ScopedToolDef,
+  resolveScopes,
+  registerToolsWithScopes,
+} from "./scope-enforcement.js";
 
-interface ToolDef {
-  name: string;
-  description: string;
-  inputShape: z.ZodRawShape;
-  handler: (params: any) => Promise<any>;
-  mutating: boolean;
-  kind: ToolKind;
-  /**
-   * Returns the domain(s) the call would touch. For multi-domain-read, may
-   * return the literal "all" if the call is unconstrained — in which case
-   * the handler itself must filter its results to opts.scopes.
-   */
-  scopeOf?: (params: any) => string[] | "all";
-}
+import {
+  type ServeOptions,
+  type ScopedToolDef,
+  resolveScopes,
+  registerToolsWithScopes,
+} from "./scope-enforcement.js";
+
+// Local alias - everything in this file used to call it ToolDef.
+type ToolDef = ScopedToolDef;
 
 // ----------------------------------------------------------------------------
 // Helpers
@@ -139,132 +89,12 @@ function versionConflictResponse(err: VersionConflictError) {
   };
 }
 
-function outOfScopeResponse(toolName: string, requested: string[], allowed: string[]) {
-  return {
-    content: [
-      {
-        type: "text" as const,
-        text: JSON.stringify(
-          {
-            status: "out_of_scope",
-            error: "OUT_OF_SCOPE",
-            tool: toolName,
-            requested_domains: requested,
-            allowed_domains: allowed,
-            message:
-              `Tool '${toolName}' was called with out-of-scope target(s): [${requested.join(", ")}]. ` +
-              `This MCP server is scoped to: [${allowed.join(", ")}]. ` +
-              `Re-launch usrcp serve with broader --scopes or call this tool from an unscoped server.`,
-          },
-          null,
-          2
-        ),
-      },
-    ],
-  };
-}
-
 function boundedRecord() {
   return z
     .record(z.string().max(MAX_STRING_SHORT), z.unknown())
     .refine((obj) => Object.keys(obj).length <= MAX_RECORD_KEYS, {
       message: `Record must have at most ${MAX_RECORD_KEYS} keys`,
     });
-}
-
-export interface ResolvedScopes {
-  /** undefined = unrestricted reads; otherwise an allowlist of domain names. */
-  readScopes: string[] | undefined;
-  /**
-   * undefined = unrestricted writes; non-empty array = write allowlist;
-   * empty array = no writes anywhere (strips mutating tools at register time).
-   */
-  writeScopes: string[] | undefined;
-}
-
-/**
- * Resolve the four scope-related ServeOptions into the two effective
- * arrays used by registerAll. The legacy `--scopes` flag is an alias
- * for "both readScopes and writeScopes equal to scopes"; the new
- * `readScopes` / `writeScopes` flags can be combined for asymmetric
- * permissions.
- *
- * Throws when the inputs are mutually inconsistent (e.g. writeScopes
- * has a domain that's not in readScopes).
- */
-export function resolveScopes(opts: ServeOptions): ResolvedScopes {
-  // Mutex: --scopes is a symmetric shorthand. Mixing it with the new
-  // asymmetric flags is ambiguous; reject early so the operator sees
-  // the conflict rather than silently picking one.
-  if (
-    opts.scopes !== undefined &&
-    (opts.readScopes !== undefined || opts.writeScopes !== undefined)
-  ) {
-    throw new Error(
-      "--scopes is mutually exclusive with --read-scopes / --write-scopes. " +
-        "Use --scopes alone (symmetric) OR the asymmetric pair.",
-    );
-  }
-
-  // Legacy --scopes empty array historically meant "unrestricted both
-  // ways" (pre-asymmetric `effectiveScopes` returned undefined for any
-  // empty array). Preserve that: treat `scopes: []` the same as
-  // `scopes: undefined` so an empty CSV doesn't accidentally lock the
-  // agent out. NOTE: this empty-as-unrestricted convenience is ONLY
-  // for the legacy --scopes flag - explicit `writeScopes: []` still
-  // means "no writes" (its dedicated sentinel for --readonly parity).
-  const legacyScopes =
-    opts.scopes !== undefined && opts.scopes.length > 0 ? opts.scopes : undefined;
-
-  let readScopes: string[] | undefined = opts.readScopes;
-  let writeScopes: string[] | undefined = opts.writeScopes;
-
-  if (legacyScopes !== undefined) {
-    readScopes = legacyScopes;
-    writeScopes = legacyScopes;
-  }
-
-  // Asymmetric default: --read-scopes alone means "no writes". Without
-  // this, --read-scopes X would silently allow writes to all domains -
-  // surprising and the opposite of the operator's likely intent.
-  if (
-    opts.readScopes !== undefined &&
-    opts.writeScopes === undefined &&
-    opts.scopes === undefined
-  ) {
-    writeScopes = [];
-  }
-
-  // --readonly wins: strip all writes regardless of writeScopes.
-  if (opts.readonly === true) {
-    writeScopes = [];
-  }
-
-  // Empty-array normalization for the new flags: treat `--read-scopes=`
-  // as "unrestricted" the same way `--scopes=` works. Writes use [] as
-  // the sentinel for "no writes", so we do NOT normalize writes here.
-  if (readScopes !== undefined && readScopes.length === 0) {
-    readScopes = undefined;
-  }
-
-  // writeScopes ⊆ readScopes when both are restrictive. Empty
-  // writeScopes (`[]`, the "no writes" sentinel) is trivially a
-  // subset, so skip the check in that case.
-  if (
-    writeScopes !== undefined &&
-    writeScopes.length > 0 &&
-    readScopes !== undefined
-  ) {
-    const outOfRead = writeScopes.filter((d) => !readScopes!.includes(d));
-    if (outOfRead.length > 0) {
-      throw new Error(
-        `writeScopes contains domains not in readScopes: [${outOfRead.join(", ")}]. ` +
-          "Writes require read access on the same domain.",
-      );
-    }
-  }
-
-  return { readScopes, writeScopes };
 }
 
 // ----------------------------------------------------------------------------
@@ -1182,7 +1012,7 @@ export function createServer(
     },
   ];
 
-  registerAll(server, defs, opts, ledger);
+  registerToolsWithScopes(server, defs, opts, ledger);
 
   // Optional sibling: usrcp-stream registers its own MCP tools onto the
   // same server when the package is installed. Sharing the masterKey
@@ -1232,104 +1062,6 @@ export function createServer(
   return { server, shutdown: wrappedShutdown, ledger };
 }
 
-// ----------------------------------------------------------------------------
-// registerAll — applies opts (readonly/noAudit/scopes/agentId) to the table
-// ----------------------------------------------------------------------------
-
-function registerAll(
-  server: McpServer,
-  defs: ToolDef[],
-  opts: ServeOptions,
-  ledger: Ledger
-): void {
-  const { readScopes, writeScopes } = resolveScopes(opts);
-  // A mutating tool is stripped entirely (not registered) when writes
-  // are disallowed across all domains - i.e. `writeScopes === []`,
-  // which is either `--readonly` or explicit `--write-scopes=`. With
-  // `writeScopes` undefined (unrestricted) or a non-empty array, the
-  // tool registers and the wrapper gates per-domain.
-  const writesAllDenied = writeScopes !== undefined && writeScopes.length === 0;
-
-  // Wrapper-layer audit fires only when the operator has explicitly opted
-  // into scoped mode (any flag set). The unflagged default path keeps the
-  // pre-refactor audit-row volume so existing single-agent setups don't
-  // see a behavior change.
-  const scopedMode =
-    readScopes !== undefined ||
-    writeScopes !== undefined ||
-    opts.noAudit === true ||
-    opts.agentId !== undefined;
-  const agentId = opts.agentId ?? "unidentified";
-
-  // Compact display string for the audit row: distinguishes "all" from
-  // "[a,b,c]" without coupling the audit format to the read/write split.
-  const formatScopeArr = (s: string[] | undefined): string =>
-    s === undefined ? "*" : s.length === 0 ? "[]" : `[${s.join(",")}]`;
-  const auditScopeRepr = `read=${formatScopeArr(readScopes)};write=${formatScopeArr(writeScopes)}`;
-
-  for (const def of defs) {
-    // Registration-time filtering: tools that the caller has opted out of
-    // are not registered at all, so they do not appear in tools/list.
-    if (writesAllDenied && def.mutating) continue;
-    if (opts.noAudit && def.kind === "audit-read") continue;
-
-    const wrappedHandler = async (params: any) => {
-      if (scopedMode) {
-        // One audit row per MCP call, tagged with the agent_id. This is
-        // separate from the ledger's internal per-write logAudit and
-        // captures reads as well — the point of scoped mode is per-agent
-        // attribution across the full call surface.
-        ledger.logAudit(
-          `mcp_call:${def.name}`,
-          auditScopeRepr,
-          undefined,
-          undefined,
-          undefined,
-          agentId
-        );
-      }
-
-      // Mutating tools check writeScopes; read tools check readScopes.
-      // The two enforcement paths look identical, but distinguishing
-      // them is what enables asymmetric permissions ("read everything,
-      // write only personal").
-      const effective = def.mutating ? writeScopes : readScopes;
-
-      // Scope enforcement
-      if (effective) {
-        if (def.kind === "global-mutation") {
-          // Any restricted writeScopes (even non-empty) bars
-          // global mutations - they touch state shared across all
-          // domains. The audit-displayed allowlist is writeScopes
-          // since this is a write-class tool.
-          return outOfScopeResponse(def.name, ["<global>"], effective);
-        }
-        if (def.kind === "domain-scoped" && def.scopeOf) {
-          const requested = def.scopeOf(params) as string[];
-          const out = requested.filter((d) => !effective.includes(d));
-          if (out.length > 0) {
-            return outOfScopeResponse(def.name, out, effective);
-          }
-        }
-        if (def.kind === "multi-domain-read" && def.scopeOf) {
-          const requested = def.scopeOf(params);
-          if (requested !== "all") {
-            const out = (requested as string[]).filter(
-              (d) => !effective.includes(d)
-            );
-            if (out.length > 0) {
-              return outOfScopeResponse(def.name, out, effective);
-            }
-          }
-          // If "all", the handler reads `readScopes` from its closure
-          // and filters its own output - the wrapper does not inject
-          // anything here.
-        }
-      }
-
-      return def.handler(params);
-    };
-
-    server.tool(def.name, def.description, def.inputShape, wrappedHandler);
-  }
-}
+// Scope-enforcement wrapper has been lifted into ./scope-enforcement.ts
+// (shared with usrcp-stream). The local-side wiring above calls
+// `registerToolsWithScopes(server, defs, opts, ledger)` directly.

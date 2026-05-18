@@ -1,5 +1,10 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Ledger } from "usrcp-local/dist/ledger/index.js";
+import {
+  type ServeOptions,
+  resolveScopes,
+  registerToolsWithScopes,
+} from "usrcp-local/dist/scope-enforcement.js";
 import { openStreamDb, closeStreamDb, type StreamHandle } from "./db/index.js";
 import { loadVectorExtension } from "./vector/index.js";
 import { makeStitcher } from "./stitch/thread.js";
@@ -19,17 +24,14 @@ import { streamSyncPull } from "./tools/stream-sync-pull.js";
 import { streamSyncStatus } from "./tools/stream-sync-status.js";
 import type { StreamToolDef } from "./tools/types.js";
 
-export interface StreamServeOptions {
-  /** Legacy symmetric domain allowlist. Same semantics as usrcp-local. */
-  scopes?: string[];
-  /** Asymmetric read allowlist (added alongside usrcp-local PR #61). */
-  readScopes?: string[];
-  /** Asymmetric write allowlist (added alongside usrcp-local PR #61). */
-  writeScopes?: string[];
-  readonly?: boolean;
-  noAudit?: boolean;
-  agentId?: string;
-}
+/**
+ * Stream's scope-enforcement options. After PR #64 these are an exact
+ * alias for `ServeOptions` from `usrcp-local/dist/scope-enforcement` -
+ * both packages route through the same shared wrapper. Kept as a
+ * separate name so external consumers that imported
+ * `StreamServeOptions` don't break.
+ */
+export type StreamServeOptions = ServeOptions;
 
 export interface RegisterStreamOptions {
   masterKey: Buffer;
@@ -88,7 +90,10 @@ export function registerStreamTools(
     : null;
 
   const serveOpts = options.serveOptions ?? {};
-  const { readScopes, writeScopes } = resolveStreamScopes(serveOpts);
+  // Resolve once here so the multi-domain-read tool factories below
+  // can use `readScopes` for handler-level scope-wall injection.
+  // The wrapper registers the tools via the shared helper.
+  const { readScopes } = resolveScopes(serveOpts);
 
   // Scope-wall injection: multi-domain-read tools receive the allowed
   // surface list so their handlers can post-filter rows. The wrapper
@@ -124,79 +129,11 @@ export function registerStreamTools(
       streamSyncStatus(handle, { endpoint: options.cloudEndpoint })
     );
   }
-  // A mutating tool is stripped at registration when writes are
-  // disallowed across all domains (`writeScopes === []`, the same
-  // signal as `--readonly`).
-  const writesAllDenied = writeScopes !== undefined && writeScopes.length === 0;
-
-  const scopedMode =
-    readScopes !== undefined ||
-    writeScopes !== undefined ||
-    serveOpts.noAudit === true ||
-    serveOpts.agentId !== undefined;
-  const agentId = serveOpts.agentId ?? "unidentified";
-
-  // Compact display string for the audit row: distinguishes "all"
-  // ("*") from "[a,b,c]" without coupling the audit format to the
-  // read/write split.
-  const formatScopeArr = (s: string[] | undefined): string =>
-    s === undefined ? "*" : s.length === 0 ? "[]" : `[${s.join(",")}]`;
-  const auditScopeRepr = `read=${formatScopeArr(readScopes)};write=${formatScopeArr(writeScopes)}`;
-
-  for (const def of defs) {
-    if (writesAllDenied && def.mutating) continue;
-
-    const wrapped = async (params: unknown) => {
-      if (scopedMode && ledger) {
-        try {
-          ledger.logAudit(
-            `mcp_call:${def.name}`,
-            auditScopeRepr,
-            undefined,
-            undefined,
-            undefined,
-            agentId
-          );
-        } catch {
-          // Ledger audit is best-effort here; a sibling-package audit
-          // failure must not bring down the MCP call.
-        }
-      }
-
-      // Mutating tools check writeScopes; reads check readScopes.
-      // Distinguishing the two is what enables asymmetric permissions
-      // ("read every surface, write only to {coding}").
-      const effective = def.mutating ? writeScopes : readScopes;
-
-      if (effective) {
-        if (def.kind === "global-mutation") {
-          return outOfScopeResponse(def.name, ["<global>"], effective);
-        }
-        if (def.kind === "domain-scoped" && def.scopeOf) {
-          const requested = def.scopeOf(params) as string[];
-          const out = requested.filter((d) => !effective.includes(d));
-          if (out.length > 0) {
-            return outOfScopeResponse(def.name, out, effective);
-          }
-        }
-        if (def.kind === "multi-domain-read" && def.scopeOf) {
-          const requested = def.scopeOf(params);
-          if (requested !== "all") {
-            const out = (requested as string[]).filter(
-              (d) => !effective.includes(d)
-            );
-            if (out.length > 0) {
-              return outOfScopeResponse(def.name, out, effective);
-            }
-          }
-        }
-      }
-
-      return def.handler(params);
-    };
-
-    mcpServer.tool(def.name, def.description, def.inputShape, wrapped);
-  }
+  // Apply the shared scope-enforcement wrapper. Identical semantics
+  // to usrcp-local's createServer; lifted into a shared module in
+  // PR #64 so the two enforcement paths can't drift (the structural
+  // smell that caused four codex bypass-rounds on PR #61).
+  registerToolsWithScopes(mcpServer, defs, serveOpts, ledger ?? null);
 
   return {
     handle,
@@ -204,99 +141,8 @@ export function registerStreamTools(
   };
 }
 
-/**
- * Mirrors `resolveScopes` from usrcp-local. Kept inline rather than
- * imported so this package doesn't deepen its coupling to a private
- * helper across the version boundary. The semantics MUST stay in
- * sync with usrcp-local's resolver (legacy --scopes is a symmetric
- * shortcut; --read-scopes alone implies "no writes"; --readonly
- * always wins; writeScopes ⊆ readScopes when both are restrictive;
- * empty-array writeScopes is the "no writes" sentinel and is NOT
- * normalized; legacy --scopes=[] is empty-as-unrestricted both ways).
- */
-function resolveStreamScopes(opts: StreamServeOptions): {
-  readScopes: string[] | undefined;
-  writeScopes: string[] | undefined;
-} {
-  if (
-    opts.scopes !== undefined &&
-    (opts.readScopes !== undefined || opts.writeScopes !== undefined)
-  ) {
-    throw new Error(
-      "scopes is mutually exclusive with readScopes / writeScopes. " +
-        "Use scopes alone (symmetric) OR the asymmetric pair.",
-    );
-  }
-
-  const legacyScopes =
-    opts.scopes !== undefined && opts.scopes.length > 0 ? opts.scopes : undefined;
-
-  let readScopes: string[] | undefined = opts.readScopes;
-  let writeScopes: string[] | undefined = opts.writeScopes;
-
-  if (legacyScopes !== undefined) {
-    readScopes = legacyScopes;
-    writeScopes = legacyScopes;
-  }
-
-  if (
-    opts.readScopes !== undefined &&
-    opts.writeScopes === undefined &&
-    opts.scopes === undefined
-  ) {
-    writeScopes = [];
-  }
-
-  if (opts.readonly === true) {
-    writeScopes = [];
-  }
-
-  if (readScopes !== undefined && readScopes.length === 0) {
-    readScopes = undefined;
-  }
-
-  if (
-    writeScopes !== undefined &&
-    writeScopes.length > 0 &&
-    readScopes !== undefined
-  ) {
-    const outOfRead = writeScopes.filter((d) => !readScopes!.includes(d));
-    if (outOfRead.length > 0) {
-      throw new Error(
-        `writeScopes contains domains not in readScopes: [${outOfRead.join(", ")}]. ` +
-          "Writes require read access on the same domain.",
-      );
-    }
-  }
-
-  return { readScopes, writeScopes };
-}
-
-function outOfScopeResponse(
-  toolName: string,
-  requested: string[],
-  allowed: string[]
-) {
-  return {
-    content: [
-      {
-        type: "text" as const,
-        text: JSON.stringify(
-          {
-            status: "out_of_scope",
-            error: "OUT_OF_SCOPE",
-            tool: toolName,
-            requested_domains: requested,
-            allowed_domains: allowed,
-            message:
-              `Tool '${toolName}' was called with out-of-scope target(s): [${requested.join(", ")}]. ` +
-              `This MCP server is scoped to: [${allowed.join(", ")}]. ` +
-              `Re-launch with broader --scopes or call from an unscoped server.`,
-          },
-          null,
-          2
-        ),
-      },
-    ],
-  };
-}
+// resolveStreamScopes + outOfScopeResponse were duplicates of the
+// usrcp-local helpers - lifted into the shared
+// usrcp-local/src/scope-enforcement.ts module in PR #64 and imported
+// at the top of this file. The structural smell that caused four
+// codex-review rounds on PR #61 is gone.
