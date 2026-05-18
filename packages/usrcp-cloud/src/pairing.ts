@@ -107,6 +107,16 @@ export function registerPairingRoutes(app: FastifyInstance, db: Db): void {
   // GET /v1/pairing/claim/:code  - device B fetches by code; UN-authenticated
   // (device B has no identity yet). Increments claim_attempts; when it
   // hits the cap, the prune loop or the next call cleans the row up.
+  //
+  // The response intentionally omits `owner_public_key`. Anyone who
+  // knows or guesses an 8-digit code can hit this endpoint without
+  // authentication; returning the owner's identity key would let an
+  // attacker pivot from "I have a code" to "and here's the long-lived
+  // Ed25519 identity that posted it." Device B has never needed the
+  // value (the bundle's identity.public_key field carries the same
+  // information once decrypted, and that's authenticated by the
+  // HKDF-derived bundle key the attacker can't derive). Codex Tier-2
+  // #1.
   app.get("/v1/pairing/claim/:code", async (req, reply) => {
     const params = req.params as { code?: string };
     if (!params.code || !CODE_RE.test(params.code)) {
@@ -119,7 +129,6 @@ export function registerPairingRoutes(app: FastifyInstance, db: Db): void {
     // keeps the GET path retry-safe under flaky networks.
     const result = await db.query<{
       encrypted_bundle: string;
-      owner_public_key: string;
       expires_at: string;
       claim_attempts: number;
     }>(
@@ -128,7 +137,7 @@ export function registerPairingRoutes(app: FastifyInstance, db: Db): void {
        WHERE code = $1
          AND expires_at > now()
          AND claim_attempts < $2
-       RETURNING encrypted_bundle, owner_public_key, expires_at, claim_attempts`,
+       RETURNING encrypted_bundle, expires_at, claim_attempts`,
       [params.code, MAX_CLAIM_ATTEMPTS]
     );
 
@@ -151,7 +160,6 @@ export function registerPairingRoutes(app: FastifyInstance, db: Db): void {
     const row = result.rows[0];
     return {
       encrypted_bundle: row.encrypted_bundle,
-      owner_public_key: row.owner_public_key,
       expires_at: row.expires_at,
       attempts_remaining: MAX_CLAIM_ATTEMPTS - row.claim_attempts,
     };
