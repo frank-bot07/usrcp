@@ -1,10 +1,12 @@
 /**
  * Adapter registry.
  *
- * Replaces the three parallel hardcoded lists in #54-60:
- *   - `KNOWN_ADAPTERS`         (setup.ts) - wizard catalog
- *   - `ADAPTERS_REQUIRING_MASTER_KEY` (setup.ts) - standalone --adapter master-key gate
- *   - `ADAPTERS_WITH_ENCRYPTED_CONFIG` (rotate-adapter-configs.ts) - rotate-key participation
+ * Replaces the three parallel hardcoded lists that lived in
+ * setup.ts / rotate-adapter-configs.ts before PR #62 (wizard catalog,
+ * master-key gate, rotate-key participation). The Proxy back-compat
+ * shim that bridged the original `KNOWN_ADAPTERS` constant was
+ * removed in PR #63; the registered set is now reached exclusively
+ * via `getRegisteredAdapters()` and the derived helpers below.
  *
  * All three are now derived from one `AdapterManifest[]` source of truth:
  * a hardcoded BUILTIN_ADAPTERS array for in-tree packages, plus an
