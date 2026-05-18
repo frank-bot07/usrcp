@@ -12,6 +12,7 @@ import {
   commitKeyRotation,
   serializePendingKeyFiles,
 } from "../encryption.js";
+import { prepareReencryptedPrivatePem } from "../crypto.js";
 import { safeJsonParse } from "./helpers.js";
 
 declare module "./core.js" {
@@ -78,6 +79,18 @@ Ledger.prototype.rotateKey = function (
 ): { version: number; reencrypted: number; skipped: number } {
   // Phase 1: Prepare new key material WITHOUT writing to disk
   const { oldKey, newKey, version, pendingFiles } = prepareKeyRotation(this.masterKey, passphrase);
+
+  // Append a re-encrypted private.pem entry to pendingFiles so the
+  // Ed25519 identity key stays decryptable under the new master key
+  // after rotation. Without this, private.pem would remain sealed
+  // under the OLD globalKey and any post-rotation
+  // getDecryptedPrivateKeyPem call would fail. Including it in
+  // pendingFiles also means it goes through the durable-replay path:
+  // pending_files_json captures it inside the DB transaction, so a
+  // crash between the transaction commit and commitKeyRotation
+  // recovers correctly on next Ledger open.
+  const privatePemEntry = prepareReencryptedPrivatePem(oldKey, newKey);
+  if (privatePemEntry) pendingFiles.push(privatePemEntry);
   let reencrypted = 0;
   // Rotation and tampered rows: if a row fails to decrypt with the old key
   // (GCM auth failure from tampering, corruption, or key mismatch) it is
