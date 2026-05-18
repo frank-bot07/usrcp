@@ -10,6 +10,7 @@ import {
   zeroBuffer,
   prepareKeyRotation,
   commitKeyRotation,
+  serializePendingKeyFiles,
 } from "../encryption.js";
 import { safeJsonParse } from "./helpers.js";
 
@@ -324,11 +325,16 @@ Ledger.prototype.rotateKey = function (
       updateAudit.run(encAgentId, encOp, encScopes, encEvents, encDetail, tag, a.id);
     }
 
-    // Store new key in rotation_state — same transaction as re-encryption
-    // If crash: entire transaction rolls back, old key + old data intact
+    // Store new key AND the full pending key-file set in
+    // rotation_state in the same transaction as re-encryption. If crash:
+    // entire transaction rolls back, old key + old data intact. If
+    // crash AFTER the transaction commits but before
+    // commitKeyRotation writes the canonical files, the Ledger
+    // constructor's recovery path reads pending_files_json and
+    // replays the full file set durably (Codex round-1 P1 on PR #72).
     this.db.prepare(
-      "UPDATE rotation_state SET pending_key = ?, pending_version = ? WHERE id = 1"
-    ).run(newKey, version);
+      "UPDATE rotation_state SET pending_key = ?, pending_version = ?, pending_files_json = ? WHERE id = 1"
+    ).run(newKey, version, serializePendingKeyFiles(pendingFiles));
   });
 
   // Phase 2: Execute re-encryption + store new key in single atomic transaction.
@@ -362,7 +368,7 @@ Ledger.prototype.rotateKey = function (
 
   // Phase 4: Clear pending state - rotation complete
   this.db.prepare(
-    "UPDATE rotation_state SET pending_key = NULL, pending_version = NULL WHERE id = 1"
+    "UPDATE rotation_state SET pending_key = NULL, pending_version = NULL, pending_files_json = NULL WHERE id = 1"
   ).run();
 
   // Update in-memory key

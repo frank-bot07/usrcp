@@ -483,6 +483,63 @@ export function prepareKeyRotation(
   return { oldKey: currentKey, newKey, version: newVersion, pendingFiles };
 }
 
+export interface PendingKeyFile {
+  path: string;
+  content: Buffer;
+  mode: number;
+}
+
+/**
+ * Serialize a pendingFiles array for durable storage inside the
+ * rotation_state row. Without this, a passphrase-mode rotation that
+ * commits the DB transaction (re-encrypts all rows under the new
+ * key, sets rotation_state.pending_key) but dies before
+ * commitKeyRotation rewrites the on-disk key file set leaves the DB
+ * encrypted under the new key while the canonical master.salt /
+ * master.verify still derive the OLD key. The recovery path can't
+ * undo the DB re-encryption, so it MUST be able to replay the
+ * exact target file set; serializing pendingFiles into the same
+ * row that holds pending_key keeps the two atomic.
+ *
+ * Sensitivity: in dev mode the serialized blob contains the new
+ * master.key bytes - same security boundary as the canonical
+ * keys/master.key file itself. In passphrase mode the blob
+ * contains master.salt + master.verify + "passphrase" mode
+ * marker, none of which is secret on its own.
+ *
+ * Codex round-1 P1 on PR #72.
+ */
+export function serializePendingKeyFiles(pendingFiles: PendingKeyFile[]): string {
+  return JSON.stringify(
+    pendingFiles.map((f) => ({
+      path: f.path,
+      content_b64: f.content.toString("base64"),
+      mode: f.mode,
+    })),
+  );
+}
+
+export function deserializePendingKeyFiles(json: string): PendingKeyFile[] {
+  const raw = JSON.parse(json) as Array<{ path: string; content_b64: string; mode: number }>;
+  if (!Array.isArray(raw)) {
+    throw new Error("deserializePendingKeyFiles: not an array");
+  }
+  return raw.map((entry) => {
+    if (
+      typeof entry?.path !== "string" ||
+      typeof entry?.content_b64 !== "string" ||
+      typeof entry?.mode !== "number"
+    ) {
+      throw new Error("deserializePendingKeyFiles: malformed entry");
+    }
+    return {
+      path: entry.path,
+      content: Buffer.from(entry.content_b64, "base64"),
+      mode: entry.mode,
+    };
+  });
+}
+
 /**
  * Commit key rotation files to disk.
  * Called ONLY after database re-encryption succeeds.
