@@ -344,8 +344,10 @@ describe("checkpoint + resume (PR #67 - Codex Tier-1 #3)", () => {
     });
 
     expect(result).not.toBeNull();
-    // Returns the FULL tally (pre-crash + post-crash), not just the resume's work.
-    expect(result!.rotated.sort()).toEqual(["gmail", "linear"]);
+    // Result reflects ONLY this pass: linear was rotated just now.
+    // gmail was already in checkpoint.completed (from the prior pass);
+    // it's NOT re-included here so the audit log entry stays honest.
+    expect(result!.rotated).toEqual(["linear"]);
     expect(fs.existsSync(checkpointPath)).toBe(false);
   });
 
@@ -394,6 +396,111 @@ describe("checkpoint + resume (PR #67 - Codex Tier-1 #3)", () => {
     });
     expect(result).toBeNull();
     expect(fs.existsSync(checkpointPath)).toBe(true);
+  });
+
+  // --- Codex round-1 P1 retention fix follow-ups ---
+
+  it("keeps the checkpoint when an adapter helper threw (does NOT strand old-key configs)", () => {
+    const { userDir, checkpointPath } = setupUserDir();
+    writeFakeAdapter({ adapter: "gmail", behavior: "rotated", baseDir: tmpDir });
+    writeFakeAdapter({ adapter: "discord", behavior: "throw", baseDir: tmpDir });
+
+    reencryptAdapterConfigs({
+      oldKey,
+      newKey,
+      adapters: ["gmail", "discord"],
+      userDir,
+      resolveModulePath: (a) => path.join(tmpDir, `usrcp-${a}`, "dist", "config.js"),
+    });
+
+    // Checkpoint MUST persist because discord is unrotated.
+    expect(fs.existsSync(checkpointPath)).toBe(true);
+    const cp = JSON.parse(fs.readFileSync(checkpointPath, "utf-8")) as AdapterRotationCheckpoint;
+    expect(cp.pending).toEqual(["discord"]);
+    expect(cp.completed.map((c) => c.adapter)).toEqual(["gmail"]);
+    expect(cp.failed[0].adapter).toBe("discord");
+    expect(cp.failed[0].reason).toContain("simulated decrypt failure");
+
+    // Old key is still recoverable via the checkpoint.
+    const globalKey = deriveGlobalEncryptionKey(newKey);
+    const recoveredOldB64 = decrypt(cp.old_key_enc, globalKey);
+    expect(Buffer.from(recoveredOldB64, "base64").equals(oldKey)).toBe(true);
+  });
+
+  it("keeps the checkpoint when an adapter's package is not installed (does NOT strand a prior config)", () => {
+    const { userDir, checkpointPath } = setupUserDir();
+    writeFakeAdapter({ adapter: "gmail", behavior: "rotated", baseDir: tmpDir });
+    // No fake written for "telegram"; the resolver path won't exist.
+
+    reencryptAdapterConfigs({
+      oldKey,
+      newKey,
+      adapters: ["gmail", "telegram"],
+      userDir,
+      resolveModulePath: (a) => path.join(tmpDir, `usrcp-${a}`, "dist", "config.js"),
+    });
+
+    expect(fs.existsSync(checkpointPath)).toBe(true);
+    const cp = JSON.parse(fs.readFileSync(checkpointPath, "utf-8")) as AdapterRotationCheckpoint;
+    expect(cp.pending).toEqual(["telegram"]);
+    expect(cp.failed.map((f) => f.adapter)).toEqual(["telegram"]);
+    expect(cp.failed[0].reason).toContain("package not installed");
+  });
+
+  it("keeps the checkpoint when an adapter is missing the export (does NOT strand its config)", () => {
+    const { userDir, checkpointPath } = setupUserDir();
+    writeFakeAdapter({ adapter: "gmail", behavior: "rotated", baseDir: tmpDir });
+    const modDir = path.join(tmpDir, "usrcp-slack", "dist");
+    fs.mkdirSync(modDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(modDir, "config.js"),
+      `module.exports.somethingElse = function() {};`
+    );
+
+    reencryptAdapterConfigs({
+      oldKey,
+      newKey,
+      adapters: ["gmail", "slack"],
+      userDir,
+      resolveModulePath: (a) => path.join(tmpDir, `usrcp-${a}`, "dist", "config.js"),
+    });
+
+    expect(fs.existsSync(checkpointPath)).toBe(true);
+    const cp = JSON.parse(fs.readFileSync(checkpointPath, "utf-8")) as AdapterRotationCheckpoint;
+    expect(cp.pending).toEqual(["slack"]);
+    expect(cp.failed[0].adapter).toBe("slack");
+    expect(cp.failed[0].reason).toContain("does not export reencryptConfigUnderNewKey");
+  });
+
+  it("a successful retry of a previously-failed adapter clears it from the checkpoint", () => {
+    const { userDir, checkpointPath } = setupUserDir();
+    // Hand-craft a checkpoint that represents "previous rotation
+    // left discord in pending with a recorded failure." Avoids the
+    // node require-cache issue that would otherwise prevent a fresh
+    // load between passes.
+    writeFakeAdapter({ adapter: "discord", behavior: "rotated", baseDir: tmpDir });
+    const globalKey = deriveGlobalEncryptionKey(newKey);
+    const checkpoint: AdapterRotationCheckpoint = {
+      v: ADAPTER_ROTATION_CHECKPOINT_V,
+      started_at: new Date().toISOString(),
+      old_key_enc: encrypt(oldKey.toString("base64"), globalKey),
+      pending: ["discord"],
+      completed: [],
+      failed: [{ adapter: "discord", reason: "prior pass: simulated decrypt failure" }],
+    };
+    fs.writeFileSync(checkpointPath, JSON.stringify(checkpoint));
+
+    const result = resumeAdapterRotationIfPending({
+      userDir,
+      currentMasterKey: newKey,
+      resolveModulePath: (a) => path.join(tmpDir, `usrcp-${a}`, "dist", "config.js"),
+    });
+
+    expect(result).not.toBeNull();
+    expect(result!.rotated).toEqual(["discord"]);
+    // The successful retry cleared discord from pending AND from
+    // failed, and the checkpoint was unlinked because pending hit 0.
+    expect(fs.existsSync(checkpointPath)).toBe(false);
   });
 });
 

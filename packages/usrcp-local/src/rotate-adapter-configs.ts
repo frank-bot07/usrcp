@@ -196,19 +196,15 @@ export function reencryptAdapterConfigs(opts: {
   // without restarting the daemon.
   const adapters = opts.adapters ?? getRotateKeyAdapterValues();
 
-  // Seed the result accumulators from a resumed checkpoint so the
-  // returned tally reflects the FULL rotation (pre-crash + post-crash),
-  // not just this turn's work.
+  // Result accumulators reflect THIS pass's work only. Don't seed
+  // from checkpoint.completed: when this is a resume after a partial
+  // crash, the caller wants the audit log entry to say "I rotated 1
+  // adapter just now" not "I rotated 5 (4 of which were already
+  // done)". The checkpoint's `completed` is the historical record;
+  // result is the current activity.
   const rotated: string[] = [];
   const absent: string[] = [];
   const failed: Array<{ adapter: string; reason: string }> = [];
-  if (opts.resumeFromCheckpoint) {
-    for (const entry of opts.resumeFromCheckpoint.completed) {
-      if (entry.status === "rotated") rotated.push(entry.adapter);
-      else if (entry.status === "absent") absent.push(entry.adapter);
-    }
-    failed.push(...opts.resumeFromCheckpoint.failed);
-  }
 
   const checkpointPath = opts.userDir ? checkpointPathFor(opts.userDir) : null;
   let checkpoint: AdapterRotationCheckpoint | null = null;
@@ -238,15 +234,31 @@ export function reencryptAdapterConfigs(opts: {
     if (checkpoint) {
       checkpoint.pending = checkpoint.pending.filter((a) => a !== adapter);
       checkpoint.completed.push({ adapter, status });
+      // An adapter that succeeds this pass clears any prior failure
+      // entry so the checkpoint's failed list only contains adapters
+      // that are still unrotated.
+      checkpoint.failed = checkpoint.failed.filter((f) => f.adapter !== adapter);
       writeCheckpoint(checkpointPath!, checkpoint);
     }
   };
 
+  // Codex round-1 P1 on PR #67: a failed adapter MUST stay in pending
+  // so the next Ledger boot retries it with the old key still
+  // recoverable. Dropping it from pending plus unlinking the
+  // checkpoint at end-of-loop would permanently strand its on-disk
+  // config under the now-gone old master key. Same hazard applied to
+  // the "package not installed" short-circuit below: a config file
+  // from a previously-installed instance of that package would be
+  // stranded if the breadcrumb were dropped.
   const recordFailure = (adapter: string, reason: string): void => {
     failed.push({ adapter, reason });
     if (checkpoint) {
-      checkpoint.pending = checkpoint.pending.filter((a) => a !== adapter);
-      checkpoint.failed.push({ adapter, reason });
+      const existing = checkpoint.failed.findIndex((f) => f.adapter === adapter);
+      if (existing >= 0) checkpoint.failed[existing] = { adapter, reason };
+      else checkpoint.failed.push({ adapter, reason });
+      // NOTE: do NOT remove from checkpoint.pending. Until the
+      // adapter's on-disk config is confirmed rotated or absent, the
+      // old key must remain recoverable via the checkpoint.
       writeCheckpoint(checkpointPath!, checkpoint);
     }
   };
@@ -254,15 +266,24 @@ export function reencryptAdapterConfigs(opts: {
   for (const adapter of adapters) {
     const modulePath = resolver(adapter);
     if (!modulePath || !fs.existsSync(modulePath)) {
-      // Adapter package not installed in this checkout. That's
-      // fine - skip, don't fail rotation. The defaultResolver
-      // returns "" for unresolvable packages (e.g. external adapter
-      // registered but its npm package isn't installed yet). Drop
-      // it from `pending` so a future resume doesn't re-try it under
-      // a still-uninstalled state.
+      // Adapter package not installed in this checkout. When
+      // checkpointing is active, this must NOT silently drop from
+      // pending - any on-disk config file from a prior install of
+      // this adapter would be stranded under the now-gone old master
+      // key. Codex round-1 P1 on PR #67.
+      //
+      // Behavior splits on whether a checkpoint is present:
+      //   - With checkpoint (userDir provided): record as a
+      //     "package not installed" failure so it stays in pending
+      //     and the breadcrumb survives. Reinstalling + reopening
+      //     the Ledger triggers the recovery sweep.
+      //   - Without checkpoint (backward compat for the pre-#67
+      //     surface and any test that mirrors it): silent skip;
+      //     there is no recovery mechanism anyway, and treating
+      //     every uninstalled adapter as a failure is noisy for
+      //     developer machines that don't have every package.
       if (checkpoint) {
-        checkpoint.pending = checkpoint.pending.filter((a) => a !== adapter);
-        writeCheckpoint(checkpointPath!, checkpoint);
+        recordFailure(adapter, `package not installed (resolver returned ${modulePath || "''"})`);
       }
       continue;
     }
@@ -290,7 +311,11 @@ export function reencryptAdapterConfigs(opts: {
     }
   }
 
-  if (checkpointPath) {
+  // Only unlink the checkpoint when every adapter has been confirmed
+  // safe (rotated or absent). If any are still pending (load failure,
+  // missing export, helper threw, package not installed), the old key
+  // material stays on disk so the next Ledger boot can resume.
+  if (checkpoint && checkpointPath && checkpoint.pending.length === 0) {
     try { fs.unlinkSync(checkpointPath); } catch { /* tolerate already-gone */ }
   }
 
