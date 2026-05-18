@@ -141,6 +141,13 @@ export function registerStreamTools(
   // scoped-mode security property. (Codex round-1 review on PR #64
   // caught the regression that would have happened if we'd
   // unified on stream's leniency.)
+  //
+  // We rely on the shared wrapper's default `onAuditFailure`
+  // (console.warn) so a swallowed audit failure still leaves a
+  // stderr breadcrumb operators can grep for - closing the silent-
+  // swallow gap Codex Tier-2 #4 flagged. A future PR could pass an
+  // explicit callback here to route the warning through the cloud
+  // metrics pipeline instead.
   registerToolsWithScopes(mcpServer, defs, serveOpts, ledger ?? null, {
     strictAudit: false,
   });

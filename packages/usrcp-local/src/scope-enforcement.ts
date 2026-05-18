@@ -259,6 +259,12 @@ function formatScopeArr(s: string[] | undefined): string {
   return s === undefined ? "*" : s.length === 0 ? "[]" : `[${s.join(",")}]`;
 }
 
+export interface AuditFailureContext {
+  toolName: string;
+  agentId: string;
+  scopeRepr: string;
+}
+
 export interface RegisterToolsOptions {
   /**
    * When true (the usrcp-local default), an audit-row write
@@ -275,6 +281,32 @@ export interface RegisterToolsOptions {
    * Default: true (strict). Stream passes false explicitly.
    */
   strictAudit?: boolean;
+
+  /**
+   * Invoked when `strictAudit: false` swallows a logAudit failure.
+   * Closes Codex Tier-2 #4: pre-this-PR the catch block silently
+   * dropped the error so a scoped stream call could proceed with
+   * NO forensic record that it ran unaudited. Now the failure goes
+   * to this callback (or to console.warn by default) so an operator
+   * grepping logs can correlate a missing audit row to the tool
+   * call that produced it.
+   *
+   * Strict mode (default) ignores this callback entirely - audit
+   * failures throw out of the wrapper, the handler never runs,
+   * there's nothing to surface beyond the thrown error itself.
+   *
+   * Default: a console.warn with the tool name, agent id, scope
+   * repr, and error message.
+   */
+  onAuditFailure?: (err: unknown, ctx: AuditFailureContext) => void;
+}
+
+function defaultOnAuditFailure(err: unknown, ctx: AuditFailureContext): void {
+  const msg = err instanceof Error ? err.message : String(err);
+  console.warn(
+    `[usrcp] best-effort audit failed for tool=${ctx.toolName} agent=${ctx.agentId} scope=${ctx.scopeRepr}: ${msg}. ` +
+      `The tool call proceeded unaudited (strictAudit:false); a row should have been written to audit_log but was not.`
+  );
 }
 
 /**
@@ -320,6 +352,7 @@ export function registerToolsWithScopes(
   const agentId = opts.agentId ?? "unidentified";
   const auditScopeRepr = `read=${formatScopeArr(readScopes)};write=${formatScopeArr(writeScopes)}`;
   const strictAudit = registerOpts.strictAudit ?? true;
+  const onAuditFailure = registerOpts.onAuditFailure ?? defaultOnAuditFailure;
 
   for (const def of defs) {
     // Registration-time filtering: tools that the caller has
@@ -360,8 +393,23 @@ export function registerToolsWithScopes(
               undefined,
               agentId,
             );
-          } catch {
+          } catch (err) {
             // Best-effort: see RegisterToolsOptions.strictAudit.
+            // Pre-Codex-Tier-2-#4 this was a bare swallow; now we
+            // route through onAuditFailure (console.warn by default)
+            // so the missing audit row leaves at least a stderr
+            // breadcrumb the operator can grep for.
+            try {
+              onAuditFailure(err, {
+                toolName: def.name,
+                agentId,
+                scopeRepr: auditScopeRepr,
+              });
+            } catch {
+              // A callback that itself throws must not break the
+              // tool call - that would defeat the whole point of
+              // strictAudit:false.
+            }
           }
         }
       }
