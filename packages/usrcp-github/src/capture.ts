@@ -9,6 +9,7 @@
  *   pr_closed:        github:pr-closed:<owner>/<repo>#<number>
  *   issue_opened:     github:issue:<owner>/<repo>#<number>
  *   issue_commented:  github:issue-comment:<comment_id>
+ *   pr_reviewed:      github:pr-review:<review_id>
  *
  * GitHub guarantees that a single PR fires at most one terminal
  * state event: `is:merged` and `is:closed is:unmerged` are
@@ -140,11 +141,49 @@ export interface IssueCommentActivity {
   org: string | null;
 }
 
+/**
+ * A PR review submitted by the configured user. We only capture
+ * substantive reviews (APPROVED, CHANGES_REQUESTED, COMMENTED) -
+ * PENDING (draft, not submitted) and DISMISSED (administratively
+ * cleared) are out of scope. Inline review comments left on
+ * individual diff hunks come via a separate `pulls.listReviewComments`
+ * endpoint and are deferred to a future v1.4.
+ */
+export interface PullRequestReviewActivity {
+  type: "pr_reviewed";
+  /** Stable GitHub review ID. Used in the idempotency key. */
+  review_id: number;
+  /** Review's node_id. */
+  node_id: string;
+  owner: string;
+  repo: string;
+  /** Parent PR number. */
+  pr_number: number;
+  /** Parent PR's title. */
+  pr_title: string;
+  /** Parent PR's author login. */
+  pr_author_login: string;
+  /** Review state. Excludes PENDING and DISMISSED. */
+  state: "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED";
+  /** Review body. Empty for plain Approve clicks - that's fine, we still capture. */
+  body: string;
+  /** Browser URL to the review. */
+  url: string;
+  /** Browser URL to the parent PR. */
+  pr_url: string;
+  /** Login of the reviewer (= github_login). */
+  reviewer_login: string;
+  /** When the review was submitted. */
+  submitted_at: string;
+  org: string | null;
+}
+
 export type GitHubActivity =
   | PullRequestActivity
   | PullRequestStateChangeActivity
   | IssueOpenedActivity
-  | IssueCommentActivity;
+  | IssueCommentActivity
+  | PullRequestReviewActivity;
 
 export interface CaptureResult {
   captured: true;
@@ -190,6 +229,14 @@ export function captureGitHubActivity(
       return { captured: false, reason: "empty_body" };
     }
     return captureComment(ledger, activity, config);
+  }
+  if (activity.type === "pr_reviewed") {
+    // Reviews use pr_title for the title-emptiness check, since
+    // the review itself may have an empty body (plain Approve).
+    if (!activity.pr_title || activity.pr_title.trim().length === 0) {
+      return { captured: false, reason: "empty_title" };
+    }
+    return captureReview(ledger, activity, config);
   }
   if (!activity.title || activity.title.trim().length === 0) {
     return { captured: false, reason: "empty_title" };
@@ -387,6 +434,71 @@ function captureComment(
     },
     "github",
     `github:issue-comment:${activity.comment_id}`,
+    "github-poller",
+  );
+  return {
+    captured: true,
+    event_id: result.event_id,
+    ledger_sequence: result.ledger_sequence,
+    duplicate: result.duplicate ?? false,
+  };
+}
+
+function captureReview(
+  ledger: CaptureLedger,
+  activity: PullRequestReviewActivity,
+  config: GitHubConfig,
+): CaptureOutcome {
+  const repoFull = `${activity.owner}/${activity.repo}`;
+  // Use distinct verbs per review state so the timeline reads
+  // naturally without forcing callers to inspect detail.state.
+  const verb =
+    activity.state === "APPROVED"
+      ? "approved"
+      : activity.state === "CHANGES_REQUESTED"
+        ? "requested-changes"
+        : "reviewed";
+  const summary = truncateSummary(
+    `${repoFull}#${activity.pr_number} ${verb}: ${activity.pr_title}`,
+  );
+  const result = ledger.appendEvent(
+    {
+      domain: config.domain,
+      summary,
+      intent: "pr_reviewed",
+      outcome: "success",
+      detail: {
+        review_id: activity.review_id,
+        node_id: activity.node_id,
+        owner: activity.owner,
+        repo: activity.repo,
+        pr_number: activity.pr_number,
+        pr_title: activity.pr_title,
+        pr_author_login: activity.pr_author_login,
+        state: activity.state,
+        body: activity.body,
+        url: activity.url,
+        pr_url: activity.pr_url,
+        reviewer_login: activity.reviewer_login,
+        submitted_at: activity.submitted_at,
+      },
+      // Lowercase the state in tags so callers can grep
+      // `tags ~ "approved"` uniformly with the other lifecycle tags.
+      tags: ["github", "review", verb, repoFull],
+      // Group with the parent PR's pr_opened / pr_merged / pr_closed
+      // / issue_commented events in getRecentEventsByChannel.
+      channel_id: `${repoFull}#${activity.pr_number}`,
+      // thread_id = stable review ID so the timeline preserves
+      // ordering of multiple reviews on the same PR.
+      thread_id: String(activity.review_id),
+      // The "external" party here is the PR author, not the
+      // reviewer (who is the configured user and would be
+      // redundant). Agents can query "PRs I reviewed for Alice"
+      // by external_user_id.
+      external_user_id: activity.pr_author_login,
+    },
+    "github",
+    `github:pr-review:${activity.review_id}`,
     "github-poller",
   );
   return {

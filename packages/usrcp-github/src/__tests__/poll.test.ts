@@ -45,6 +45,7 @@ function neutralCursors(iso = "2026-05-16T00:00:00Z") {
     closed: iso,
     issue_opened: iso,
     issue_commented: iso,
+    pr_reviewed: iso,
   };
 }
 
@@ -88,15 +89,19 @@ interface FakeOctokitItems {
   closed?: any[];
   issue_opened?: any[];
   issue_commented_candidates?: any[];
+  pr_reviewed_candidates?: any[];
   /** comments-by-issue-number keyed by `${owner}/${repo}#${number}`. */
   comments?: Record<string, any[]>;
+  /** reviews-by-pr-number keyed by `${owner}/${repo}#${number}`. */
+  reviews?: Record<string, any[]>;
 }
 
 /**
  * Build a fake Octokit whose `paginate(search.issuesAndPullRequests,
- * { q, ... })` dispatches by qualifier, and whose `paginate(
- * issues.listComments, { owner, repo, issue_number, since })`
- * returns comments from the per-issue map.
+ * { q, ... })` dispatches by qualifier, whose `paginate(
+ * issues.listComments, ...)` returns comments from the per-issue map,
+ * and whose `paginate(pulls.listReviews, ...)` returns reviews from
+ * the per-PR map.
  *
  * Unspecified buckets default to empty arrays so tests can wire
  * only what they care about.
@@ -104,13 +109,17 @@ interface FakeOctokitItems {
 function makeFakeOctokit(items: FakeOctokitItems): any {
   const search = { issuesAndPullRequests: Symbol("issuesAndPullRequests") };
   const listComments = Symbol("listComments");
+  const listReviews = Symbol("listReviews");
   const issues = { listComments };
+  const pulls = { listReviews };
   const paginate = async (
     endpoint: unknown,
     params: any,
   ): Promise<any[]> => {
     if (endpoint === search.issuesAndPullRequests) {
       const q: string = params.q;
+      // Order matters: more specific qualifiers first.
+      if (q.includes("reviewed-by:")) return items.pr_reviewed_candidates ?? [];
       if (q.includes("commenter:")) return items.issue_commented_candidates ?? [];
       if (q.includes("type:issue")) return items.issue_opened ?? [];
       if (q.includes("is:merged")) return items.merged ?? [];
@@ -121,9 +130,13 @@ function makeFakeOctokit(items: FakeOctokitItems): any {
       const key = `${params.owner}/${params.repo}#${params.issue_number}`;
       return items.comments?.[key] ?? [];
     }
+    if (endpoint === listReviews) {
+      const key = `${params.owner}/${params.repo}#${params.pull_number}`;
+      return items.reviews?.[key] ?? [];
+    }
     throw new Error(`unexpected paginate endpoint`);
   };
-  return { search, issues, paginate };
+  return { search, issues, pulls, paginate };
 }
 
 describe("pollOnce (v1.1: three queries)", () => {
@@ -561,5 +574,261 @@ describe("pollOnce - issue_commented (v1.2)", () => {
 
     expect(result.issue_commented.captured).toBe(1);
     expect(result.issue_commented.newCursor).toBe("2026-05-17T14:00:00Z");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v1.3: pr_reviewed (two-stage: search + listReviews)
+// ---------------------------------------------------------------------------
+
+/** PR-shaped search item (has pull_request field). Different author than us. */
+function makeReviewCandidate(overrides: {
+  number: number;
+  owner?: string;
+  repo?: string;
+  author?: string;
+  updated_at?: string;
+  title?: string;
+}): any {
+  const owner = overrides.owner ?? "anthropics";
+  const repo = overrides.repo ?? "claude-code";
+  return {
+    node_id: `PR_${overrides.number}`,
+    number: overrides.number,
+    title: overrides.title ?? `PR #${overrides.number}`,
+    body: "body",
+    html_url: `https://github.com/${owner}/${repo}/pull/${overrides.number}`,
+    user: { login: overrides.author ?? "alice" },
+    state: "open",
+    closed_at: null,
+    created_at: "2026-05-17T10:00:00Z",
+    updated_at: overrides.updated_at ?? "2026-05-17T15:00:00Z",
+    pull_request: { merged_at: null },
+    repository_url: `https://api.github.com/repos/${owner}/${repo}`,
+  };
+}
+
+describe("pollOnce - pr_reviewed (v1.3)", () => {
+  it("two-stage fetch: search returns reviewed PR, listReviews returns user's APPROVED review, event emitted", async () => {
+    const ledger = new FakeLedger();
+    const candidate = makeReviewCandidate({ number: 100, updated_at: "2026-05-17T15:00:00Z" });
+    const octokit = makeFakeOctokit({
+      pr_reviewed_candidates: [candidate],
+      reviews: {
+        "anthropics/claude-code#100": [
+          {
+            id: 5000,
+            node_id: "PRR_5000",
+            user: { login: "chad" },
+            state: "APPROVED",
+            body: "lgtm",
+            html_url: "https://github.com/anthropics/claude-code/pull/100#pullrequestreview-5000",
+            submitted_at: "2026-05-17T14:55:00Z",
+          },
+        ],
+      },
+    });
+
+    const result = await pollOnce(ledger, octokit, CONFIG, neutralCursors());
+
+    expect(result.pr_reviewed.captured).toBe(1);
+    expect(result.pr_reviewed.failures).toBe(0);
+    expect(ledger.events).toHaveLength(1);
+    expect(ledger.events[0].intent).toBe("pr_reviewed");
+    expect(ledger.events[0].idempotencyKey).toBe("github:pr-review:5000");
+    expect(ledger.events[0].detail!.state).toBe("APPROVED");
+    expect(ledger.events[0].detail!.pr_author_login).toBe("alice");
+  });
+
+  it("filters out reviews by other users", async () => {
+    const ledger = new FakeLedger();
+    const candidate = makeReviewCandidate({ number: 100 });
+    const octokit = makeFakeOctokit({
+      pr_reviewed_candidates: [candidate],
+      reviews: {
+        "anthropics/claude-code#100": [
+          {
+            id: 5001,
+            node_id: "PRR_5001",
+            user: { login: "someone-else" },
+            state: "APPROVED",
+            body: "",
+            html_url: "",
+            submitted_at: "2026-05-17T14:55:00Z",
+          },
+          {
+            id: 5002,
+            node_id: "PRR_5002",
+            user: { login: "chad" },
+            state: "COMMENTED",
+            body: "ack",
+            html_url: "",
+            submitted_at: "2026-05-17T14:56:00Z",
+          },
+        ],
+      },
+    });
+
+    const result = await pollOnce(ledger, octokit, CONFIG, neutralCursors());
+
+    expect(result.pr_reviewed.captured).toBe(1);
+    expect(ledger.events[0].idempotencyKey).toBe("github:pr-review:5002");
+  });
+
+  it("skips PENDING (draft) and DISMISSED reviews", async () => {
+    const ledger = new FakeLedger();
+    const candidate = makeReviewCandidate({ number: 100 });
+    const octokit = makeFakeOctokit({
+      pr_reviewed_candidates: [candidate],
+      reviews: {
+        "anthropics/claude-code#100": [
+          {
+            id: 6000,
+            node_id: "PRR_6000",
+            user: { login: "chad" },
+            state: "PENDING",
+            body: "draft",
+            html_url: "",
+            submitted_at: "2026-05-17T14:55:00Z",
+          },
+          {
+            id: 6001,
+            node_id: "PRR_6001",
+            user: { login: "chad" },
+            state: "DISMISSED",
+            body: "cleared",
+            html_url: "",
+            submitted_at: "2026-05-17T14:56:00Z",
+          },
+          {
+            id: 6002,
+            node_id: "PRR_6002",
+            user: { login: "chad" },
+            state: "CHANGES_REQUESTED",
+            body: "fix this",
+            html_url: "",
+            submitted_at: "2026-05-17T14:57:00Z",
+          },
+        ],
+      },
+    });
+
+    const result = await pollOnce(ledger, octokit, CONFIG, neutralCursors());
+
+    expect(result.pr_reviewed.captured).toBe(1);
+    expect(ledger.events[0].idempotencyKey).toBe("github:pr-review:6002");
+    expect(ledger.events[0].detail!.state).toBe("CHANGES_REQUESTED");
+  });
+
+  it("filters out reviews at-or-before the cursor (strictly newer fire)", async () => {
+    const ledger = new FakeLedger();
+    const candidate = makeReviewCandidate({ number: 100 });
+    const octokit = makeFakeOctokit({
+      pr_reviewed_candidates: [candidate],
+      reviews: {
+        "anthropics/claude-code#100": [
+          {
+            id: 7000,
+            user: { login: "chad" },
+            state: "APPROVED",
+            body: "old",
+            html_url: "",
+            node_id: "x",
+            submitted_at: "2026-05-16T00:00:00Z", // exactly at cursor
+          },
+          {
+            id: 7001,
+            user: { login: "chad" },
+            state: "APPROVED",
+            body: "fresh",
+            html_url: "",
+            node_id: "y",
+            submitted_at: "2026-05-17T10:00:00Z",
+          },
+        ],
+      },
+    });
+
+    const result = await pollOnce(ledger, octokit, CONFIG, neutralCursors());
+
+    expect(result.pr_reviewed.captured).toBe(1);
+    expect(ledger.events[0].idempotencyKey).toBe("github:pr-review:7001");
+  });
+
+  it("partial failure pins the cursor (round-1 lesson from PR #59)", async () => {
+    const ledger = new FakeLedger();
+    const candidates = [
+      makeReviewCandidate({ number: 1, updated_at: "2026-05-17T11:00:00Z" }),
+      makeReviewCandidate({ number: 2, updated_at: "2026-05-17T12:00:00Z" }),
+    ];
+    const search = { issuesAndPullRequests: Symbol("s") };
+    const listReviews = Symbol("lr");
+    const octokit = {
+      search,
+      pulls: { listReviews },
+      paginate: async (endpoint: unknown, params: any) => {
+        if (endpoint === search.issuesAndPullRequests) {
+          return params.q.includes("reviewed-by:") ? candidates : [];
+        }
+        if (endpoint === listReviews) {
+          if (params.pull_number === 1) throw new Error("simulated 500");
+          return [
+            {
+              id: 8000,
+              user: { login: "chad" },
+              state: "APPROVED",
+              body: "",
+              html_url: "",
+              node_id: "z",
+              submitted_at: "2026-05-17T11:30:00Z",
+            },
+          ];
+        }
+        throw new Error("unexpected");
+      },
+    };
+
+    const cursors = neutralCursors();
+    const result = await pollOnce(ledger, octokit as any, CONFIG, cursors);
+
+    // #2's review was captured this tick.
+    expect(result.pr_reviewed.captured).toBe(1);
+    expect(result.pr_reviewed.failures).toBe(1);
+    // Cursor MUST pin so #1 gets retried.
+    expect(result.pr_reviewed.newCursor).toBe(cursors.pr_reviewed);
+  });
+
+  it("advances cursor to candidate.updated_at on successful empty scans (round-2 lesson from PR #59)", async () => {
+    const ledger = new FakeLedger();
+    const candidate = makeReviewCandidate({
+      number: 200,
+      updated_at: "2026-05-17T18:00:00Z",
+    });
+    const octokit = makeFakeOctokit({
+      pr_reviewed_candidates: [candidate],
+      reviews: {
+        // Only someone else's review since the cursor; our own is
+        // historical.
+        "anthropics/claude-code#200": [
+          {
+            id: 9000,
+            user: { login: "someone-else" },
+            state: "APPROVED",
+            body: "",
+            html_url: "",
+            node_id: "x",
+            submitted_at: "2026-05-17T17:00:00Z",
+          },
+        ],
+      },
+    });
+
+    const result = await pollOnce(ledger, octokit, CONFIG, neutralCursors());
+
+    expect(result.pr_reviewed.captured).toBe(0);
+    expect(result.pr_reviewed.failures).toBe(0);
+    // Cursor advances past candidate.updated_at so this candidate
+    // doesn't get re-fetched indefinitely.
+    expect(result.pr_reviewed.newCursor).toBe("2026-05-17T18:00:00Z");
   });
 });
