@@ -246,7 +246,11 @@ export function loadExternalAdapters(
 
   // Sanity-check each entry. External manifests are user-provided
   // input, so reject anything missing the minimum required fields
-  // rather than letting it crash the dispatcher later.
+  // OR with a malformed optional field rather than letting it crash
+  // the dispatcher later. Codex round-1 review on PR #62 caught the
+  // optional-field case: `packageName: true` previously passed the
+  // loader and then crashed `path.join(...)` at dispatch time. The
+  // loader is the trust boundary; everything past it assumes types.
   const out: AdapterManifest[] = [];
   for (const m of parsed.adapters) {
     if (!m || typeof m !== "object") continue;
@@ -262,6 +266,48 @@ export function loadExternalAdapters(
       );
       continue;
     }
+
+    // Optional fields: only reject if the field is present AND has
+    // the wrong type. Missing fields are fine (defaults apply
+    // downstream). A bad type here would propagate to path.join
+    // (packageName), `mod[fnName]` (setupFunction), or the
+    // platform/hidden boolean checks.
+    const badField = (
+      label: string,
+      val: unknown,
+      expected: "string" | "boolean",
+    ): boolean => {
+      if (val === undefined) return false;
+      if (typeof val === expected) return false;
+      console.error(
+        `[usrcp] Warning: external adapter "${m.value}" has ${label}=${JSON.stringify(val)} ` +
+          `(expected ${expected}); ignoring entry.`,
+      );
+      return true;
+    };
+    if (badField("setupFunction", m.setupFunction, "string")) continue;
+    if (badField("packageName", m.packageName, "string")) continue;
+    if (badField("requiresMasterKey", m.requiresMasterKey, "boolean")) continue;
+    if (badField("supportsRotateKey", m.supportsRotateKey, "boolean")) continue;
+    if (badField("hidden", m.hidden, "boolean")) continue;
+    if (badField("requiresMacOS", m.requiresMacOS, "boolean")) continue;
+
+    // Also reject empty-string optional strings - they'd pass the
+    // typeof check but lead to broken require.resolve("/dist/setup.js")
+    // or `mod[""]` lookups.
+    if (m.setupFunction !== undefined && (m.setupFunction as string).length === 0) {
+      console.error(
+        `[usrcp] Warning: external adapter "${m.value}" has setupFunction=""; ignoring entry.`,
+      );
+      continue;
+    }
+    if (m.packageName !== undefined && (m.packageName as string).length === 0) {
+      console.error(
+        `[usrcp] Warning: external adapter "${m.value}" has packageName=""; ignoring entry.`,
+      );
+      continue;
+    }
+
     out.push(m);
   }
   return out;

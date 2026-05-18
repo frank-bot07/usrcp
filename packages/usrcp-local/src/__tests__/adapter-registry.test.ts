@@ -152,6 +152,80 @@ describe("loadExternalAdapters (~/.usrcp/adapters.json)", () => {
     const ext = loadExternalAdapters();
     expect(ext).toHaveLength(0);
   });
+
+  it("rejects entries with malformed optional field types (codex PR #62 round-1)", () => {
+    // Each entry below has all three required fields valid but
+    // exactly one optional field with the wrong type. The loader
+    // is the trust boundary - everything past it assumes correct
+    // types - so each entry must be rejected before it can crash
+    // path.join() or `mod[setupFunction]` at dispatch time.
+    writeRegistry([
+      // packageName: should be string
+      {
+        value: "bad-pkg-type",
+        name: "Bad pkg type",
+        blurb: "...",
+        packageName: true as unknown as string,
+      },
+      // setupFunction: should be string
+      {
+        value: "bad-fn-type",
+        name: "Bad fn type",
+        blurb: "...",
+        setupFunction: 42 as unknown as string,
+      },
+      // requiresMasterKey: should be boolean
+      {
+        value: "bad-mk-type",
+        name: "Bad mk type",
+        blurb: "...",
+        requiresMasterKey: "yes" as unknown as boolean,
+      },
+      // supportsRotateKey: should be boolean
+      {
+        value: "bad-rk-type",
+        name: "Bad rk type",
+        blurb: "...",
+        supportsRotateKey: 1 as unknown as boolean,
+      },
+      // hidden: should be boolean
+      {
+        value: "bad-hidden-type",
+        name: "Bad hidden type",
+        blurb: "...",
+        hidden: "true" as unknown as boolean,
+      },
+      // requiresMacOS: should be boolean
+      {
+        value: "bad-mac-type",
+        name: "Bad mac type",
+        blurb: "...",
+        requiresMacOS: 0 as unknown as boolean,
+      },
+      // packageName: empty string passes typeof check but breaks require.resolve("/dist/setup.js")
+      {
+        value: "empty-pkg",
+        name: "Empty pkg",
+        blurb: "...",
+        packageName: "",
+      },
+      // setupFunction: empty string would lead to `mod[""]` lookups
+      {
+        value: "empty-fn",
+        name: "Empty fn",
+        blurb: "...",
+        setupFunction: "",
+      },
+      // Good entry - sanity check the loader still accepts well-formed manifests in the same call.
+      {
+        value: "ok",
+        name: "OK",
+        blurb: "...",
+      },
+    ]);
+    const ext = loadExternalAdapters();
+    expect(ext.map((m) => m.value)).toEqual(["ok"]);
+  });
 });
 
 describe("getRegisteredAdapters (builtin + external)", () => {
