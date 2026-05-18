@@ -184,8 +184,27 @@ describe("GET /v1/pairing/claim/:code", () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.encrypted_bundle).toBe(ALICE_BUNDLE);
-    expect(typeof body.owner_public_key).toBe("string");
     expect(body.attempts_remaining).toBe(4);
+  });
+
+  it("does NOT leak owner_public_key in the unauthenticated claim response (Codex Tier-2 #1)", async () => {
+    // Anyone who can hit the public claim endpoint with a code (whether
+    // they're the legitimate device B or an attacker who guessed the
+    // code) must not learn the owner's long-lived Ed25519 identity key.
+    // Pre-fix the response included it, letting an attacker pivot from
+    // "I know a code" to "and here's the identity that posted it."
+    const { privateKeyPem, publicKeyPem } = makeKeyPair();
+    await signedInject(privateKeyPem, publicKeyPem, "POST", "/v1/pairing/init", {
+      code: "44444445",
+      encrypted_bundle: ALICE_BUNDLE,
+    });
+    const res = await app.inject({ method: "GET", url: "/v1/pairing/claim/44444445" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body).not.toHaveProperty("owner_public_key");
+    // Sanity-check: the publicKeyPem string is nowhere in the response
+    // body (defends against any future field that might smuggle it).
+    expect(JSON.stringify(body)).not.toContain(publicKeyPem.slice(40, 80));
   });
 
   it("returns 404 for an unknown code", async () => {

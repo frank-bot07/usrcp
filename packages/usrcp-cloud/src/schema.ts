@@ -161,17 +161,30 @@ CREATE INDEX IF NOT EXISTS idx_revoked_rotated_to ON revoked_keys(rotated_to);
 -- decrypts locally with
 -- HKDF-SHA256(IKM=secret, salt=code, info='usrcp-pairing-v2'), where
 -- 'secret' is a 16-byte value that travels device-to-device out of
--- band (paste, AirDrop, QR) and NEVER reaches the cloud. The row
--- therefore holds only the lookup code and the ciphertext; the
--- decryption key requires the secret which the cloud has no path to.
--- An attacker with row-level read access (DB dump, log of the POST
--- body, malicious operator) sees the code and the ciphertext only;
--- brute-forcing the 128-bit secret is 2^128 work. claim_attempts is
--- incremented on every GET; once it hits 5, the prune loop deletes
--- the row (forces device A to re-init rather than letting an external
--- attacker who does NOT know the code keep trying via the public
--- claim endpoint). The v1 design (8-digit code = scrypt input, cloud
--- trusted for the TTL) is retired; see tasks/12-pair-tier-2.md.
+-- band (paste, AirDrop, QR) and NEVER reaches the cloud. The
+-- decryption key requires the secret which the cloud has no path to;
+-- brute-forcing the 128-bit secret is 2^128 work.
+--
+-- Threat-model precision (corrected after Codex Tier-2 #1):
+--   * INTERNET attacker who has only the 8-digit code (guessed it,
+--     observed it in transit, etc.) and hits /v1/pairing/claim sees
+--     ONLY the ciphertext + expires_at + attempts_remaining. The
+--     owner's public key is NOT in the response, so the attacker
+--     cannot pivot "I know a code" -> "I know whose code it is."
+--   * DB-DUMP attacker (operator with row-level read, leaked backup)
+--     sees the code, the ciphertext, AND owner_public_key. The column
+--     is retained because the server needs it to (a) enforce that the
+--     same owner can replace their own pending bundle and (b) refuse
+--     a re-init from a DIFFERENT identity for a colliding code, and
+--     (c) prune on identity rotation. The 8-digit codespace + 10-min
+--     TTL keeps the exposure window tight.
+--
+-- claim_attempts is incremented on every GET; once it hits 5, the
+-- prune loop deletes the row (forces device A to re-init rather than
+-- letting an external attacker who does NOT know the code keep
+-- trying via the public claim endpoint). The v1 design (8-digit
+-- code = scrypt input, cloud trusted for the TTL) is retired; see
+-- tasks/12-pair-tier-2.md.
 CREATE TABLE IF NOT EXISTS pairing_bundles (
   code             TEXT PRIMARY KEY,
   owner_public_key TEXT NOT NULL REFERENCES users(public_key) ON DELETE CASCADE,
