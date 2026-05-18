@@ -196,7 +196,7 @@ describe("ADAPTERS_WITH_ENCRYPTED_CONFIG", () => {
     // the rotate-time list is here. Any adapter that encrypts at
     // setup must also re-encrypt at rotate.
     expect(new Set(ADAPTERS_WITH_ENCRYPTED_CONFIG)).toEqual(
-      new Set(["google-calendar", "gmail", "linear", "discord", "slack", "telegram"]),
+      new Set(["google-calendar", "gmail", "linear", "discord", "slack", "telegram", "github"]),
     );
   });
 });

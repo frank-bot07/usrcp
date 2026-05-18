@@ -324,6 +324,11 @@ export const KNOWN_ADAPTERS: readonly AdapterSpec[] = [
     blurb: "Capture messages YOU sent in Gmail. Polls every 10 min (configurable). Requires a Google Cloud OAuth client + refresh token (same setup as Google Calendar, different scope). v0: capture-only, no received mail.",
   },
   {
+    name: "GitHub",
+    value: "github",
+    blurb: "Capture pull requests YOU author on GitHub. Polls GitHub's REST search API every 10 min (configurable). Requires a personal access token. v1: capture-only on pr_opened (state changes come later).",
+  },
+  {
     name: "Browser extension (Chrome)",
     value: "extension",
     blurb: "Capture claude.ai conversations and inject ledger context via /usrcp slash command. Chrome only in v0; requires manual extension load (Developer Mode → Load Unpacked).",
@@ -560,6 +565,7 @@ const ADAPTERS_REQUIRING_MASTER_KEY: ReadonlySet<string> = new Set([
   "discord",
   "slack",
   "telegram",
+  "github",
 ]);
 
 /**

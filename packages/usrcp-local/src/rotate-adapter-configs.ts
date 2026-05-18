@@ -36,6 +36,7 @@ export const ADAPTERS_WITH_ENCRYPTED_CONFIG: ReadonlyArray<string> = [
   "discord",
   "slack",
   "telegram",
+  "github",
 ];
 
 export interface AdapterReencryptResult {
