@@ -22,6 +22,7 @@ import {
   getUserDir,
 } from "../encryption.js";
 import { ensurePrivateKeyEncrypted, getIdentity as getIdent, initializeIdentity as initIdent } from "../crypto.js";
+import { resumeAdapterRotationIfPending } from "../rotate-adapter-configs.js";
 import { getDefaultDbPath, generateULID } from "./helpers.js";
 
 export class Ledger {
@@ -64,6 +65,36 @@ export class Ledger {
       this.db.prepare("UPDATE rotation_state SET pending_key = NULL, pending_version = NULL WHERE id = 1").run();
       this.logAudit("key_rotation_recovery", ["system"]);
       this.rebuildBlindIndex();
+    }
+
+    // Adapter-config rotation recovery: if a previous rotateKey was
+    // killed AFTER commitKeyRotation but BEFORE all adapter configs
+    // were re-encrypted, the checkpoint at <userDir>/keys/adapter-rotation.json
+    // persists with the old key sealed under the new global key. Resume
+    // the per-adapter loop for whatever's still `pending`. Without this,
+    // those configs would be permanently unreadable: the old salt is
+    // gone, so the old master key is no longer derivable from passphrase.
+    try {
+      const resumed = resumeAdapterRotationIfPending({
+        userDir: getUserDir(),
+        currentMasterKey: this.masterKey,
+      });
+      if (resumed) {
+        this.logAudit(
+          "adapter_rotation_recovery",
+          ["system"],
+          undefined,
+          `rotated=${resumed.rotated.length} absent=${resumed.absent.length} failed=${resumed.failed.length}`
+        );
+      }
+    } catch (err) {
+      // Recovery is best-effort: a malformed checkpoint should not
+      // block the Ledger from opening. The original rotation's audit
+      // log entry stays as the durable record; surface the recovery
+      // hiccup to console for operator inspection.
+      console.warn(
+        `[usrcp] adapter rotation recovery failed: ${err instanceof Error ? err.message : String(err)}`
+      );
     }
   }
 

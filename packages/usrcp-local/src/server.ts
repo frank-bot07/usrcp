@@ -8,6 +8,7 @@ import {
   reencryptAdapterConfigs,
   type AdapterReencryptResult,
 } from "./rotate-adapter-configs.js";
+import { getUserDir } from "./encryption.js";
 
 // --- Security constants ---
 const MAX_STRING_SHORT = 100; // identifiers, domains, keys
@@ -756,7 +757,15 @@ export function createServer(
           let adapterResult: AdapterReencryptResult | undefined;
           const result = ledger.rotateKey(params.new_passphrase, {
             onKeysReady: (oldKey, newKey) => {
-              adapterResult = reencryptAdapterConfigs({ oldKey, newKey });
+              // Pass userDir so a SIGKILL mid-loop leaves a recoverable
+              // checkpoint at <userDir>/keys/adapter-rotation.json. The
+              // next Ledger boot replays the pending adapters via
+              // resumeAdapterRotationIfPending in core.ts.
+              adapterResult = reencryptAdapterConfigs({
+                oldKey,
+                newKey,
+                userDir: getUserDir(),
+              });
             },
           });
           return {
