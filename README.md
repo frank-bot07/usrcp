@@ -177,12 +177,14 @@ All adapters write under a configurable `domain` (default matches the source nam
 
 ### Agent harness integrations
 
-These adapters expose USRCP's tools to a third-party AI agent harness. They don't capture new events on their own — capture from external surfaces (Discord, Slack, iMessage, etc.) still goes through the dedicated capture adapters above. Install the harness first, then run the USRCP setup route.
+These adapters integrate USRCP with a specific AI-agent or editor harness — either exposing USRCP's tools to it, capturing its session activity, or providing a UI to browse the ledger from inside it. Install the harness first, then run the USRCP setup route.
 
 | Integration | Purpose | Mode | Requirements |
 |-------------|---------|------|--------------|
 | [`usrcp-hermes`](packages/usrcp-hermes) | Memory-provider plugin for [Hermes Agent](https://github.com/hermesagent/hermes-agent). Adds USRCP as a 9th external memory provider; system-prompt context, prefetch, sync_turn capture. | Bidirectional plugin | Hermes installed; `usrcp` CLI on PATH; `mcp` Python package |
 | `openclaw` | Registers `usrcp serve` as an MCP server in your [OpenClaw](https://docs.openclaw.ai) config. OpenClaw agents get all 12 USRCP tools via the same path Claude Code uses. | Read-side (MCP server) | **OpenClaw already installed** — install first at https://docs.openclaw.ai/start/getting-started, then `usrcp setup --adapter=openclaw` |
+| [`usrcp-claude-code`](packages/usrcp-claude-code) | Tails Claude Code CLI session transcripts (`~/.claude/projects/<cwd>/<sessionUUID>.jsonl`) and captures every user / assistant turn into `usrcp-stream`. | Capture-only (stream) | Claude Code CLI installed; `allowlisted_projects` in `~/.usrcp/claude-code-config.json` |
+| [`usrcp-vscode`](packages/usrcp-vscode) | VS Code extension that browses your encrypted ledger — Facts tree by domain, status indicator, "Open Ledger Directory" command. Spawns `usrcp serve --transport=stdio` locally; no network. | Read-only client | VS Code; `usrcp` CLI on PATH (or set `usrcp.binaryPath`) |
 
 ### Cross-device sync
 
