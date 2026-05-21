@@ -16,6 +16,7 @@
     "native-host/manifest-template.json"
   ],
   "scripts": {
+    "postinstall": "npm rebuild better-sqlite3 --silent || true",
     "build": "node build.mjs",
     "lint": "tsc --noEmit",
     "test": "vitest run"
