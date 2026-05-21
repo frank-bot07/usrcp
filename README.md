@@ -56,7 +56,7 @@ The two are complementary, not competitive. Nothing stops an agent from using bo
 brew install frank-bot07/usrcp/usrcp
 ```
 
-This ships the `usrcp` CLI with the inline adapters (`terminal`, `mcp-agent`, `openclaw`). Capture adapters (Discord, Slack, Telegram, iMessage, Obsidian, Linear, Chrome extension) currently require the source-build path below — they'll move under brew in a future release.
+This ships the `usrcp` CLI with the inline adapters (`terminal`, `mcp-agent`, `openclaw`). Capture adapters (Discord, Slack, Telegram, iMessage, Obsidian, Linear, GitHub, Gmail, Google Calendar, Chrome extension) currently require the source-build path below — they'll move under brew in a future release.
 
 **From source** (required for capture adapters today):
 
