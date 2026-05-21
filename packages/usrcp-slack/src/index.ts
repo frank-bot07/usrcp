@@ -46,6 +46,14 @@ function getArg(name: string): string | undefined {
   return undefined;
 }
 
+// Per-message capture lines, login/listening banners, and other status
+// chatter are gated behind USRCP_VERBOSE=1 so a quiet run (and a demo
+// recording) only show real errors on stderr.
+const VERBOSE = process.env.USRCP_VERBOSE === "1";
+const info = (...args: unknown[]): void => {
+  if (VERBOSE) console.error(...args);
+};
+
 export type CaptureMode = "ledger" | "stream" | "both";
 
 export function streamInstalled(): boolean {
@@ -128,7 +136,7 @@ async function main() {
   const llm = new AnthropicLlm({ apiKey: config.anthropic_api_key });
 
   const mode = resolveMode(getArg("mode"), streamInstalled());
-  console.error(
+  info(
     `[usrcp-slack] capture mode: ${mode}` +
       (mode === "both"
         ? " (ledger keeps user-only filter; stream captures all humans)"
@@ -200,7 +208,7 @@ async function main() {
       try {
         const captureOutcome = await captureMessage(ledger, cm, config, llm);
         if (captureOutcome.captured) {
-          console.error(
+          info(
             `[usrcp-slack] ledger captured ts=${cm.id} channel=${cm.channel.id} ` +
               `→ event ${captureOutcome.event_id} (seq ${captureOutcome.ledger_sequence}` +
               `${captureOutcome.duplicate ? ", duplicate" : ""})`
@@ -220,7 +228,7 @@ async function main() {
           config
         );
         if (streamOutcome.captured) {
-          console.error(
+          info(
             `[usrcp-slack] stream captured ts=${cm.id} (${streamOutcome.side}) ` +
               `→ event ${streamOutcome.event_uuid}` +
               (streamOutcome.thread_id ? ` (thread ${streamOutcome.thread_id})` : "")
@@ -262,9 +270,9 @@ async function main() {
         }
       );
       if (replyOutcome.replied) {
-        console.error(`[usrcp-slack] replied to mention in channel ${event.channel} (${replyOutcome.replyText.length} chars)`);
+        info(`[usrcp-slack] replied to mention in channel ${event.channel} (${replyOutcome.replyText.length} chars)`);
       } else {
-        console.error(`[usrcp-slack] declined to reply in channel ${event.channel}: ${replyOutcome.reason}`);
+        info(`[usrcp-slack] declined to reply in channel ${event.channel}: ${replyOutcome.reason}`);
       }
     } catch (err) {
       console.error("[usrcp-slack] mention reply error:", err instanceof Error ? err.message : err);
@@ -307,9 +315,9 @@ async function main() {
         }
       );
       if (replyOutcome.replied) {
-        console.error(`[usrcp-slack] replied to DM in channel ${gme.channel} (${replyOutcome.replyText.length} chars)`);
+        info(`[usrcp-slack] replied to DM in channel ${gme.channel} (${replyOutcome.replyText.length} chars)`);
       } else {
-        console.error(`[usrcp-slack] declined to reply to DM in channel ${gme.channel}: ${replyOutcome.reason}`);
+        info(`[usrcp-slack] declined to reply to DM in channel ${gme.channel}: ${replyOutcome.reason}`);
       }
     } catch (err) {
       console.error("[usrcp-slack] DM reply error:", err instanceof Error ? err.message : err);
@@ -327,9 +335,9 @@ async function main() {
   process.on("SIGTERM", () => { void shutdown("SIGTERM"); });
 
   await app.start();
-  console.error("[usrcp-slack] Connected via Socket Mode");
-  console.error(`[usrcp-slack] Listening on channels: ${config.allowlisted_channels.join(", ")}`);
-  console.error(`[usrcp-slack] Capturing messages from user: ${config.user_id}`);
+  info("[usrcp-slack] Connected via Socket Mode");
+  info(`[usrcp-slack] Listening on channels: ${config.allowlisted_channels.join(", ")}`);
+  info(`[usrcp-slack] Capturing messages from user: ${config.user_id}`);
 }
 
 if (require.main === module) {
