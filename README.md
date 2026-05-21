@@ -166,6 +166,9 @@ Adapters are independent processes that read from a source and append events to 
 | [`usrcp-telegram`](packages/usrcp-telegram) | Messages you sent in Telegram; `@usrcp` queries from chat | Capture + reader + bot | A Telegram bot token (BotFather); Anthropic API key for `@usrcp` replies |
 | [`usrcp-obsidian`](packages/usrcp-obsidian) | Notes you create or edit in an Obsidian vault | Capture-only (v0) | A local vault directory |
 | [`usrcp-linear`](packages/usrcp-linear) | Issues + comments you author in Linear | Capture-only (v0) | Linear personal API key |
+| [`usrcp-github`](packages/usrcp-github) | PRs you opened / merged / closed, issues you opened, comments + reviews you authored, in optional org allowlist | Capture-only (v0) | GitHub personal access token (`repo` + `read:user` scopes) |
+| [`usrcp-gmail`](packages/usrcp-gmail) | Messages you sent in Gmail (subject, body, recipients, labels) | Capture-only (v0) | Google Cloud OAuth client + Gmail API enabled |
+| [`usrcp-google-calendar`](packages/usrcp-google-calendar) | Timed events on your primary calendar that have already ended | Capture-only (v0) | Google Cloud OAuth client + Calendar API enabled |
 | [`usrcp-extension`](packages/usrcp-extension) | Conversations on claude.ai; `/usrcp` slash-command for ledger lookup | Capture + injector | **Chrome only.** Manual unpacked load (Developer Mode → Load Unpacked) |
 
 Install any adapter via `usrcp setup --adapter=<value>` (e.g. `usrcp setup --adapter=linear`), or run `usrcp setup` for an interactive picker.
