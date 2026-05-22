@@ -65,7 +65,8 @@ Mem0 shipped [OpenMemory MCP](https://mem0.ai/blog/introducing-openmemory-mcp) i
 |                              | USRCP                                                            | OpenMemory MCP                                  |
 | ---------------------------- | ---------------------------------------------------------------- | ----------------------------------------------- |
 | **Memory shape**             | Structured user state (identity, prefs, projects, timeline) + blind-index search over ciphertext | Vector-embedded semantic recall of chat turns   |
-| **Install footprint**        | One SQLite file, `brew install`                                  | Docker + Postgres + Qdrant                      |
+| **Install footprint**        | One SQLite file, `brew install`                                  | Docker (frontend + MCP server + vector DB)      |
+| **External API dependency**  | None — works offline                                             | Requires an OpenAI API key (memory extraction is an LLM call) |
 | **End-to-end encryption**    | AES-256-GCM at rest; user owns the key; relay sees only ciphertext | Not a claim                                     |
 | **Cross-vendor sync**        | Optional zero-knowledge relay (`usrcp-stream`)                   | Not addressed                                   |
 | **License**                  | Apache 2.0                                                       | OSS                                             |
