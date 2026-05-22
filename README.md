@@ -1,12 +1,24 @@
 # USRCP — User Context Protocol
 
-**Structured, encrypted user state for AI agents. Cross-platform, ledger-style, zero-knowledge.**
+**Memory that works across your AI tools. Open source. Local. AES-256-GCM encrypted.**
 
-AI agents today rebuild their understanding of the user every session: your stack, your preferences, your active projects, your timezone. Claude Desktop doesn't know what you told Cursor. Cursor doesn't know what Cline pulled from git this morning. The structured facts an agent needs to be useful on day two — identity, preferences, projects, interaction timeline — are fragmented across platforms, sessions, and devices.
+You told Claude Desktop your stack on Tuesday. On Wednesday, Cursor doesn't know. Thursday, Codex asks again. Every AI tool you use has its own memory, or no memory.
 
-USRCP is a cross-platform protocol for reading, writing, and syncing **structured user state** across AI agents, with all data encrypted at rest under a key the user controls.
+USRCP is a local SQLite ledger that any MCP-aware AI tool can read and write. One install, one passphrase, every tool shares the same structured user state — your timezone, your stack, your projects, your preferences.
 
-> **What USRCP is not.** USRCP is **not** a semantic memory layer. It doesn't do vector search, embeddings, or fuzzy conversational recall. If you ask "what did I tell you about my anxiety meds last week?" USRCP won't find that unless you stored it as a structured fact. For fuzzy recall over chat transcripts, use Mem0 or Zep — they solve a different problem. See [What USRCP is vs. isn't](#what-usrcp-is-vs-isnt) below.
+Today: works with **Claude Desktop**, **Cursor**, **Codex**, **ChatGPT**, **Continue**, **Cline**, **Aider**, **Copilot CLI**, **Antigravity**, **OpenCode**. Captures activity from **Discord**, **Slack**, **Telegram**, **iMessage**, **Linear**, **Obsidian**, **GitHub**, **Gmail**, **Google Calendar**, **Claude Code CLI**, and a **Chrome extension** for claude.ai.
+
+```bash
+brew install frank-bot07/usrcp/usrcp
+usrcp init
+```
+
+→ **[Watch the 90-second demo](https://example.com/REPLACE-WITH-DEMO-URL-BEFORE-MERGE)**
+→ Apache 2.0 · 600+ tests · [`docs/SECURITY.md`](docs/SECURITY.md)
+
+---
+
+> **What USRCP is not.** USRCP is **not** a semantic memory layer. It doesn't do vector search, embeddings, or fuzzy conversational recall. If you ask "what did I tell you about my anxiety meds last week?" USRCP won't find that unless you stored it as a structured fact. For fuzzy recall over chat transcripts, use [Mem0](https://mem0.ai) or [Zep](https://www.getzep.com) — they solve a different problem. See [What USRCP is vs. isn't](#what-usrcp-is-vs-isnt) below.
 
 ## Protocol Stack
 
