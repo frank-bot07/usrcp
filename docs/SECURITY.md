@@ -4,6 +4,18 @@
 
 ---
 
+## TL;DR for the impatient
+
+- **Everything sensitive is encrypted at rest with AES-256-GCM.** The only plaintext columns are structural identifiers and timestamps.
+- **Your passphrase is the only thing that unlocks it.** It never leaves your machine. We can't recover it; nobody else can read your ledger.
+- **The cloud sync relay (optional) stores ciphertext only.** Domain pseudonyms, content, refs, and entity names are all opaque to the server.
+- **Every agent operation is logged.** The audit trail is HMAC-chained — tampering breaks the chain and is detectable on replay.
+- **Per-tool scope enforcement.** Each registered MCP tool gets read/write permissions; the gate sits in front of every ledger operation.
+
+The deep dive below covers the algorithms (scrypt, HKDF-SHA256, blind indexing), the key-rotation protocol, the threat model, and what an attacker with each level of access can and cannot do.
+
+---
+
 ## 1. Encryption at Rest
 
 Every human-readable field in the database is encrypted with AES-256-GCM before storage. The only plaintext columns are structural: `event_id` (opaque ULID), `timestamp`, `ledger_sequence`, and domain pseudonyms.

@@ -86,6 +86,8 @@ USRCP_PASSPHRASE="your secret phrase" usrcp serve
 - Linux: `~/.config/Claude/claude_desktop_config.json`
 - Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 
+Single-user is the default and what every shared-machine consideration in the rest of this README assumes. If two people use the same OS account (or you run multiple identities side by side), see [Multiple users on one machine](#multiple-users-on-one-machine) below — each user gets an independent ledger and passphrase under a `--user=<name>` slug.
+
 ### Adding capture adapters
 
 Adapters watch a source (a Slack workspace, an Obsidian vault, your iMessage chat.db, etc.) and append the activity you authored into the same ledger your local MCP server reads from. One wizard installs and configures any adapter:
