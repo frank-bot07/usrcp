@@ -58,6 +58,26 @@ usrcp init
 
 The two are complementary, not competitive. Nothing stops an agent from using both.
 
+### vs OpenMemory MCP (Mem0)
+
+Mem0 shipped [OpenMemory MCP](https://mem0.ai/blog/introducing-openmemory-mcp) in early 2026 — a local-first MCP server that shares memory across Cursor / Claude / Windsurf / Cline. Closest neighbor on positioning. The differentiation is real but tight:
+
+|                              | USRCP                                                            | OpenMemory MCP                                  |
+| ---------------------------- | ---------------------------------------------------------------- | ----------------------------------------------- |
+| **Memory shape**             | Structured user state (identity, prefs, projects, timeline) + blind-index search over ciphertext | Vector-embedded semantic recall of chat turns   |
+| **Install footprint**        | One SQLite file, `brew install`                                  | Docker + Postgres + Qdrant                      |
+| **End-to-end encryption**    | AES-256-GCM at rest; user owns the key; relay sees only ciphertext | Not a claim                                     |
+| **Cross-vendor sync**        | Optional zero-knowledge relay (`usrcp-stream`)                   | Not addressed                                   |
+| **License**                  | Apache 2.0                                                       | OSS                                             |
+
+Same broad goal (cross-tool memory you control); different shape of "memory" and a much smaller install footprint here. Worth using both if your workflow wants structured state + semantic chat recall.
+
+### vs vendor-built memory (Claude Memory, ChatGPT Memory, Cursor Memory)
+
+The 2026 vendor surfaces — Claude Memory, ChatGPT Memory, Gemini personalization — solve the cross-session problem **within** one vendor. USRCP solves it **across** vendors. If you only use Claude (or only ChatGPT), the vendor's built-in memory is probably enough. The day you add a second tool, USRCP starts paying for itself: the structured user state you typed once is there in every MCP-aware client, and the encryption key stays with you instead of the vendor.
+
+Cursor users specifically: native `@memories` was removed in v2.1.x. USRCP is one way to fill that gap that also bonus-shares the memory with the rest of your stack.
+
 ## Quickstart
 
 ### Install
