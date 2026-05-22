@@ -35,6 +35,14 @@ function getArg(name: string): string | undefined {
   return undefined;
 }
 
+// Per-message capture lines, login/listening banners, and other status
+// chatter are gated behind USRCP_VERBOSE=1 so a quiet run (and a demo
+// recording) only show real errors on stderr.
+const VERBOSE = process.env.USRCP_VERBOSE === "1";
+const info = (...args: unknown[]): void => {
+  if (VERBOSE) console.error(...args);
+};
+
 export type CaptureMode = "ledger" | "stream" | "both";
 
 /**
@@ -131,7 +139,7 @@ async function main() {
   const llm = new AnthropicLlm({ apiKey: config.anthropic_api_key });
 
   const mode = resolveMode(getArg("mode"), streamInstalled());
-  console.error(
+  info(
     `[usrcp-discord] capture mode: ${mode}` +
       (mode === "both"
         ? " (ledger keeps user-only filter; stream captures all humans)"
@@ -165,9 +173,9 @@ async function main() {
   });
 
   discordClient.once(Events.ClientReady, (c) => {
-    console.error(`[usrcp-discord] Logged in as ${c.user.tag}`);
-    console.error(`[usrcp-discord] Listening on channels: ${config.allowlisted_channels.join(", ")}`);
-    console.error(`[usrcp-discord] Capturing messages from user: ${config.user_id}`);
+    info(`[usrcp-discord] Logged in as ${c.user.tag}`);
+    info(`[usrcp-discord] Listening on channels: ${config.allowlisted_channels.join(", ")}`);
+    info(`[usrcp-discord] Capturing messages from user: ${config.user_id}`);
   });
 
   discordClient.on(Events.MessageCreate, async (msg) => {
@@ -178,7 +186,7 @@ async function main() {
       if (mode === "ledger" || mode === "both") {
         const captureOutcome = await captureMessage(ledger, cm, config, llm);
         if (captureOutcome.captured) {
-          console.error(
+          info(
             `[usrcp-discord] ledger captured message ${cm.id} in channel ${cm.channel.id} ` +
               `→ event ${captureOutcome.event_id} (seq ${captureOutcome.ledger_sequence}` +
               `${captureOutcome.duplicate ? ", duplicate" : ""})`
@@ -194,7 +202,7 @@ async function main() {
           config
         );
         if (streamOutcome.captured) {
-          console.error(
+          info(
             `[usrcp-discord] stream captured message ${cm.id} (${streamOutcome.side}) ` +
               `→ event ${streamOutcome.event_uuid}` +
               (streamOutcome.thread_id ? ` (thread ${streamOutcome.thread_id})` : "")
@@ -214,9 +222,9 @@ async function main() {
           }
         );
         if (replyOutcome.replied) {
-          console.error(`[usrcp-discord] replied in channel ${cm.channel.id} (${replyOutcome.replyText.length} chars)`);
+          info(`[usrcp-discord] replied in channel ${cm.channel.id} (${replyOutcome.replyText.length} chars)`);
         } else {
-          console.error(`[usrcp-discord] declined to reply in channel ${cm.channel.id}: ${replyOutcome.reason}`);
+          info(`[usrcp-discord] declined to reply in channel ${cm.channel.id}: ${replyOutcome.reason}`);
         }
       }
     } catch (err) {

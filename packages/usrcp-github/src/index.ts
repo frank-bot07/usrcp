@@ -44,6 +44,14 @@ function hasFlag(name: string): boolean {
   return process.argv.includes(`--${name}`);
 }
 
+// Login banners, startup cursor dumps, and per-tick activity summaries
+// are gated behind USRCP_VERBOSE=1 so a quiet run (and a demo recording)
+// only show real errors on stderr.
+const VERBOSE = process.env.USRCP_VERBOSE === "1";
+const info = (...args: unknown[]): void => {
+  if (VERBOSE) console.error(...args);
+};
+
 // First-run lookback when a cursor is unset, so activity from the gap
 // between `usrcp setup` and the daemon coming up isn't lost.
 const FIRST_RUN_LOOKBACK_MS = 5 * 60 * 1000;
@@ -556,8 +564,8 @@ async function main() {
   const config = loadConfig(masterKey);
   const octokit = new Octokit({ auth: config.github_token });
 
-  console.error(`[usrcp-github] logged in as ${config.github_login}`);
-  console.error(
+  info(`[usrcp-github] logged in as ${config.github_login}`);
+  info(
     `[usrcp-github] domain=${config.domain} interval=${config.poll_interval_s}s orgs=${
       config.allowlisted_orgs.length === 0 ? "(all visible)" : config.allowlisted_orgs.join(",")
     }`,
@@ -572,7 +580,7 @@ async function main() {
     issue_commented: config.last_issue_commented_at ?? firstRunIso,
     pr_reviewed: config.last_pr_reviewed_at ?? firstRunIso,
   };
-  console.error(
+  info(
     `[usrcp-github] starting cursors: opened=${cursors.opened} merged=${cursors.merged} closed=${cursors.closed} ` +
     `issue_opened=${cursors.issue_opened} issue_commented=${cursors.issue_commented} pr_reviewed=${cursors.pr_reviewed}`,
   );
@@ -632,7 +640,7 @@ async function main() {
         const pr = result.pr_reviewed;
         const icFailNote = ic.failures > 0 ? `,f=${ic.failures} (cursor pinned)` : "";
         const prFailNote = pr.failures > 0 ? `,f=${pr.failures} (cursor pinned)` : "";
-        console.error(
+        info(
           `[usrcp-github] tick: ` +
           `opened={c=${result.opened.captured},s=${result.opened.skipped}} ` +
           `merged={c=${result.merged.captured},s=${result.merged.skipped}} ` +
