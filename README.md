@@ -56,7 +56,7 @@ The two are complementary, not competitive. Nothing stops an agent from using bo
 brew install frank-bot07/usrcp/usrcp
 ```
 
-This ships the `usrcp` CLI with the inline adapters (`terminal`, `mcp-agent`, `openclaw`). Capture adapters (Discord, Slack, Telegram, iMessage, Obsidian, Linear, Chrome extension) currently require the source-build path below — they'll move under brew in a future release.
+This ships the `usrcp` CLI with the inline adapters (`terminal`, `mcp-agent`, `openclaw`). Capture adapters (Discord, Slack, Telegram, iMessage, Obsidian, Linear, GitHub, Gmail, Google Calendar, Claude Code, Chrome extension) and the VS Code viewer currently require the source-build path below — they'll move under brew in a future release.
 
 **From source** (required for capture adapters today):
 
@@ -168,6 +168,10 @@ Adapters are independent processes that read from a source and append events to 
 | [`usrcp-telegram`](packages/usrcp-telegram) | Messages you sent in Telegram; `@usrcp` queries from chat | Capture + reader + bot | A Telegram bot token (BotFather); Anthropic API key for `@usrcp` replies |
 | [`usrcp-obsidian`](packages/usrcp-obsidian) | Notes you create or edit in an Obsidian vault | Capture-only (v0) | A local vault directory |
 | [`usrcp-linear`](packages/usrcp-linear) | Issues + comments you author in Linear | Capture-only (v0) | Linear personal API key |
+| [`usrcp-github`](packages/usrcp-github) | PRs you opened / merged / closed, issues you opened, comments + reviews you authored, in optional org allowlist | Capture-only (v0) | GitHub personal access token (`repo` + `read:user` scopes) |
+| [`usrcp-gmail`](packages/usrcp-gmail) | Messages you sent in Gmail (subject, body, recipients, labels) | Capture-only (v0) | Google Cloud OAuth client + Gmail API enabled |
+| [`usrcp-google-calendar`](packages/usrcp-google-calendar) | Timed events on your primary calendar that have already ended | Capture-only (v0) | Google Cloud OAuth client + Calendar API enabled |
+| [`usrcp-claude-code`](packages/usrcp-claude-code) | User / assistant turns from your Claude Code CLI sessions, tailed from `~/.claude/projects/<cwd>/*.jsonl` | Capture-only (stream) | Claude Code CLI installed; `allowlisted_projects` in `~/.usrcp/claude-code-config.json` |
 | [`usrcp-extension`](packages/usrcp-extension) | Conversations on claude.ai; `/usrcp` slash-command for ledger lookup | Capture + injector | **Chrome only.** Manual unpacked load (Developer Mode → Load Unpacked) |
 
 Install any adapter via `usrcp setup --adapter=<value>` (e.g. `usrcp setup --adapter=linear`), or run `usrcp setup` for an interactive picker.
@@ -182,6 +186,14 @@ These adapters expose USRCP's tools to a third-party AI agent harness. They don'
 |-------------|---------|------|--------------|
 | [`usrcp-hermes`](packages/usrcp-hermes) | Memory-provider plugin for [Hermes Agent](https://github.com/hermesagent/hermes-agent). Adds USRCP as a 9th external memory provider; system-prompt context, prefetch, sync_turn capture. | Bidirectional plugin | Hermes installed; `usrcp` CLI on PATH; `mcp` Python package |
 | `openclaw` | Registers `usrcp serve` as an MCP server in your [OpenClaw](https://docs.openclaw.ai) config. OpenClaw agents get all 12 USRCP tools via the same path Claude Code uses. | Read-side (MCP server) | **OpenClaw already installed** — install first at https://docs.openclaw.ai/start/getting-started, then `usrcp setup --adapter=openclaw` |
+
+### Ledger viewers
+
+Read-only clients that browse the encrypted ledger via a local `usrcp serve` subprocess. No network calls; the viewer never sees plaintext outside the host process.
+
+| Viewer | Surface | Mode | Requirements |
+|--------|---------|------|--------------|
+| [`usrcp-vscode`](packages/usrcp-vscode) | VS Code activity-bar **USRCP** view — Facts tree by domain, status indicator, "Open Ledger Directory" command. | Read-only client | VS Code; `usrcp` CLI on PATH (or set `usrcp.binaryPath`) |
 
 ### Cross-device sync
 
