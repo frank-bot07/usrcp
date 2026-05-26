@@ -8,7 +8,7 @@
 
 - **Everything sensitive is encrypted at rest with AES-256-GCM.** The only plaintext columns are structural identifiers and timestamps.
 - **Your passphrase is the only thing that unlocks it.** It never leaves your machine. We can't recover it; nobody else can read your ledger.
-- **The cloud sync relay (optional) stores ciphertext only.** Domain pseudonyms, content, refs, and entity names are all opaque to the server.
+- **The cloud sync relay (optional) is content zero-knowledge but not metadata zero-knowledge.** Content, channel/author/entity refs, and user-state values are all opaque to the server. But platform names (`surface`), timestamps, public keys, and pseudonym counts are stored as plaintext for indexing and auth — a malicious relay operator can fingerprint each user's platform list, activity hours, and domain count without decrypting anything. Full surface in [§9](#9-cloud-sync-relay--what-the-operator-sees).
 - **Every agent operation is logged.** The audit trail is HMAC-chained — tampering breaks the chain and is detectable on replay.
 - **Per-tool scope enforcement.** Each registered MCP tool gets read/write permissions; the gate sits in front of every ledger operation.
 
@@ -236,7 +236,7 @@ Key derivation uses hardened scrypt parameters: N=131072 (2^17), r=8, p=2. At th
 
 - **No HSM**: Keys are software-managed. Hardware Security Module integration would require native bindings to PKCS#11 or platform-specific APIs.
 
-- **stdio transport (default)**: MCP communication is unencrypted plaintext over stdio. Any process that can read the pipe — or any local attacker that can attach to the spawning client or the server — sees decrypted data in transit. This is the default because MCP clients (Claude Desktop, Claude Code) auto-spawn the server over stdio and the UX is frictionless. **Mitigation: run `usrcp init --transport=http` and `usrcp serve --transport=http` for a TLS + bearer-authenticated HTTPS transport (see §9).**
+- **stdio transport (default)**: MCP communication is unencrypted plaintext over stdio. Any process that can read the pipe — or any local attacker that can attach to the spawning client or the server — sees decrypted data in transit. This is the default because MCP clients (Claude Desktop, Claude Code) auto-spawn the server over stdio and the UX is frictionless. **Mitigation: run `usrcp init --transport=http` and `usrcp serve --transport=http` for a TLS + bearer-authenticated HTTPS transport (see §10).**
 
 - **Timestamps remain plaintext**: Activity timing patterns are visible. An attacker knows when the user was active but not what they did.
 
@@ -248,12 +248,70 @@ For Pro/Enterprise tiers where the threat model includes local attackers with ro
 
 1. **Rust decryption sidecar**: Move all encrypt/decrypt operations to a Rust process that communicates with the Node.js server via a Unix socket. Rust provides guaranteed memory zeroing via `zeroize` crate.
 2. **TEE integration**: Run the decryption sidecar inside an Intel SGX or ARM TrustZone enclave. The master key never exists in normal process memory.
-3. **Authenticated MCP transport**: Available today — see §9.
+3. **Authenticated MCP transport**: Available today — see §10.
 4. **FIPS mode**: Use a FIPS-validated OpenSSL build or BoringSSL with the Rust sidecar.
 
 ---
 
-## 9. Authenticated HTTPS Transport (opt-in)
+## 9. Cloud Sync Relay — What the Operator Sees
+
+`usrcp-cloud` (the optional hosted sync relay) is **content zero-knowledge but metadata-leaky**. Every `_enc` column in the relay's Postgres schema is opaque ciphertext under a key derived from the user's master passphrase — the relay never sees decrypted content, channel references, author references, entity refs, the encrypted user-state columns, or pairing-bundle plaintext. But several columns are stored as plaintext for indexing, cursor, and authentication purposes, and an attacker with read access to the relay database (malicious operator, leaked backup, subpoena response) can use them to fingerprint users without decrypting a single byte of content.
+
+### What the relay does NOT see
+
+- **Content of any kind**: `channel_ref_enc`, `author_ref_enc`, `content_enc`, `entity_refs_enc` on `stream_events`; `summary_enc`, `intent_enc`, `outcome_enc`, `detail_enc`, `artifacts_enc`, `tags_enc`, `session_id_enc`, `parent_event_id_enc` on `timeline_events`; every user-state column on `core_identity` / `global_preferences` / `domain_context` / `active_projects` / `schemaless_facts`; `pairing_bundles.encrypted_bundle`.
+- **Domain names**: the relay stores HMAC-SHA256 pseudonyms (e.g. `d_1ac6397ab4d2`), never the real `coding` / `personal` / `health` strings.
+- **The pairing OOB secret**: the 16-byte secret that travels device-to-device (paste / AirDrop / QR) is never POSTed; the bundle decryption key is `HKDF-SHA256(IKM=secret, salt=code)` derived client-side on both ends.
+
+### What the relay sees (plaintext)
+
+| Field | Table | What it leaks |
+|---|---|---|
+| `user_public_key` (Ed25519 PEM) | every per-user table | Linkable identifier across all surfaces — one key joins timeline + stream + facts + projects + pairing + revocations |
+| `surface` | `stream_events` | **Exact platform list per user** (`slack`, `discord`, `telegram`, `imessage`, `claude-code`, etc.). Strongest fingerprint. |
+| `ts_ms`, `client_timestamp`, `server_timestamp` | `stream_events`, `timeline_events` | Activity hour distribution → time-zone, work/sleep patterns |
+| `side`, `content_kind`, `embedding_present` | `stream_events` | In/out ratio, content-type ratio, embedding-adoption signal |
+| `domain_pseudonym` | `timeline_events`, `domain_context`, `domain_maps`, `schemaless_facts` | Pseudonyms are stable per user — relay can count events per pseudonym and rank domains by volume, even without decoding names |
+| `ledger_sequence`, `server_seq` | `timeline_events`, `stream_events` | Monotonic event count per user |
+| `version`, `updated_at`, `last_seen_at` | LWW state tables | Write count + recency per user-state surface |
+| `revoked_keys.public_key` ↔ `rotated_to` | `revoked_keys` | Full identity-rotation graph (every old key the user has held, linked to current) |
+| `pairing_bundles.code`, `owner_public_key`, `created_at` | `pairing_bundles` | When the user paired devices; owner identity (DB-dump only, not internet attacker — see schema comment on the v2 pairing flow) |
+| `seen_nonces.user_public_key`, `seen_at` | `seen_nonces` | Request rate per user |
+
+### What a single DB dump enables
+
+For each user the operator can reconstruct, without decrypting any content:
+
+- The exact set of capture platforms in use (the `surface` enum is short and known).
+- Activity hour distribution per platform → workday / weekend / time-zone fingerprint.
+- Number of distinct ledger domains and their volume ranking (via stable per-user pseudonyms).
+- Cross-surface correlation via the shared `user_public_key`.
+- Identity-rotation history via `revoked_keys`.
+- Pairing cadence via `pairing_bundles.created_at`.
+
+For regulated industries (health, finance, legal) where USRCP's pitch includes "the provider never sees plaintext," this metadata surface is a real boundary to communicate honestly. "Zero-knowledge for content" is true; "zero-knowledge for everything" is not.
+
+### Mitigations available today
+
+- **Don't use the relay.** USRCP works fully without `usrcp-cloud`; the relay is opt-in for multi-device sync. A single-device install leaks none of the above. The README's install flow does not enable the relay by default.
+- **Self-host the relay.** The schema and protocol are the same, but the operator is you. Eliminates third-party trust on this surface entirely.
+- **Use `usrcp export` / `usrcp import`** for occasional multi-device synchronization without the relay (manual but zero metadata flow).
+
+### Possible protocol-level mitigations (deferred — design tradeoffs)
+
+These would reduce the metadata surface but each costs something. Listed for transparency, not committed:
+
+1. **Encrypt `surface` under a per-user metadata key**: relay sees `enc:…`; can't enumerate platforms. Cost: loses ability to index/cursor by surface server-side.
+2. **Snap `ts_ms` to nearest hour or day before upload**: hides exact timing. Cost: loses ms-precision ordering for stream stitching.
+3. **Re-randomize `domain_pseudonym` per push** (different pseudonym for same domain each event): breaks per-pseudonym aggregation. Cost: client must maintain pseudonym→domain mapping (already does, but flush per push).
+4. **Per-session blinded auth tokens** instead of long-lived public key: eliminates cross-table linkability. Cost: major protocol refactor; rotation semantics get harder.
+5. **Periodic-purge of `revoked_keys`** with TTL: shrinks the rotation-history window. Cost: can't reject ancient revoked keys after the window.
+
+The right answer depends on how strongly the project markets "zero-knowledge" going forward and which audiences it targets. Today the framing in the README ("zero-knowledge for content, not for traffic shape") matches the actual posture; this section quantifies what "traffic shape" means.
+
+---
+
+## 10. Authenticated HTTPS Transport (opt-in)
 
 `usrcp serve --transport=http` runs the MCP server over HTTPS on
 `127.0.0.1`, gated by a 32-byte bearer token. This closes the plaintext-
