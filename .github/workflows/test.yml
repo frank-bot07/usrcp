@@ -183,36 +183,27 @@ jobs:
             stdio: ["pipe", "pipe", "pipe"],
           });
 
-          let stdout = Buffer.alloc(0);
+          let stdout = "";
           let stderr = "";
-          child.stdout.on("data", (chunk) => { stdout = Buffer.concat([stdout, chunk]); });
+          child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
           child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
 
           function send(message) {
-            const body = Buffer.from(JSON.stringify(message), "utf8");
-            child.stdin.write(`Content-Length: ${body.length}\r\n\r\n`);
-            child.stdin.write(body);
+            child.stdin.write(`${JSON.stringify(message)}\n`);
           }
 
-          function readFrame() {
-            const headerEnd = stdout.indexOf("\r\n\r\n");
-            if (headerEnd === -1) return null;
-            const header = stdout.slice(0, headerEnd).toString("utf8");
-            const match = header.match(/Content-Length: (\d+)/i);
-            if (!match) throw new Error(`bad MCP frame header: ${JSON.stringify(header)}`);
-            const length = Number(match[1]);
-            const bodyStart = headerEnd + 4;
-            const bodyEnd = bodyStart + length;
-            if (stdout.length < bodyEnd) return null;
-            const body = stdout.slice(bodyStart, bodyEnd).toString("utf8");
-            stdout = stdout.slice(bodyEnd);
-            return JSON.parse(body);
+          function readMessage() {
+            const index = stdout.indexOf("\n");
+            if (index === -1) return null;
+            const line = stdout.slice(0, index).replace(/\r$/, "");
+            stdout = stdout.slice(index + 1);
+            return JSON.parse(line);
           }
 
           async function waitFor(id, timeoutMs = 5000) {
             const deadline = Date.now() + timeoutMs;
             while (Date.now() < deadline) {
-              const frame = readFrame();
+              const frame = readMessage();
               if (frame) {
                 if (frame.id === id) return frame;
                 continue;
