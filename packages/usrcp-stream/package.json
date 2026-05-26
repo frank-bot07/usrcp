@@ -11,7 +11,7 @@
     "usrcp-stream": "dist/index.js"
   },
   "scripts": {
-    "postinstall": "npm rebuild better-sqlite3 --silent || true",
+    "postinstall": "npm rebuild better-sqlite3",
     "prebuild": "cd ../usrcp-local && npm run build",
     "build": "tsc",
     "dev": "tsc --watch",
@@ -39,7 +39,7 @@
     "@iarna/toml": "^2.2.5",
     "@inquirer/prompts": "^8.4.2",
     "@modelcontextprotocol/sdk": "1.29.0",
-    "better-sqlite3": "11.10.0",
+    "better-sqlite3": "12.10.0",
     "sqlite-vec": "^0.1.6",
     "usrcp-local": "file:../usrcp-local",
     "zod": "4.3.6"

@@ -12,7 +12,7 @@
     "usrcp-imessage": "dist/index.js"
   },
   "scripts": {
-    "postinstall": "npm rebuild better-sqlite3 --silent || true",
+    "postinstall": "npm rebuild better-sqlite3",
     "prebuild": "(cd ../usrcp-local && npm run build) && (cd ../usrcp-stream && npm run build)",
     "build": "tsc",
     "dev": "tsc --watch",
