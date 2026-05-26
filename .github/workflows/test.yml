@@ -19,6 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        node-version: ['22', '24', '26']
         package:
           - usrcp-claude-code
           - usrcp-cloud
@@ -37,7 +38,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: ${{ matrix.node-version }}
           cache: 'npm'
           cache-dependency-path: |
             packages/usrcp-claude-code/package-lock.json
@@ -81,11 +82,15 @@ jobs:
 
   node-macos:
     runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ['22', '24', '26']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: ${{ matrix.node-version }}
           cache: 'npm'
           cache-dependency-path: |
             packages/usrcp-imessage/package-lock.json
@@ -103,6 +108,67 @@ jobs:
       - name: Test usrcp-imessage
         working-directory: packages/usrcp-imessage
         run: npm test
+
+  # End-to-end install smoke. This is the test that would have caught
+  # the v0.1.1 better-sqlite3 / Node 26 silent-broken-install bug at
+  # PR time instead of after release. It simulates what a fresh-install
+  # user does:
+  #   1. `npm ci` (which triggers postinstall → npm rebuild better-sqlite3)
+  #   2. `npm run build`
+  #   3. `npm link` (puts `usrcp` on PATH)
+  #   4. `usrcp --help` — banner renders, binary loads
+  #   5. `usrcp init --dev` — full ledger init exercising better-sqlite3
+  #      end-to-end
+  # If any step fails (e.g. better-sqlite3 won't load on this Node),
+  # the smoke job fails. No silent broken installs reach a tag.
+  install-smoke:
+    name: install-smoke (${{ matrix.os }}, node ${{ matrix.node-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node-version: ['22', '24', '26']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+          cache-dependency-path: packages/usrcp-local/package-lock.json
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+      - name: npm ci (triggers postinstall rebuild)
+        working-directory: packages/usrcp-local
+        run: npm ci
+      - name: Verify bindings file present
+        working-directory: packages/usrcp-local
+        run: |
+          if [ ! -f node_modules/better-sqlite3/build/Release/better_sqlite3.node ]; then
+            echo "::error::better_sqlite3.node missing — postinstall rebuild did not produce a binary"
+            ls -la node_modules/better-sqlite3/build/ || true
+            exit 1
+          fi
+          echo "✓ bindings file present"
+      - name: Verify better-sqlite3 loads + opens an in-memory DB
+        working-directory: packages/usrcp-local
+        run: |
+          node -e "const Database = require('better-sqlite3'); const db = new Database(':memory:'); db.prepare('SELECT 1 as x').get(); console.log('✓ better-sqlite3', require('better-sqlite3/package.json').version, 'loads on Node', process.version)"
+      - name: Build
+        working-directory: packages/usrcp-local
+        run: npm run build
+      - name: Link binary
+        working-directory: packages/usrcp-local
+        run: npm link
+      - name: usrcp --help
+        run: usrcp --help
+      - name: usrcp init --dev in isolated HOME
+        run: |
+          export HOME=$(mktemp -d "${RUNNER_TEMP:-/tmp}/usrcp-smoke-XXXXXX")
+          echo "Using isolated HOME=$HOME"
+          usrcp init --dev
+          usrcp status
+          echo "✓ init + status succeeded"
 
   python:
     runs-on: ubuntu-latest
