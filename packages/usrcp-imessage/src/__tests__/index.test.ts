@@ -55,6 +55,70 @@ const GOOD_CONFIG: ImessageConfig = {
 const TEST_MASTER_KEY = Buffer.alloc(32, 0xa5);
 
 // ---------------------------------------------------------------------------
+// SECURITY regression — v0.1.3 anthropic_api_key encryption
+//
+// Before v0.1.3, usrcp-imessage wrote `anthropic_api_key` to disk as
+// plaintext JSON. Other capture adapters (Slack/Discord/GitHub/Gmail)
+// already encrypted under the global key envelope. This test plants a
+// uniquely-formatted key, writes via writeImessageConfig + masterKey,
+// then re-reads the raw on-disk file to confirm the plaintext does
+// NOT appear and that the field starts with the `enc:` envelope.
+// ---------------------------------------------------------------------------
+
+describe("v0.1.3 SECURITY: anthropic_api_key is encrypted at rest", () => {
+  it("never writes anthropic_api_key in plaintext to disk", () => {
+    const PLANTED = "sk-ant-PLANTED_REGRESSION_GUARD_xyz";
+    writeImessageConfig(
+      {
+        anthropic_api_key: PLANTED,
+        user_handle: "+15551234567",
+        allowlisted_chats: ["1"],
+        prefix: "..u ",
+      },
+      TEST_MASTER_KEY,
+    );
+
+    const raw = fs.readFileSync(getConfigPath(), "utf8");
+    expect(raw).not.toContain(PLANTED);
+
+    const parsed = JSON.parse(raw) as { anthropic_api_key: string };
+    expect(parsed.anthropic_api_key.startsWith("enc:")).toBe(true);
+  });
+
+  it("loadConfig decrypts the api key transparently", () => {
+    const PLANTED = "sk-ant-DECRYPT_ROUNDTRIP_abc";
+    writeImessageConfig(
+      {
+        anthropic_api_key: PLANTED,
+        user_handle: "+15551234567",
+        allowlisted_chats: ["1"],
+        prefix: "..u ",
+      },
+      TEST_MASTER_KEY,
+    );
+
+    const loaded = loadConfig(TEST_MASTER_KEY);
+    expect(loaded.anthropic_api_key).toBe(PLANTED);
+  });
+
+  it("loadConfig is backward-compatible with legacy plaintext (pre-v0.1.3) configs", () => {
+    // Write a legacy plaintext config directly to disk, simulating an
+    // existing v0.1.2 install.
+    const legacy = {
+      anthropic_api_key: "sk-ant-LEGACY-PLAINTEXT",
+      user_handle: "+15551234567",
+      allowlisted_chats: ["1"],
+      prefix: "..u ",
+    };
+    fs.mkdirSync(path.dirname(getConfigPath()), { recursive: true });
+    fs.writeFileSync(getConfigPath(), JSON.stringify(legacy), { mode: 0o600 });
+
+    const loaded = loadConfig(TEST_MASTER_KEY);
+    expect(loaded.anthropic_api_key).toBe("sk-ant-LEGACY-PLAINTEXT");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Config: loadConfig error handling
 // ---------------------------------------------------------------------------
 

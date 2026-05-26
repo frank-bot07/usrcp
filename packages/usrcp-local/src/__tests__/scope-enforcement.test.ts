@@ -686,3 +686,106 @@ describe("asymmetric scopes (readScopes / writeScopes)", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// SECURITY regression — v0.1.3 scope-leak fix.
+//
+// Before v0.1.3, a server scoped to `coding` would still return
+// `core_identity` and `global_preferences` (including the freeform
+// `custom` field where users wrote ad-hoc secrets) via usrcp_get_state.
+// This test plants a secret in `global_preferences.custom` and confirms
+// it does not appear in a scoped agent's response.
+// ---------------------------------------------------------------------------
+
+describe("v0.1.3 SECURITY: scoped get_state redacts core_identity + global_preferences", () => {
+  it("does not leak global_preferences.custom to a coding-scoped agent", async () => {
+    // Step 1: plant a secret via an UNSCOPED server (matches what a
+    // real user does when configuring preferences during setup).
+    const unscoped = createServer(undefined, {});
+    try {
+      await callTool(unscoped.server, "usrcp_update_preferences", {
+        custom: { private_global_secret: "PLANTED_v013_DEADBEEF" },
+        caller: "plant-test",
+      });
+    } finally {
+      unscoped.shutdown();
+    }
+
+    // Step 2: open a coding-scoped server and try to read globals.
+    const scoped = createServer(undefined, {
+      readScopes: ["coding"],
+      agentId: "attacker-coding",
+    });
+    try {
+      const result = await callTool(scoped.server, "usrcp_get_state", {
+        scopes: [
+          "core_identity",
+          "global_preferences",
+          "active_projects",
+          "domain_context",
+        ],
+        caller: "attacker",
+      });
+      const text =
+        result?.content?.[0]?.text ?? JSON.stringify(result);
+      expect(text).not.toContain("PLANTED_v013_DEADBEEF");
+      const parsed = JSON.parse(text);
+      expect(parsed.state.core_identity).toBeUndefined();
+      expect(parsed.state.global_preferences).toBeUndefined();
+    } finally {
+      scoped.shutdown();
+    }
+  });
+
+  it("legacy --scopes= symmetric flag also enforces global redaction", async () => {
+    // Same attack, but via the legacy `scopes` flag instead of `readScopes`.
+    const unscoped = createServer(undefined, {});
+    try {
+      await callTool(unscoped.server, "usrcp_update_preferences", {
+        custom: { another_secret: "PLANTED_v013_LEGACY_FLAG" },
+        caller: "plant-test",
+      });
+    } finally {
+      unscoped.shutdown();
+    }
+
+    const scoped = createServer(undefined, {
+      scopes: ["coding"],
+      agentId: "attacker-legacy",
+    });
+    try {
+      const result = await callTool(scoped.server, "usrcp_get_state", {
+        scopes: ["core_identity", "global_preferences"],
+        caller: "attacker",
+      });
+      const text =
+        result?.content?.[0]?.text ?? JSON.stringify(result);
+      expect(text).not.toContain("PLANTED_v013_LEGACY_FLAG");
+      const parsed = JSON.parse(text);
+      expect(parsed.state.core_identity).toBeUndefined();
+      expect(parsed.state.global_preferences).toBeUndefined();
+    } finally {
+      scoped.shutdown();
+    }
+  });
+
+  it("unscoped server still returns globals (no regression)", async () => {
+    const unscoped = createServer(undefined, {});
+    try {
+      await callTool(unscoped.server, "usrcp_update_preferences", {
+        custom: { sentinel: "PLANTED_v013_UNSCOPED" },
+        caller: "plant-test",
+      });
+      const result = await callTool(unscoped.server, "usrcp_get_state", {
+        scopes: ["global_preferences"],
+        caller: "owner",
+      });
+      const text =
+        result?.content?.[0]?.text ?? JSON.stringify(result);
+      // Unscoped reader IS allowed to see its own globals.
+      expect(text).toContain("PLANTED_v013_UNSCOPED");
+    } finally {
+      unscoped.shutdown();
+    }
+  });
+});
