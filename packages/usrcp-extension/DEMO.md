@@ -121,5 +121,5 @@ Context from my USRCP ledger:
 - **"Could not establish connection" in the service worker console** — NM host not installed or extension ID in the NM manifest is wrong. Re-run `usrcp setup --adapter=extension` with the current ID from `chrome://extensions`.
 - **Capture works but `/usrcp` slash does nothing** — the composer DOM selector may have shifted. Check the service worker console (chrome://extensions → USRCP → "Service Worker" link).
 - **Turns not appearing in `usrcp status`** — check the service worker console for native-host connection errors; verify `USRCP_PASSPHRASE` is set in the env Chrome inherited.
-- **NM host fails to start** — `chmod +x packages/usrcp-extension/native-host/usrcp-bridge.js` and confirm `node` is on the PATH used by Chrome's parent shell.
+- **NM host fails to start** — `chmod +x packages/usrcp-extension/native-host/usrcp-bridge.cjs` and confirm `node` is on the PATH used by Chrome's parent shell.
 - **Extension ID changed on me** — moving the `dist/` directory changes the unpacked ID. Either keep the directory stable, or accept re-running setup after moves.

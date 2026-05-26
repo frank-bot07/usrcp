@@ -62,7 +62,7 @@ export interface SwSearchResult {
 export type SwToContentMessage = SwSearchResult;
 
 // ---------------------------------------------------------------------------
-// Native Messaging bridge ops (SW → usrcp-bridge.js)
+// Native Messaging bridge ops (SW → usrcp-bridge.cjs)
 // ---------------------------------------------------------------------------
 
 export interface BridgeAppendOp {

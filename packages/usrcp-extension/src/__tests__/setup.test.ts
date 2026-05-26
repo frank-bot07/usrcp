@@ -62,7 +62,7 @@ describe("getConfigPath", () => {
 describe("writeExtensionConfig / loadExtensionConfig", () => {
   const GOOD_CONFIG = {
     extension_id: "abcdefghijklmnopabcdefghijklmnop",
-    bridge_path: "/usr/local/lib/usrcp/native-host/usrcp-bridge.js",
+    bridge_path: "/usr/local/lib/usrcp/native-host/usrcp-bridge.cjs",
     manifest_path:
       "/Users/test/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.usrcp.bridge.json",
     configured_at: "2026-04-26T12:00:00.000Z",

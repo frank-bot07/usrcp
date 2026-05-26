@@ -88,6 +88,14 @@ const pendingSearches = new Map<string, { composer: HTMLElement }>();
 let requestCounter = 0;
 
 document.addEventListener("keydown", (event: KeyboardEvent) => {
+  // SECURITY (v0.1.3): require a real user keystroke. Without this,
+  // malicious page JS on claude.ai could synthesize a keydown event
+  // to trigger /usrcp and exfiltrate ledger snippets via the composer
+  // DOM (which page JS can read). isTrusted is the browser's flag
+  // for "this event came from real user input, not script". Cannot
+  // be forged from page JS.
+  if (!event.isTrusted) return;
+
   if (event.key !== "Enter") return;
 
   const composer = findComposer();

@@ -14,7 +14,12 @@
 
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
-import { getConfigPath, writeImessageConfig, readPartialConfig, type ImessageConfig } from "./config.js";
+import {
+  getConfigPath,
+  writeImessageConfig,
+  readPartialDecryptedConfig,
+  type ImessageConfig,
+} from "./config.js";
 
 const execFileP = promisify(execFile);
 
@@ -250,7 +255,9 @@ function isValidHandle(handle: string): boolean {
 // Main wizard flow
 // ---------------------------------------------------------------------------
 
-export async function runImessageSetup(): Promise<ImessageConfig> {
+export async function runImessageSetup(
+  opts: { masterKey?: Buffer } = {},
+): Promise<ImessageConfig> {
   // Platform gate — iMessage is macOS-only
   if (process.platform !== "darwin") {
     throw new Error("iMessage adapter requires macOS. Skipping configuration.");
@@ -264,8 +271,18 @@ export async function runImessageSetup(): Promise<ImessageConfig> {
     );
     process.exit(1);
   }
+  // The Anthropic API key is encrypted at rest under the global key
+  // (v0.1.3+). Refuse to run without a master key — writing plaintext
+  // secrets would re-introduce the v0.1.2 silent-plaintext bug.
+  if (!opts.masterKey) {
+    console.error(
+      `usrcp-imessage setup: master key not provided. Run 'usrcp setup' (no --adapter) to initialize the ledger first, or set USRCP_PASSPHRASE before re-running 'usrcp setup --adapter=imessage'.`
+    );
+    process.exit(1);
+  }
+  const masterKey = opts.masterKey;
 
-  const existing = readPartialConfig();
+  const existing = readPartialDecryptedConfig(masterKey);
 
   process.stderr.write("\n");
   process.stderr.write("  ┌─ iMessage adapter setup ────────────────────────────────────┐\n");
@@ -532,7 +549,7 @@ export async function runImessageSetup(): Promise<ImessageConfig> {
     ...(existing.last_rowid !== undefined ? { last_rowid: existing.last_rowid } : {}),
   };
 
-  writeImessageConfig(cfg);
+  writeImessageConfig(cfg, masterKey);
 
   process.stderr.write(`  ✓ iMessage adapter configured. Config saved to ${getConfigPath()} (mode 0600)\n`);
   process.stderr.write("\n");

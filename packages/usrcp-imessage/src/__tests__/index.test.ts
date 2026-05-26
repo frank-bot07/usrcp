@@ -49,6 +49,11 @@ const GOOD_CONFIG: ImessageConfig = {
   prefix: "..u ",
 };
 
+// Deterministic test master key (32 bytes). Real master keys are derived
+// from a passphrase via scrypt; for unit tests of the I/O layer we just
+// need a stable byte string to feed encryptSecret / maybeDecryptSecret.
+const TEST_MASTER_KEY = Buffer.alloc(32, 0xa5);
+
 // ---------------------------------------------------------------------------
 // Config: loadConfig error handling
 // ---------------------------------------------------------------------------
@@ -58,17 +63,17 @@ describe("loadConfig", () => {
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((_code?: number) => {
       throw new Error("process.exit called");
     });
-    expect(() => loadConfig()).toThrow("process.exit called");
+    expect(() => loadConfig(TEST_MASTER_KEY)).toThrow("process.exit called");
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
   it("exits with code 1 when allowlisted_chats is empty", () => {
-    writeImessageConfig({ ...GOOD_CONFIG, allowlisted_chats: [] });
+    writeImessageConfig({ ...GOOD_CONFIG, allowlisted_chats: [] }, TEST_MASTER_KEY);
 
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((_code?: number) => {
       throw new Error("process.exit called");
     });
-    expect(() => loadConfig()).toThrow("process.exit called");
+    expect(() => loadConfig(TEST_MASTER_KEY)).toThrow("process.exit called");
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
@@ -81,13 +86,13 @@ describe("loadConfig", () => {
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((_code?: number) => {
       throw new Error("process.exit called");
     });
-    expect(() => loadConfig()).toThrow("process.exit called");
+    expect(() => loadConfig(TEST_MASTER_KEY)).toThrow("process.exit called");
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
   it("loads a valid config successfully", () => {
-    writeImessageConfig(GOOD_CONFIG);
-    const loaded = loadConfig();
+    writeImessageConfig(GOOD_CONFIG, TEST_MASTER_KEY);
+    const loaded = loadConfig(TEST_MASTER_KEY);
     expect(loaded.user_handle).toBe(GOOD_CONFIG.user_handle);
     expect(loaded.allowlisted_chats).toEqual(GOOD_CONFIG.allowlisted_chats);
     expect(loaded.prefix).toBe(GOOD_CONFIG.prefix);
@@ -101,7 +106,7 @@ describe("loadConfig", () => {
 
 describe("writeImessageConfig", () => {
   it("writes config file with mode 0600", () => {
-    writeImessageConfig(GOOD_CONFIG);
+    writeImessageConfig(GOOD_CONFIG, TEST_MASTER_KEY);
     const p = getConfigPath();
     expect(fs.existsSync(p)).toBe(true);
     const stat = fs.statSync(p);
@@ -109,8 +114,8 @@ describe("writeImessageConfig", () => {
   });
 
   it("round-trips config correctly", () => {
-    writeImessageConfig({ ...GOOD_CONFIG, last_rowid: 42 });
-    const loaded = loadConfig();
+    writeImessageConfig({ ...GOOD_CONFIG, last_rowid: 42 }, TEST_MASTER_KEY);
+    const loaded = loadConfig(TEST_MASTER_KEY);
     expect(loaded.last_rowid).toBe(42);
   });
 });
@@ -122,22 +127,22 @@ describe("writeImessageConfig", () => {
 describe("saveLastRowid / flushLastRowid", () => {
   beforeEach(() => {
     // Write a valid base config so flushLastRowid can read+merge
-    writeImessageConfig(GOOD_CONFIG);
+    writeImessageConfig(GOOD_CONFIG, TEST_MASTER_KEY);
   });
 
   it("flushLastRowid persists the pending rowid to disk", () => {
     saveLastRowid(1234);
     flushLastRowid();
 
-    const loaded = loadConfig();
+    const loaded = loadConfig(TEST_MASTER_KEY);
     expect(loaded.last_rowid).toBe(1234);
   });
 
   it("flushLastRowid with no pending rowid is a no-op", () => {
     // Flush without saving — should not change last_rowid
-    const before = loadConfig();
+    const before = loadConfig(TEST_MASTER_KEY);
     flushLastRowid();
-    const after = loadConfig();
+    const after = loadConfig(TEST_MASTER_KEY);
     expect(after.last_rowid).toBe(before.last_rowid);
   });
 
@@ -147,7 +152,7 @@ describe("saveLastRowid / flushLastRowid", () => {
     saveLastRowid(999);
     flushLastRowid();
 
-    const loaded = loadConfig();
+    const loaded = loadConfig(TEST_MASTER_KEY);
     expect(loaded.last_rowid).toBe(999);
   });
 });
