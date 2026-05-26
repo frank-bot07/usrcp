@@ -361,6 +361,23 @@ export function registerToolsWithScopes(
     if (writesAllDenied && def.mutating) continue;
     if (opts.noAudit && def.kind === "audit-read") continue;
 
+    // SECURITY (v0.1.4): audit-read is owner-only by design. Strip it
+    // from any READ-scoped session — a `--read-scopes=coding` agent
+    // shouldn't be able to enumerate operations on `personal`,
+    // ULIDs from other domains, scope-pseudonym mappings, or the
+    // existence of other agents. v0.1.3 only stripped audit-read
+    // when --no-audit was explicitly passed; that defaulted any
+    // scoped session into the leak path.
+    //
+    // Gating on readScopes !== undefined specifically (rather than
+    // "any scope flag") preserves audit visibility for `--readonly`
+    // sessions (read everything but write nothing — owner-equivalent
+    // for reads) and `--write-scopes=X` alone (reads unrestricted,
+    // writes limited).
+    if (def.kind === "audit-read" && readScopes !== undefined) {
+      continue;
+    }
+
     const wrappedHandler = async (params: any) => {
       if (scopedMode && ledger) {
         // Strict (usrcp-local default): an audit-row failure

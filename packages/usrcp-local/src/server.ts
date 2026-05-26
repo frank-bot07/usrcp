@@ -115,7 +115,7 @@ export function createServer(
 
   const server = new McpServer({
     name: "usrcp-local",
-    version: "0.1.3",
+    version: "0.1.4",
   });
 
   // Resolve once and share across registerAll + the multi-domain-read
@@ -260,7 +260,7 @@ export function createServer(
               type: "text" as const,
               text: JSON.stringify(
                 {
-                  usrcp_version: "0.1.3",
+                  usrcp_version: "0.1.4",
                   user_id: formatUserId(identity?.user_id),
                   resolved_at: new Date().toISOString(),
                   state,
@@ -361,7 +361,7 @@ export function createServer(
               type: "text" as const,
               text: JSON.stringify(
                 {
-                  usrcp_version: "0.1.3",
+                  usrcp_version: "0.1.4",
                   status: result.duplicate ? "duplicate" : "accepted",
                   ...result,
                 },
@@ -1001,7 +1001,7 @@ export function createServer(
                 type: "text" as const,
                 text: JSON.stringify(
                   {
-                    usrcp_version: "0.1.3",
+                    usrcp_version: "0.1.4",
                     user_id: formatUserId(identity?.user_id),
                     ledger: "local (SQLite)",
                     scoped: true,
@@ -1026,7 +1026,7 @@ export function createServer(
               type: "text" as const,
               text: JSON.stringify(
                 {
-                  usrcp_version: "0.1.3",
+                  usrcp_version: "0.1.4",
                   user_id: formatUserId(identity?.user_id),
                   ledger: "local (SQLite)",
                   stats,

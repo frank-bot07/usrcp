@@ -789,3 +789,85 @@ describe("v0.1.3 SECURITY: scoped get_state redacts core_identity + global_prefe
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// SECURITY regression — v0.1.4 audit-log scope strip
+//
+// Before v0.1.4, usrcp_audit_log was only stripped from tools/list when
+// --no-audit was explicitly passed. Scoped agents (--read-scopes=...,
+// --scopes=...) got the full audit history by default, including
+// operations on other domains, ULIDs from other scopes, agent_ids of
+// other sessions, and scope-pseudonym mappings. v0.1.4 strips audit-read
+// from any session where ANY scope flag is set.
+// ---------------------------------------------------------------------------
+
+describe("v0.1.4 SECURITY: audit_log is owner-only (stripped from scoped agents)", () => {
+  function listToolNames(server: McpServer): string[] {
+    const tools = (server as any)._registeredTools;
+    return Object.keys(tools);
+  }
+
+  it("strips usrcp_audit_log from --read-scopes session", () => {
+    const { server, shutdown } = createServer(undefined, {
+      readScopes: ["coding"],
+      agentId: "scoped-agent",
+    });
+    try {
+      const names = listToolNames(server);
+      expect(names).not.toContain("usrcp_audit_log");
+    } finally {
+      shutdown();
+    }
+  });
+
+  it("strips usrcp_audit_log from --scopes (legacy symmetric) session", () => {
+    const { server, shutdown } = createServer(undefined, {
+      scopes: ["coding"],
+      agentId: "scoped-agent",
+    });
+    try {
+      const names = listToolNames(server);
+      expect(names).not.toContain("usrcp_audit_log");
+    } finally {
+      shutdown();
+    }
+  });
+
+  it("keeps usrcp_audit_log for --write-scopes only session (reads unrestricted)", () => {
+    // Distinct from --read-scopes: --write-scopes alone limits writes
+    // but leaves reads unrestricted, so the operator can still see
+    // their own audit log.
+    const { server, shutdown } = createServer(undefined, {
+      writeScopes: ["coding"],
+      agentId: "scoped-agent",
+    });
+    try {
+      const names = listToolNames(server);
+      expect(names).toContain("usrcp_audit_log");
+    } finally {
+      shutdown();
+    }
+  });
+
+  it("keeps usrcp_audit_log for --readonly session (owner-equivalent reads)", () => {
+    const { server, shutdown } = createServer(undefined, {
+      readonly: true,
+    });
+    try {
+      const names = listToolNames(server);
+      expect(names).toContain("usrcp_audit_log");
+    } finally {
+      shutdown();
+    }
+  });
+
+  it("keeps usrcp_audit_log for unscoped (owner) session", () => {
+    const { server, shutdown } = createServer(undefined, {});
+    try {
+      const names = listToolNames(server);
+      expect(names).toContain("usrcp_audit_log");
+    } finally {
+      shutdown();
+    }
+  });
+});
