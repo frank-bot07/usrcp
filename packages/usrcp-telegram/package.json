@@ -1,6 +1,6 @@
 {
   "name": "usrcp-telegram",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Telegram capture+reader adapter for USRCP — vision-proof cross-channel memory",
   "main": "dist/index.js",
   "files": [
@@ -11,7 +11,7 @@
     "usrcp-telegram": "dist/index.js"
   },
   "scripts": {
-    "postinstall": "npm rebuild better-sqlite3",
+    "postinstall": "node -e \"const fs=require(\\\"fs\\\"); for (const p of [\\\"node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-local/node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-stream/node_modules/better-sqlite3/build\\\"]) fs.rmSync(p,{recursive:true,force:true})\" && npm rebuild better-sqlite3",
     "prebuild": "(cd ../usrcp-local && npm run build) && (cd ../usrcp-stream && npm run build)",
     "build": "tsc",
     "dev": "tsc --watch",
@@ -41,7 +41,7 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
     "@types/node": "22.19.17",
-    "better-sqlite3": "*",
+    "better-sqlite3": "12.10.0",
     "typescript": "5.9.3",
     "vitest": "4.1.4"
   }

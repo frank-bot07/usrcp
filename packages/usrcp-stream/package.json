@@ -1,6 +1,6 @@
 {
   "name": "usrcp-stream",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Cross-surface conversation layer for USRCP - encrypted local capture, embeddings, thread stitching, active-surface presence",
   "main": "dist/index.js",
   "files": [
@@ -11,7 +11,7 @@
     "usrcp-stream": "dist/index.js"
   },
   "scripts": {
-    "postinstall": "npm rebuild better-sqlite3",
+    "postinstall": "node -e \"const fs=require(\\\"fs\\\"); for (const p of [\\\"node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-local/node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-stream/node_modules/better-sqlite3/build\\\"]) fs.rmSync(p,{recursive:true,force:true})\" && npm rebuild better-sqlite3",
     "prebuild": "cd ../usrcp-local && npm run build",
     "build": "tsc",
     "dev": "tsc --watch",

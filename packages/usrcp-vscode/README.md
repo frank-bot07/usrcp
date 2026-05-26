@@ -31,8 +31,8 @@ Until v0.2 publishes to the Marketplace, install the `.vsix` directly:
 cd packages/usrcp-vscode
 npm install
 npm run build
-npm run package         # produces usrcp-vscode-0.1.0.vsix
-code --install-extension usrcp-vscode-0.1.0.vsix
+npm run package         # produces usrcp-vscode-0.1.2.vsix
+code --install-extension usrcp-vscode-0.1.2.vsix
 ```
 
 Reload VS Code, click the USRCP icon in the activity bar.
