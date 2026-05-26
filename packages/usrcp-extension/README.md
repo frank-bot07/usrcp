@@ -26,7 +26,7 @@ service-worker.js
   20s heartbeat to keep SW alive
   routes ledger.append + memory.search to native host
 
-native-host/usrcp-bridge.js   (Node.js, stdio framing)
+native-host/usrcp-bridge.cjs   (Node.js, stdio framing)
   reads/writes Chrome NM 4-byte LE length-prefixed JSON frames
   imports usrcp-local directly, calls Ledger.appendEvent / Ledger.searchTimeline
   no MCP server in the middle for v0
@@ -66,7 +66,7 @@ usrcp setup --adapter=extension
 ```
 
 The wizard will:
-1. Verify `native-host/usrcp-bridge.js` exists.
+1. Verify `native-host/usrcp-bridge.cjs` exists.
 2. Tell you to open Chrome → chrome://extensions → Developer Mode → Load Unpacked → select `packages/usrcp-extension/dist/`.
 3. Prompt you to paste the extension ID shown in chrome://extensions.
 4. Write the Chrome Native Messaging manifest at:
@@ -155,7 +155,7 @@ export USRCP_PASSPHRASE="your-passphrase"
 - Verify `USRCP_PASSPHRASE` is set if you use passphrase mode.
 
 **NM host fails to start:**
-- Ensure `native-host/usrcp-bridge.js` is executable: `chmod +x native-host/usrcp-bridge.js`
+- Ensure `native-host/usrcp-bridge.cjs` is executable: `chmod +x native-host/usrcp-bridge.cjs`
 - Ensure `node` is on your PATH (the shebang uses `/usr/bin/env node`).
 
 ---

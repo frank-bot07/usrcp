@@ -8,7 +8,7 @@
  * (same pattern as runDiscordSetup, runTelegramSetup, etc.)
  *
  * Flow:
- *   1. Verify usrcp-bridge.js exists (build check).
+ *   1. Verify usrcp-bridge.cjs exists (build check).
  *   2. Instruct user to load extension unpacked in Chrome.
  *   3. Prompt for extension ID (validated as 32 lowercase a-p chars).
  *   4. Write Chrome NM manifest with absolute bridge path + extension ID.
@@ -112,17 +112,17 @@ export async function runExtensionSetup(): Promise<ExtensionConfig> {
   // ("type": "module"), so __dirname is undefined — derive it from
   // import.meta.url instead.
   // dist/setup.js sits at packages/usrcp-extension/dist/setup.js, and the
-  // bridge lives at packages/usrcp-extension/native-host/usrcp-bridge.js.
+  // bridge lives at packages/usrcp-extension/native-host/usrcp-bridge.cjs.
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   const pkgDir = path.resolve(moduleDir, "..");
-  const bridgePath = path.join(pkgDir, "native-host", "usrcp-bridge.js");
+  const bridgePath = path.join(pkgDir, "native-host", "usrcp-bridge.cjs");
 
   if (!fs.existsSync(bridgePath)) {
     throw new Error(
       `Native host not found at:\n  ${bridgePath}\n\n` +
       "The native host ships alongside the package and should be present. " +
       "If you cloned the repo, ensure the file exists:\n" +
-      "  packages/usrcp-extension/native-host/usrcp-bridge.js"
+      "  packages/usrcp-extension/native-host/usrcp-bridge.cjs"
     );
   }
 
@@ -217,13 +217,37 @@ export async function runExtensionSetup(): Promise<ExtensionConfig> {
   process.stderr.write(`  ✓ NM manifest written to:\n`);
   process.stderr.write(`    ${manifestPath}\n\n`);
 
-  // ── Step 5: Write extension-config.json ───────────────────────────────────
+  // ── Step 5: Allowed-domains for /usrcp search (SECURITY) ───────────────────
+
+  // SECURITY (v0.1.3+): the bridge refuses memory.search unless
+  // allowed_domains is non-empty. This limits exfil blast radius if
+  // page JS finds a way past the content-script isTrusted check —
+  // the bridge will only ever surface snippets from these specific
+  // domains, never the whole ledger.
+  process.stderr.write("  ┌─ /usrcp search authorization ──────────────────────────────┐\n");
+  process.stderr.write("  │ Which domains may the /usrcp slash command search?         │\n");
+  process.stderr.write("  │ Comma-separated list (e.g. `coding,writing,projects`).     │\n");
+  process.stderr.write("  │ Leaving this empty disables /usrcp search entirely.        │\n");
+  process.stderr.write("  └────────────────────────────────────────────────────────────┘\n");
+  const domainsRaw = await readLine("  allowed_domains: ");
+  const allowedDomains = domainsRaw
+    .split(",")
+    .map((d) => d.trim())
+    .filter((d) => d.length > 0);
+  if (allowedDomains.length === 0) {
+    process.stderr.write("  ⚠ No domains entered. /usrcp search will return no results until you re-run setup or edit ~/.usrcp/extension-config.json.\n\n");
+  } else {
+    process.stderr.write(`  ✓ /usrcp search authorized for: ${allowedDomains.join(", ")}\n\n`);
+  }
+
+  // ── Step 6: Write extension-config.json ───────────────────────────────────
 
   const cfg: ExtensionConfig = {
     extension_id: extensionId,
     bridge_path: bridgePath,
     manifest_path: manifestPath,
     configured_at: new Date().toISOString(),
+    allowed_domains: allowedDomains,
   };
 
   writeExtensionConfig(cfg);

@@ -115,7 +115,7 @@ export function createServer(
 
   const server = new McpServer({
     name: "usrcp-local",
-    version: "0.1.2",
+    version: "0.1.3",
   });
 
   // Resolve once and share across registerAll + the multi-domain-read
@@ -229,6 +229,29 @@ export function createServer(
               )
             );
           }
+
+          // SECURITY (v0.1.3): redact globals from scoped responses.
+          //
+          // Before v0.1.3 the post-filter handled domain-scoped facets
+          // (active_projects, domain_context) but let core_identity and
+          // global_preferences pass through untouched. A scoped agent
+          // (e.g. `--read-scopes=coding`) calling
+          // `usrcp_get_state({scopes:['global_preferences']})` could
+          // read everything the user had stored in
+          // `global_preferences.custom`, including ad-hoc secrets the
+          // user wrote there. That contradicts the scope-enforcement
+          // promise.
+          //
+          // For v0.1.3 we fail closed: scoped responses do not include
+          // core_identity or global_preferences. Users who explicitly
+          // want a scoped agent to see those can run unscoped (the
+          // common case) or wait for an opt-in flag in a later release.
+          if (state.core_identity) {
+            delete state.core_identity;
+          }
+          if (state.global_preferences) {
+            delete state.global_preferences;
+          }
         }
 
         return {
@@ -237,7 +260,7 @@ export function createServer(
               type: "text" as const,
               text: JSON.stringify(
                 {
-                  usrcp_version: "0.1.2",
+                  usrcp_version: "0.1.3",
                   user_id: formatUserId(identity?.user_id),
                   resolved_at: new Date().toISOString(),
                   state,
@@ -338,7 +361,7 @@ export function createServer(
               type: "text" as const,
               text: JSON.stringify(
                 {
-                  usrcp_version: "0.1.2",
+                  usrcp_version: "0.1.3",
                   status: result.duplicate ? "duplicate" : "accepted",
                   ...result,
                 },
@@ -978,7 +1001,7 @@ export function createServer(
                 type: "text" as const,
                 text: JSON.stringify(
                   {
-                    usrcp_version: "0.1.2",
+                    usrcp_version: "0.1.3",
                     user_id: formatUserId(identity?.user_id),
                     ledger: "local (SQLite)",
                     scoped: true,
@@ -1003,7 +1026,7 @@ export function createServer(
               type: "text" as const,
               text: JSON.stringify(
                 {
-                  usrcp_version: "0.1.2",
+                  usrcp_version: "0.1.3",
                   user_id: formatUserId(identity?.user_id),
                   ledger: "local (SQLite)",
                   stats,

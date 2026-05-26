@@ -122,10 +122,10 @@ async function main() {
     process.exit(0);
   }
 
-  const config = loadConfig();
-
   const passphrase = process.env.USRCP_PASSPHRASE;
   const ledger = new Ledger(undefined, passphrase);
+  const masterKey = ledger.getMasterKey();
+  const config = loadConfig(masterKey);
   const llm = new AnthropicLlm({ apiKey: config.anthropic_api_key });
 
   const mode = resolveMode(getArg("mode"), streamInstalled());

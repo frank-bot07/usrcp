@@ -174,10 +174,50 @@ async function handleMessage(msg) {
         });
         break;
       }
+
+      // SECURITY (v0.1.3): scope to the user's configured allowed_domains.
+      // If empty (legacy v0.1.2 config OR a fresh install that didn't pick
+      // any domains in setup), refuse the search rather than returning the
+      // full ledger. Defense-in-depth against page-JS-driven exfil.
+      const os = require("node:os");
+      const fs = require("node:fs");
+      let allowedDomains = [];
+      try {
+        const cfgPath = path.join(os.homedir(), ".usrcp", "extension-config.json");
+        if (fs.existsSync(cfgPath)) {
+          const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+          allowedDomains = Array.isArray(cfg.allowed_domains) ? cfg.allowed_domains : [];
+        }
+      } catch {
+        allowedDomains = [];
+      }
+      if (allowedDomains.length === 0) {
+        writeNMMessage({
+          op: "memory.search.result",
+          requestId: requestId ?? "",
+          snippets: [],
+          error: "Extension not authorized for any domain. Run 'usrcp setup --adapter=extension' to configure allowed_domains.",
+        });
+        break;
+      }
+
       try {
         const db = getLedger();
-        const events = db.searchTimeline(q, { limit: Math.min(limit, 10) });
-        const snippets = events.map((ev) => {
+        // searchTimeline takes a single domain filter, so search each
+        // allowed domain in turn and merge / dedupe.
+        const cap = Math.min(limit, 10);
+        const merged = [];
+        const seenIds = new Set();
+        for (const domain of allowedDomains) {
+          const events = db.searchTimeline(q, { limit: cap, domain });
+          for (const ev of events) {
+            if (seenIds.has(ev.event_id)) continue;
+            seenIds.add(ev.event_id);
+            merged.push(ev);
+          }
+        }
+        merged.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+        const snippets = merged.slice(0, cap).map((ev) => {
           const ts = new Date(ev.timestamp).toLocaleDateString();
           return `[${ts}] ${ev.summary}`;
         });

@@ -2,7 +2,7 @@
  * service-worker.ts — MV3 service worker for the USRCP extension
  *
  * Responsibilities:
- *   1. Own the Native Messaging port to usrcp-bridge.js.
+ *   1. Own the Native Messaging port to usrcp-bridge.cjs.
  *   2. Send a heartbeat ping every 20s to keep the SW alive while the NM port
  *      is open. Without this, Chrome terminates idle SWs after ~30s.
  *   3. Route incoming messages from content scripts:
@@ -12,9 +12,9 @@
  *
  * Architecture:
  *   content-claude.ts → chrome.runtime.sendMessage → SW
- *   SW → chrome.runtime.connectNative("com.usrcp.bridge") → usrcp-bridge.js
- *   usrcp-bridge.js → usrcp-local Ledger (direct import, no MCP server)
- *   usrcp-bridge.js → SW → chrome.tabs.sendMessage → content-claude.ts
+ *   SW → chrome.runtime.connectNative("com.usrcp.bridge") → usrcp-bridge.cjs
+ *   usrcp-bridge.cjs → usrcp-local Ledger (direct import, no MCP server)
+ *   usrcp-bridge.cjs → SW → chrome.tabs.sendMessage → content-claude.ts
  */
 
 import type {
