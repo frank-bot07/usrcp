@@ -119,6 +119,8 @@ jobs:
   #   4. `usrcp --help` — banner renders, binary loads
   #   5. `usrcp init --dev` — full ledger init exercising better-sqlite3
   #      end-to-end
+  #   6. `usrcp serve --stdio` answers an MCP initialize + tools/list
+  #      exchange from the linked binary
   # If any step fails (e.g. better-sqlite3 won't load on this Node),
   # the smoke job fails. No silent broken installs reach a tag.
   install-smoke:
@@ -165,10 +167,91 @@ jobs:
       - name: usrcp init --dev in isolated HOME
         run: |
           export HOME=$(mktemp -d "${RUNNER_TEMP:-/tmp}/usrcp-smoke-XXXXXX")
+          echo "$HOME" > "${RUNNER_TEMP:-/tmp}/usrcp-smoke-home"
           echo "Using isolated HOME=$HOME"
           usrcp init --dev
           usrcp status
           echo "✓ init + status succeeded"
+      - name: usrcp serve --stdio MCP smoke
+        run: |
+          export HOME=$(cat "${RUNNER_TEMP:-/tmp}/usrcp-smoke-home")
+          node <<'NODE'
+          const { spawn } = require("node:child_process");
+
+          const child = spawn("usrcp", ["serve", "--stdio"], {
+            env: process.env,
+            stdio: ["pipe", "pipe", "pipe"],
+          });
+
+          let stdout = Buffer.alloc(0);
+          let stderr = "";
+          child.stdout.on("data", (chunk) => { stdout = Buffer.concat([stdout, chunk]); });
+          child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
+
+          function send(message) {
+            const body = Buffer.from(JSON.stringify(message), "utf8");
+            child.stdin.write(`Content-Length: ${body.length}\r\n\r\n`);
+            child.stdin.write(body);
+          }
+
+          function readFrame() {
+            const headerEnd = stdout.indexOf("\r\n\r\n");
+            if (headerEnd === -1) return null;
+            const header = stdout.slice(0, headerEnd).toString("utf8");
+            const match = header.match(/Content-Length: (\d+)/i);
+            if (!match) throw new Error(`bad MCP frame header: ${JSON.stringify(header)}`);
+            const length = Number(match[1]);
+            const bodyStart = headerEnd + 4;
+            const bodyEnd = bodyStart + length;
+            if (stdout.length < bodyEnd) return null;
+            const body = stdout.slice(bodyStart, bodyEnd).toString("utf8");
+            stdout = stdout.slice(bodyEnd);
+            return JSON.parse(body);
+          }
+
+          async function waitFor(id, timeoutMs = 5000) {
+            const deadline = Date.now() + timeoutMs;
+            while (Date.now() < deadline) {
+              const frame = readFrame();
+              if (frame) {
+                if (frame.id === id) return frame;
+                continue;
+              }
+              await new Promise((resolve) => setTimeout(resolve, 25));
+            }
+            throw new Error(`timed out waiting for MCP response id=${id}; stderr=${stderr}`);
+          }
+
+          (async () => {
+            send({
+              jsonrpc: "2.0",
+              id: 1,
+              method: "initialize",
+              params: {
+                protocolVersion: "2024-11-05",
+                capabilities: {},
+                clientInfo: { name: "usrcp-ci-smoke", version: "0.0.0" },
+              },
+            });
+            const init = await waitFor(1);
+            if (init.error) throw new Error(`initialize failed: ${JSON.stringify(init.error)}`);
+
+            send({ jsonrpc: "2.0", method: "notifications/initialized", params: {} });
+            send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
+            const tools = await waitFor(2);
+            if (tools.error) throw new Error(`tools/list failed: ${JSON.stringify(tools.error)}`);
+            const names = tools.result?.tools?.map((tool) => tool.name) ?? [];
+            if (!names.includes("usrcp_status")) {
+              throw new Error(`usrcp_status missing from tools/list: ${names.join(", ")}`);
+            }
+            child.kill("SIGTERM");
+            console.log(`✓ MCP stdio initialized; tools=${names.length}`);
+          })().catch((err) => {
+            child.kill("SIGTERM");
+            console.error(err);
+            process.exit(1);
+          });
+          NODE
 
   python:
     runs-on: ubuntu-latest
