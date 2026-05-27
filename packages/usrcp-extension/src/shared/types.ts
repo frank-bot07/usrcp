@@ -23,6 +23,10 @@ export interface PageHookTurnMessage {
   source: "usrcp";
   kind: "turn";
   turn: CapturedTurn;
+  /** Date.now() at sign time. Receiver rejects messages older than MAC_MAX_AGE_MS. */
+  ts: number;
+  /** HMAC-SHA256(secret, canonical(turn) || "|" || ts), hex-encoded. */
+  mac: string;
 }
 
 export type PageHookMessage = PageHookTurnMessage;

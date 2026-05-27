@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "USRCP",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Capture claude.ai conversations into your encrypted USRCP ledger and inject prior context via /usrcp slash commands.",
   "permissions": ["nativeMessaging", "storage", "scripting"],
   "host_permissions": ["https://claude.ai/*"],
@@ -13,12 +13,12 @@
       "matches": ["https://claude.ai/*"],
       "js": ["content-claude.js"],
       "run_at": "document_start"
-    },
+    }
+  ],
+  "web_accessible_resources": [
     {
-      "matches": ["https://claude.ai/*"],
-      "js": ["page-hook.js"],
-      "run_at": "document_start",
-      "world": "MAIN"
+      "resources": ["page-hook.js"],
+      "matches": ["https://claude.ai/*"]
     }
   ]
 }
