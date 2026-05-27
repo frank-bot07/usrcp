@@ -533,6 +533,18 @@ export class Ledger {
       // Column already exists
     }
 
+    // v0.1.5: track last successful rotation so rotateKey can rate-limit
+    // reflexive agent calls. Without this, an agent on a tool-call loop can
+    // burn through hundreds of rotations and silently lose any row that
+    // ever fails to MAC-verify (skip-damaged-rows behavior in rotateKey
+    // is per-rotation, but key history is not preserved, so a row that
+    // fails once is gone forever).
+    try {
+      this.db.exec("ALTER TABLE rotation_state ADD COLUMN last_rotation_at TEXT");
+    } catch {
+      // Column already exists
+    }
+
     // v0.1.3: Drop FTS5 table — replaced by blind index to prevent plaintext leakage
     this.db.exec("DROP TABLE IF EXISTS timeline_fts");
 

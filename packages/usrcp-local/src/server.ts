@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { Ledger } from "./ledger/index.js";
+import { Ledger, RotationRateLimitedError, RotationDamagedRowsError } from "./ledger/index.js";
 import { getIdentity } from "./crypto.js";
 import { VersionConflictError } from "./types.js";
 import type { CoreIdentity, GlobalPreferences } from "./types.js";
@@ -115,7 +115,7 @@ export function createServer(
 
   const server = new McpServer({
     name: "usrcp-local",
-    version: "0.1.4",
+    version: "0.1.5",
   });
 
   // Resolve once and share across registerAll + the multi-domain-read
@@ -260,7 +260,7 @@ export function createServer(
               type: "text" as const,
               text: JSON.stringify(
                 {
-                  usrcp_version: "0.1.4",
+                  usrcp_version: "0.1.5",
                   user_id: formatUserId(identity?.user_id),
                   resolved_at: new Date().toISOString(),
                   state,
@@ -361,7 +361,7 @@ export function createServer(
               type: "text" as const,
               text: JSON.stringify(
                 {
-                  usrcp_version: "0.1.4",
+                  usrcp_version: "0.1.5",
                   status: result.duplicate ? "duplicate" : "accepted",
                   ...result,
                 },
@@ -759,7 +759,7 @@ export function createServer(
     {
       name: "usrcp_rotate_key",
       description:
-        "Rotate the master encryption key. Re-encrypts ALL data in the ledger with a new key. Use when the current key may be compromised or as part of regular key hygiene.",
+        "Rotate the master encryption key. IRREVERSIBLE: replaces the on-disk master key and re-encrypts every row. DO NOT call this on your own initiative — only when the user has explicitly asked to rotate, or to respond to a confirmed key-compromise event. Rate-limited to once per 24h by default; rows that fail MAC verification under the current key are NOT silently dropped (the call will return an error and refuse to advance unless force_skip_damaged=true).",
       mutating: true,
       kind: "global-mutation",
       inputShape: {
@@ -769,6 +769,18 @@ export function createServer(
           .optional()
           .describe(
             "New passphrase for key derivation. If omitted, generates a random key (dev mode)."
+          ),
+        force_rate_limit: z
+          .boolean()
+          .optional()
+          .describe(
+            "Bypass the 24h rate limit (USRCP_ROTATE_KEY_MIN_INTERVAL_HOURS). Set true only when the user has explicitly asked to rotate again sooner."
+          ),
+        force_skip_damaged: z
+          .boolean()
+          .optional()
+          .describe(
+            "Proceed even when rows fail to decrypt under the current key. Those rows become permanently unreadable. Set true only after taking a snapshot and confirming the data loss is acceptable."
           ),
       },
       handler: async (params) => {
@@ -790,6 +802,8 @@ export function createServer(
                 userDir: getUserDir(),
               });
             },
+            force_rate_limit: params.force_rate_limit,
+            force_skip_damaged: params.force_skip_damaged,
           });
           return {
             content: [
@@ -814,6 +828,46 @@ export function createServer(
             ],
           };
         } catch (err: any) {
+          if (err instanceof RotationRateLimitedError) {
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify(
+                    {
+                      status: "rate_limited",
+                      error: err.message,
+                      hours_since_last: err.hoursSinceLast,
+                      min_interval_hours: err.minIntervalHours,
+                      last_rotation_at: err.lastRotationAt,
+                    },
+                    null,
+                    2
+                  ),
+                },
+              ],
+              isError: true,
+            };
+          }
+          if (err instanceof RotationDamagedRowsError) {
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify(
+                    {
+                      status: "damaged_rows_present",
+                      error: err.message,
+                      damaged_count: err.damagedCount,
+                    },
+                    null,
+                    2
+                  ),
+                },
+              ],
+              isError: true,
+            };
+          }
           return {
             content: [
               {
@@ -828,6 +882,7 @@ export function createServer(
                 ),
               },
             ],
+            isError: true,
           };
         }
       },
@@ -1001,7 +1056,7 @@ export function createServer(
                 type: "text" as const,
                 text: JSON.stringify(
                   {
-                    usrcp_version: "0.1.4",
+                    usrcp_version: "0.1.5",
                     user_id: formatUserId(identity?.user_id),
                     ledger: "local (SQLite)",
                     scoped: true,
@@ -1026,7 +1081,7 @@ export function createServer(
               type: "text" as const,
               text: JSON.stringify(
                 {
-                  usrcp_version: "0.1.4",
+                  usrcp_version: "0.1.5",
                   user_id: formatUserId(identity?.user_id),
                   ledger: "local (SQLite)",
                   stats,

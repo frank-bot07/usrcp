@@ -106,7 +106,7 @@ export class UsrcpClient {
     });
 
     this.client = new Client(
-      { name: "usrcp-vscode", version: "0.1.4" },
+      { name: "usrcp-vscode", version: "0.1.5" },
       { capabilities: {} },
     );
 

@@ -15,6 +15,50 @@ import {
 import { prepareReencryptedPrivatePem } from "../crypto.js";
 import { safeJsonParse } from "./helpers.js";
 
+/**
+ * Thrown when rotateKey is invoked sooner than
+ * USRCP_ROTATE_KEY_MIN_INTERVAL_HOURS (default 24h) since the last
+ * successful rotation. Defense against reflexive agent callers that
+ * loop rotation — see v0.1.5 fix for the 1022-rotation incident.
+ */
+export class RotationRateLimitedError extends Error {
+  readonly hoursSinceLast: number;
+  readonly minIntervalHours: number;
+  readonly lastRotationAt: string;
+  constructor(hoursSinceLast: number, minIntervalHours: number, lastRotationAt: string) {
+    super(
+      `Rotation refused: last rotation was ${hoursSinceLast.toFixed(2)}h ago, ` +
+      `minimum interval is ${minIntervalHours}h. Set force_rate_limit=true if the user explicitly requested this rotation, ` +
+      `or override the interval via USRCP_ROTATE_KEY_MIN_INTERVAL_HOURS.`
+    );
+    this.name = "RotationRateLimitedError";
+    this.hoursSinceLast = hoursSinceLast;
+    this.minIntervalHours = minIntervalHours;
+    this.lastRotationAt = lastRotationAt;
+  }
+}
+
+/**
+ * Thrown when rotation would skip rows that fail MAC verification
+ * under the current key. Once skipped, those rows can never be
+ * decrypted again — the next rotation discards the only key that
+ * could read them. Force via force_skip_damaged=true after taking
+ * a snapshot.
+ */
+export class RotationDamagedRowsError extends Error {
+  readonly damagedCount: number;
+  constructor(damagedCount: number) {
+    super(
+      `Rotation refused: ${damagedCount} row(s) cannot be decrypted under the current key ` +
+      `and would be permanently lost if rotation proceeded. Take a snapshot ` +
+      `(\`usrcp snapshot\`) and inspect, then re-call with force_skip_damaged=true to ` +
+      `proceed and accept the data loss.`
+    );
+    this.name = "RotationDamagedRowsError";
+    this.damagedCount = damagedCount;
+  }
+}
+
 declare module "./core.js" {
   interface Ledger {
     rebuildBlindIndex(): void;
@@ -37,6 +81,17 @@ declare module "./core.js" {
          * accumulate diagnostics.
          */
         onKeysReady?: (oldKey: Buffer, newKey: Buffer) => void;
+        /**
+         * Bypass the 24h (or USRCP_ROTATE_KEY_MIN_INTERVAL_HOURS) rate
+         * limit. Set only when the user has explicitly requested this
+         * rotation.
+         */
+        force_rate_limit?: boolean;
+        /**
+         * Proceed even if some rows fail MAC verification and would
+         * be permanently lost. Equivalent to acknowledging data loss.
+         */
+        force_skip_damaged?: boolean;
       },
     ): { version: number; reencrypted: number; skipped: number };
   }
@@ -75,8 +130,36 @@ Ledger.prototype.rebuildBlindIndex = function (this: Ledger): void {
 Ledger.prototype.rotateKey = function (
   this: Ledger,
   passphrase?: string,
-  opts?: { onKeysReady?: (oldKey: Buffer, newKey: Buffer) => void },
+  opts?: {
+    onKeysReady?: (oldKey: Buffer, newKey: Buffer) => void;
+    force_rate_limit?: boolean;
+    force_skip_damaged?: boolean;
+  },
 ): { version: number; reencrypted: number; skipped: number } {
+  // Phase 0: rate-limit. Without this, an agent on a reflexive
+  // tool-call loop can advance key.version hundreds of times in
+  // minutes; each rotation that skips a damaged row discards the
+  // only key that could ever read it. See v0.1.5 fix.
+  const minIntervalRaw = process.env.USRCP_ROTATE_KEY_MIN_INTERVAL_HOURS;
+  const minIntervalHours = minIntervalRaw !== undefined
+    ? Math.max(0, Number(minIntervalRaw) || 0)
+    : 24;
+  if (minIntervalHours > 0 && !opts?.force_rate_limit) {
+    const row = this.db
+      .prepare("SELECT last_rotation_at FROM rotation_state WHERE id = 1")
+      .get() as { last_rotation_at: string | null } | undefined;
+    if (row?.last_rotation_at) {
+      // SQLite datetime('now') returns UTC without a tz suffix; append Z for parsing.
+      const lastMs = Date.parse(row.last_rotation_at + "Z");
+      if (Number.isFinite(lastMs)) {
+        const hoursSince = (Date.now() - lastMs) / 3_600_000;
+        if (hoursSince < minIntervalHours) {
+          throw new RotationRateLimitedError(hoursSince, minIntervalHours, row.last_rotation_at);
+        }
+      }
+    }
+  }
+
   // Phase 1: Prepare new key material WITHOUT writing to disk
   const { oldKey, newKey, version, pendingFiles } = prepareKeyRotation(this.masterKey, passphrase);
 
@@ -338,6 +421,20 @@ Ledger.prototype.rotateKey = function (
       updateAudit.run(encAgentId, encOp, encScopes, encEvents, encDetail, tag, a.id);
     }
 
+    // Damaged-row guard. By default, refuse to advance the key when any
+    // row failed to decrypt under the OLD key: each such row is preserved
+    // in place but stays sealed under whatever past key it was last
+    // re-encrypted with, and the upcoming master.key write would discard
+    // the OLD key forever, making those rows unrecoverable. Throwing here
+    // rolls back the entire transaction (no rotation_state update, no
+    // master.key file change) so the caller can take a snapshot, decide
+    // whether the loss is acceptable, then re-call with
+    // force_skip_damaged=true. Without this, a single rotation can
+    // silently strand data (and a rotation loop can strand all of it).
+    if (skipped > 0 && !opts?.force_skip_damaged) {
+      throw new RotationDamagedRowsError(skipped);
+    }
+
     // Store new key AND the full pending key-file set in
     // rotation_state in the same transaction as re-encryption. If crash:
     // entire transaction rolls back, old key + old data intact. If
@@ -345,8 +442,13 @@ Ledger.prototype.rotateKey = function (
     // commitKeyRotation writes the canonical files, the Ledger
     // constructor's recovery path reads pending_files_json and
     // replays the full file set durably (Codex round-1 P1 on PR #72).
+    // last_rotation_at is set in the same write so rate-limit state is
+    // atomic with the rotation itself; a SIGKILL between this commit
+    // and commitKeyRotation still leaves a recoverable rotation that
+    // will replay on next boot, and last_rotation_at correctly reflects
+    // when the rotation was initiated.
     this.db.prepare(
-      "UPDATE rotation_state SET pending_key = ?, pending_version = ?, pending_files_json = ? WHERE id = 1"
+      "UPDATE rotation_state SET pending_key = ?, pending_version = ?, pending_files_json = ?, last_rotation_at = datetime('now') WHERE id = 1"
     ).run(newKey, version, serializePendingKeyFiles(pendingFiles));
   });
 
