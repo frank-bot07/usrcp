@@ -7,48 +7,41 @@
  *  2. The `/usrcp <query>` slash command for in-composer memory recall.
  *
  * v0.1.6 change: page-hook is no longer declared as a MAIN-world content
- * script in the manifest. Instead this script generates a fresh 32-byte
- * secret per tab at document_start, wraps page-hook.js source in an IIFE
- * that binds the secret, injects via <script>.textContent, and removes
- * the element. Every incoming turn is HMAC-verified against the same
- * secret before forwarding; unsigned or forged messages are dropped.
- * See shared/mac.ts for the threat model.
+ * script in the manifest. This script generates a fresh per-tab 32-byte
+ * secret at document_start and asks the SW to inject page-hook via
+ * chrome.scripting.executeScript({world:"MAIN"}) with the secret bound
+ * inside a follow-up func call. The executeScript path bypasses page CSP
+ * (the extension runtime executes the script, not the page DOM); the
+ * previous attempt at injecting an inline <script>.textContent was blocked
+ * by claude.ai's CSP, leaving capture inert. Every incoming turn is HMAC-
+ * verified against the same secret before forwarding; unsigned or forged
+ * messages are dropped. See shared/mac.ts for the threat model.
  */
 
 import type {
   PageHookMessage,
   SwAppendMessage,
+  SwInstallPageHookMessage,
   SwSearchMessage,
   SwToContentMessage,
 } from "./shared/types.js";
 import { generateSecret, secretToHex, verifyTurn } from "./shared/mac.js";
 
 // ---------------------------------------------------------------------------
-// Generate per-tab secret + inject page-hook with secret bound in closure
+// Generate per-tab secret + ask SW to inject page-hook with it bound
 // ---------------------------------------------------------------------------
 
 const SECRET = generateSecret();
 const SECRET_HEX = secretToHex(SECRET);
 
-(async function injectPageHook() {
-  try {
-    const url = chrome.runtime.getURL("page-hook.js");
-    const src = await (await fetch(url)).text();
-    // Bind SECRET_HEX in lexical scope. esbuild bundles page-hook as an
-    // IIFE that references __USRCP_SECRET_HEX__ as a free variable; the
-    // outer IIFE here provides it via closure. Other scripts on the page
-    // cannot read the secret because (a) it is never written to a global,
-    // (b) the script element is removed immediately after the browser has
-    // parsed it. A mutation observer racing the injection is a residual
-    // risk documented in shared/mac.ts.
-    const wrapped = `(function(){const __USRCP_SECRET_HEX__=${JSON.stringify(SECRET_HEX)};${src}})();`;
-    const el = document.createElement("script");
-    el.textContent = wrapped;
-    (document.head || document.documentElement).appendChild(el);
-    el.remove();
-  } catch (err) {
-    console.debug("[usrcp] page-hook injection failed:", err);
-  }
+(function requestPageHookInstall() {
+  const msg: SwInstallPageHookMessage = {
+    kind: "install-page-hook",
+    secretHex: SECRET_HEX,
+  };
+  chrome.runtime.sendMessage(msg).catch((err: unknown) => {
+    console.debug("[usrcp] install-page-hook send failed:", err);
+  });
 })();
 
 // ---------------------------------------------------------------------------

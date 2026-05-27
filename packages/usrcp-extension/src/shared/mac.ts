@@ -42,10 +42,16 @@ import type { CapturedTurn } from "./types.js";
  */
 export const MAC_MAX_AGE_MS = 60_000;
 
-const SUBTLE = (globalThis as { crypto?: Crypto }).crypto?.subtle;
-
-if (!SUBTLE) {
-  throw new Error("[usrcp] crypto.subtle unavailable; cannot sign/verify messages");
+/**
+ * Per-call lookup so each function can re-narrow without relying on the
+ * compiler to preserve module-level narrowing through async closures
+ * (which TypeScript intentionally does not). Throws if Web Crypto is
+ * missing — node >= 16 and any modern browser ship it.
+ */
+function getSubtle(): SubtleCrypto {
+  const s = (globalThis as { crypto?: Crypto }).crypto?.subtle;
+  if (!s) throw new Error("[usrcp] crypto.subtle unavailable; cannot sign/verify messages");
+  return s;
 }
 
 const ENCODER = new TextEncoder();
@@ -64,26 +70,29 @@ function canonical(turn: CapturedTurn): string {
   return JSON.stringify(obj);
 }
 
-async function importKey(secret: Uint8Array): Promise<CryptoKey> {
-  return SUBTLE.importKey(
+async function importKey(secret: Uint8Array<ArrayBuffer>): Promise<CryptoKey> {
+  // Uint8Array<ArrayBuffer> satisfies BufferSource. The broad Uint8Array
+  // default (Uint8Array<ArrayBufferLike>) does NOT — lib.dom's BufferSource
+  // excludes SharedArrayBuffer-backed views, which is what TS2345 caught
+  // when this param was the broad type.
+  return getSubtle().importKey(
     "raw",
-    secret as unknown as ArrayBuffer,
+    secret,
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign", "verify"],
   );
 }
 
-function bytesToHex(bytes: ArrayBuffer): string {
-  const view = new Uint8Array(bytes);
+function bytesToHex(bytes: Uint8Array): string {
   let s = "";
-  for (let i = 0; i < view.length; i++) {
-    s += view[i].toString(16).padStart(2, "0");
+  for (let i = 0; i < bytes.length; i++) {
+    s += bytes[i].toString(16).padStart(2, "0");
   }
   return s;
 }
 
-function hexToBytes(hex: string): Uint8Array {
+function hexToBytes(hex: string): Uint8Array<ArrayBuffer> {
   if (hex.length % 2 !== 0) throw new Error("hex string has odd length");
   const out = new Uint8Array(hex.length / 2);
   for (let i = 0; i < out.length; i++) {
@@ -99,13 +108,13 @@ function hexToBytes(hex: string): Uint8Array {
  */
 export async function signTurn(
   turn: CapturedTurn,
-  secret: Uint8Array,
+  secret: Uint8Array<ArrayBuffer>,
 ): Promise<{ ts: number; mac: string }> {
   const ts = Date.now();
   const key = await importKey(secret);
   const payload = ENCODER.encode(`${canonical(turn)}|${ts}`);
-  const sig = await SUBTLE.sign("HMAC", key, payload as unknown as ArrayBuffer);
-  return { ts, mac: bytesToHex(sig) };
+  const sig = await getSubtle().sign("HMAC", key, payload);
+  return { ts, mac: bytesToHex(new Uint8Array(sig)) };
 }
 
 /**
@@ -118,12 +127,12 @@ export async function verifyTurn(
   turn: CapturedTurn,
   ts: number,
   mac: string,
-  secret: Uint8Array,
+  secret: Uint8Array<ArrayBuffer>,
   maxAgeMs: number = MAC_MAX_AGE_MS,
 ): Promise<boolean> {
   if (!Number.isFinite(ts)) return false;
   if (Math.abs(Date.now() - ts) > maxAgeMs) return false;
-  let macBytes: Uint8Array;
+  let macBytes: Uint8Array<ArrayBuffer>;
   try {
     macBytes = hexToBytes(mac);
   } catch {
@@ -131,28 +140,23 @@ export async function verifyTurn(
   }
   const key = await importKey(secret);
   const payload = ENCODER.encode(`${canonical(turn)}|${ts}`);
-  return SUBTLE.verify(
-    "HMAC",
-    key,
-    macBytes as unknown as ArrayBuffer,
-    payload as unknown as ArrayBuffer,
-  );
+  return getSubtle().verify("HMAC", key, macBytes, payload);
 }
 
 /**
  * Generate a fresh 32-byte secret. Caller passes this into both the
  * injected page-hook IIFE (signing) and content-claude's verifier.
  */
-export function generateSecret(): Uint8Array {
+export function generateSecret(): Uint8Array<ArrayBuffer> {
   const out = new Uint8Array(32);
   (globalThis as { crypto: Crypto }).crypto.getRandomValues(out);
   return out;
 }
 
-export function secretToHex(secret: Uint8Array): string {
-  return bytesToHex(secret.buffer.slice(secret.byteOffset, secret.byteOffset + secret.byteLength));
+export function secretToHex(secret: Uint8Array<ArrayBuffer>): string {
+  return bytesToHex(secret);
 }
 
-export function hexToSecret(hex: string): Uint8Array {
+export function hexToSecret(hex: string): Uint8Array<ArrayBuffer> {
   return hexToBytes(hex);
 }
