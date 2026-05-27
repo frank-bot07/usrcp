@@ -360,10 +360,14 @@ describe("Advanced Key Rotation", () => {
     ledger = new Ledger(dbPath);
   });
 
-  it("skips tampered rows and completes rotation", () => {
-    // Tampered rows are no longer cause to abort rotation. They are left
-    // in place under their old pseudonym / old ciphertext, reported in the
-    // `skipped` count, and stay unreadable under the new key.
+  it("skips tampered rows and completes rotation when force_skip_damaged is set", () => {
+    // v0.1.5: tampered rows now ABORT rotation by default — silently
+    // dropping rows that don't decrypt was the mechanism behind the
+    // 1022-rotation data-loss incident. force_skip_damaged is the
+    // explicit opt-in to the legacy behavior (skip the row, accept
+    // the loss, advance the key). This test exercises that opt-in
+    // path. The default-throws behavior is covered in
+    // rotate-key-safety.test.ts.
     ledger.appendEvent({
       domain: "test",
       summary: "good event",
@@ -389,7 +393,7 @@ describe("Advanced Key Rotation", () => {
       .prepare("UPDATE timeline_events SET summary = ? WHERE event_id = ?")
       .run(corrupted, target.event_id);
 
-    const result = ledger.rotateKey();
+    const result = ledger.rotateKey(undefined, { force_skip_damaged: true });
     expect(result.skipped).toBeGreaterThanOrEqual(1);
     expect(result.reencrypted).toBeGreaterThanOrEqual(1);
 

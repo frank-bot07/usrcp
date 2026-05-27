@@ -796,7 +796,10 @@ describe("Key Rotation", () => {
     const preTracker = (preState.global_preferences as any).custom.tamperTracker as any;
     expect(preTracker.count).toBe(3);
 
-    ledger.rotateKey();
+    // v0.1.5: rotation refuses to proceed past damaged rows by default.
+    // This test plants damaged rows on purpose to assert the
+    // tamper-tracker reset; opt in via force_skip_damaged.
+    ledger.rotateKey(undefined, { force_skip_damaged: true });
 
     const postState = ledger.getState(["global_preferences"]);
     const postTracker = (postState.global_preferences as any).custom.tamperTracker as any;

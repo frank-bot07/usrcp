@@ -13,3 +13,4 @@ import "./events.js";
 import "./facts.js";
 
 export { Ledger };
+export { RotationRateLimitedError, RotationDamagedRowsError } from "./keys.js";

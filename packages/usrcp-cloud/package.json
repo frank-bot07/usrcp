@@ -1,6 +1,6 @@
 {
   "name": "usrcp-cloud",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Hosted ledger for USRCP — ciphertext-only cross-device sync",
   "main": "dist/index.js",
   "files": [
