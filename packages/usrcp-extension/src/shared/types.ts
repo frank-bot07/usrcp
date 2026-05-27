@@ -23,6 +23,10 @@ export interface PageHookTurnMessage {
   source: "usrcp";
   kind: "turn";
   turn: CapturedTurn;
+  /** Date.now() at sign time. Receiver rejects messages older than MAC_MAX_AGE_MS. */
+  ts: number;
+  /** HMAC-SHA256(secret, canonical(turn) || "|" || ts), hex-encoded. */
+  mac: string;
 }
 
 export type PageHookMessage = PageHookTurnMessage;
@@ -46,7 +50,22 @@ export interface SwPingMessage {
   kind: "ping";
 }
 
-export type SwMessage = SwAppendMessage | SwSearchMessage | SwPingMessage;
+/**
+ * Content-claude → SW: please install page-hook in MAIN world for this tab,
+ * binding the supplied secretHex. SW uses chrome.scripting.executeScript
+ * (CSP-safe) rather than DOM script injection (which claude.ai's CSP blocks).
+ */
+export interface SwInstallPageHookMessage {
+  kind: "install-page-hook";
+  /** 64-char hex string; the 32-byte HMAC secret bound into the page-hook closure. */
+  secretHex: string;
+}
+
+export type SwMessage =
+  | SwAppendMessage
+  | SwSearchMessage
+  | SwPingMessage
+  | SwInstallPageHookMessage;
 
 // ---------------------------------------------------------------------------
 // Service-worker → content (search results, via chrome.tabs.sendMessage)

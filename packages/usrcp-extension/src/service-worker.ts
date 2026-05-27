@@ -154,6 +154,27 @@ chrome.runtime.onMessage.addListener(
         break;
       }
 
+      case "install-page-hook": {
+        const tabId = sender.tab?.id;
+        if (tabId === undefined) {
+          console.warn("[usrcp-sw] install-page-hook from non-tab sender; ignoring");
+          break;
+        }
+        // Only honor install requests from claude.ai. The content script's
+        // matches: pattern already restricts where it runs, but defense in
+        // depth — a misconfigured extension surface could otherwise be
+        // tricked into binding an attacker-chosen secret.
+        const senderUrl = sender.url ?? "";
+        if (!/^https:\/\/claude\.ai\//.test(senderUrl)) {
+          console.warn("[usrcp-sw] install-page-hook from unexpected origin:", senderUrl);
+          break;
+        }
+        installPageHookInTab(tabId, msg.secretHex).catch((err: unknown) => {
+          console.warn("[usrcp-sw] installPageHookInTab failed:", err);
+        });
+        break;
+      }
+
       case "ping":
         break; // no-op
 
@@ -162,6 +183,36 @@ chrome.runtime.onMessage.addListener(
     }
   }
 );
+
+// ---------------------------------------------------------------------------
+// Inject page-hook into a tab's MAIN world and bind its closure secret.
+//
+// Two-step: load page-hook.js (which defines globalThis.__USRCP_INSTALL_HOOK__
+// without running it), then a func call that reads the installer, deletes
+// the global, and invokes with the per-tab secret. chrome.scripting.executeScript
+// is the CSP-safe path; inline DOM script injection from a content script
+// trips claude.ai's script-src restriction.
+// ---------------------------------------------------------------------------
+
+async function installPageHookInTab(tabId: number, secretHex: string): Promise<void> {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    files: ["page-hook.js"],
+  });
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    args: [secretHex],
+    func: (hex: string) => {
+      type Holder = { __USRCP_INSTALL_HOOK__?: (h: string) => void };
+      const g = globalThis as Holder;
+      const fn = g.__USRCP_INSTALL_HOOK__;
+      delete g.__USRCP_INSTALL_HOOK__;
+      if (typeof fn === "function") fn(hex);
+    },
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Connect on install / startup

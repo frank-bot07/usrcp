@@ -1,41 +1,79 @@
 /**
  * content-claude.ts — isolated-world content script for claude.ai
  *
- * page-hook.js runs in the MAIN world via the manifest's content_scripts
- * declaration with `"world": "MAIN"`. This isolated-world script is the bridge:
- * it receives `window.postMessage` events from the page hook and forwards them
- * to the service worker, and it owns the `/usrcp <query>` slash command.
+ * Owns two channels:
+ *  1. Receives signed turn messages from page-hook (MAIN world) and forwards
+ *     them to the service worker.
+ *  2. The `/usrcp <query>` slash command for in-composer memory recall.
  *
- * Stop condition: if claude.ai's CSP ever rejects the MAIN-world declaration,
- * the documented fallback is `chrome.scripting.executeScript({ world: "MAIN" })`
- * from the service worker on `webNavigation.onCommitted`.
+ * v0.1.6 change: page-hook is no longer declared as a MAIN-world content
+ * script in the manifest. This script generates a fresh per-tab 32-byte
+ * secret at document_start and asks the SW to inject page-hook via
+ * chrome.scripting.executeScript({world:"MAIN"}) with the secret bound
+ * inside a follow-up func call. The executeScript path bypasses page CSP
+ * (the extension runtime executes the script, not the page DOM); the
+ * previous attempt at injecting an inline <script>.textContent was blocked
+ * by claude.ai's CSP, leaving capture inert. Every incoming turn is HMAC-
+ * verified against the same secret before forwarding; unsigned or forged
+ * messages are dropped. See shared/mac.ts for the threat model.
  */
 
 import type {
   PageHookMessage,
   SwAppendMessage,
+  SwInstallPageHookMessage,
   SwSearchMessage,
   SwToContentMessage,
 } from "./shared/types.js";
+import { generateSecret, secretToHex, verifyTurn } from "./shared/mac.js";
 
 // ---------------------------------------------------------------------------
-// Forward captured turns from page hook → service worker
+// Generate per-tab secret + ask SW to inject page-hook with it bound
+// ---------------------------------------------------------------------------
+
+const SECRET = generateSecret();
+const SECRET_HEX = secretToHex(SECRET);
+
+(function requestPageHookInstall() {
+  const msg: SwInstallPageHookMessage = {
+    kind: "install-page-hook",
+    secretHex: SECRET_HEX,
+  };
+  chrome.runtime.sendMessage(msg).catch((err: unknown) => {
+    console.debug("[usrcp] install-page-hook send failed:", err);
+  });
+})();
+
+// ---------------------------------------------------------------------------
+// Forward signed turns from page hook → service worker
 // ---------------------------------------------------------------------------
 
 window.addEventListener("message", (event: MessageEvent) => {
-  // Only accept messages from our own page hook
+  // Only accept messages from our own window (postMessage can deliver from
+  // iframes; an iframe's content script wouldn't share our SECRET anyway,
+  // but rejecting cross-window early avoids unnecessary verify work).
   if (event.source !== window) return;
 
   const data = event.data as PageHookMessage | undefined;
   if (!data || data.source !== "usrcp" || data.kind !== "turn") return;
+  if (typeof data.ts !== "number" || typeof data.mac !== "string") return;
+  if (!data.turn || typeof data.turn !== "object") return;
 
-  const msg: SwAppendMessage = {
-    kind: "ledger.append",
-    turn: data.turn,
-  };
-
-  chrome.runtime.sendMessage(msg).catch((err: unknown) => {
-    console.debug("[usrcp] Failed to forward turn to SW:", err);
+  // Verify HMAC + freshness before trusting the payload. A forger on the
+  // page cannot produce a valid mac without SECRET, which lives only in
+  // the injected page-hook's closure.
+  verifyTurn(data.turn, data.ts, data.mac, SECRET).then((ok) => {
+    if (!ok) {
+      console.debug("[usrcp] dropped unsigned/forged/stale turn message");
+      return;
+    }
+    const msg: SwAppendMessage = {
+      kind: "ledger.append",
+      turn: data.turn,
+    };
+    chrome.runtime.sendMessage(msg).catch((err: unknown) => {
+      console.debug("[usrcp] Failed to forward turn to SW:", err);
+    });
   });
 });
 
