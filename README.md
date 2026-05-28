@@ -1,6 +1,6 @@
 # USRCP — User Context Protocol
 
-**Structured, encrypted user state for AI agents. Cross-platform, ledger-style, zero-knowledge.**
+**Structured, encrypted user state for AI agents. Cross-platform, ledger-style, content zero-knowledge.**
 
 AI agents today rebuild their understanding of the user every session: your stack, your preferences, your active projects, your timezone. Claude Desktop doesn't know what you told Cursor. Cursor doesn't know what Cline pulled from git this morning. The structured facts an agent needs to be useful on day two — identity, preferences, projects, interaction timeline — are fragmented across platforms, sessions, and devices.
 
@@ -30,7 +30,7 @@ USRCP is a cross-platform protocol for reading, writing, and syncing **structure
 | **Search**                   | Exact keyword via HMAC blind index             | Semantic similarity via embeddings    |
 | **Representative query**     | "What is the user's timezone and framework?"   | "What did the user feel last week?"   |
 | **Does the server see plaintext?** | No. Ever.                                | Yes — at embed time.                  |
-| **Cross-device sync**        | Zero-knowledge (hosted ledger stores ciphertext only) | Provider-trusted                |
+| **Cross-device sync**        | Content zero-knowledge (relay holds opaque payload ciphertext) — platform names, timing, pseudonym counts visible to relay; see [`docs/SECURITY.md` §9](docs/SECURITY.md#9-cloud-sync-relay--what-the-operator-sees) | Provider-trusted                |
 | **Use case**                 | Cross-platform persistent state for agents     | Conversational recall over history    |
 | **Audit log**                | Cryptographically signed, encrypted            | Provider-managed                      |
 
