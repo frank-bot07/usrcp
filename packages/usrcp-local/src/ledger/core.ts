@@ -31,6 +31,14 @@ export class Ledger {
   /** @internal */ db: Database.Database;
   /** @internal */ closed = false;
   /** @internal */ masterKey: Buffer;
+  /**
+   * Re-entrancy guard for handleTamper. The tamper-tracker read/write
+   * routes through getPreferences()/updatePreferences(), which decrypt the
+   * same global blob that may itself be damaged — so a damaged prefs blob
+   * would recurse infinitely without this. See handleTamper.
+   * @internal
+   */
+  private _handlingTamper = false;
 
   // Static constants used across concern files
   /** @internal */ static readonly MAX_TAMPER_AUDIT_LOGS = 10;
@@ -252,23 +260,40 @@ export class Ledger {
 
   /** @internal */
   handleTamper(scope: string, field: string): void {
-    const tracker = this.getTamperTracker();
-    const newCount = tracker.count + 1;
-    const newLast = new Date().toISOString();
-    this.updateTamperTracker({ count: newCount, lastTamper: newLast });
+    // Re-entrancy guard. getTamperTracker() and updateTamperTracker() below
+    // both call getPreferences(), which decrypts the global_preferences
+    // `custom` blob — the very blob that, when damaged, routed us here via
+    // safeDecryptGlobal → handleTamper. Without this guard a damaged custom
+    // blob recurses (getPreferences → safeDecryptGlobal fails → handleTamper
+    // → getTamperTracker → getPreferences → ...) and blows the stack before
+    // the count-based hard stop below can fire. Swallowing the re-entrant
+    // call lets the OUTER handleTamper complete its single increment using
+    // the fallback ("{}") prefs, and lets repeated distinct tamper events
+    // accumulate toward the >= 50 hard stop, which surfaces as a clean
+    // structured error instead of a RangeError. (v0.1.7)
+    if (this._handlingTamper) return;
+    this._handlingTamper = true;
+    try {
+      const tracker = this.getTamperTracker();
+      const newCount = tracker.count + 1;
+      const newLast = new Date().toISOString();
+      this.updateTamperTracker({ count: newCount, lastTamper: newLast });
 
-    // Only log the first N tamper events to prevent audit log DoS
-    if (newCount <= Ledger.MAX_TAMPER_AUDIT_LOGS) {
-      this.logAudit('tamper_detected', [scope], undefined, `field=${field} count=${newCount} session=${tracker.sessionId}`);
-    }
-    // At threshold, log one final summary entry
-    if (newCount === Ledger.MAX_TAMPER_AUDIT_LOGS) {
-      this.logAudit('tamper_flood_capped', [scope], undefined,
-        `Tamper audit capped at ${Ledger.MAX_TAMPER_AUDIT_LOGS}. Further events suppressed. session=${tracker.sessionId}`);
-    }
-    // Hard stop at excessive count
-    if (newCount >= 50) {
-      throw new Error(`Excessive tampering detected in session ${tracker.sessionId}: ${newCount} failures`);
+      // Only log the first N tamper events to prevent audit log DoS
+      if (newCount <= Ledger.MAX_TAMPER_AUDIT_LOGS) {
+        this.logAudit('tamper_detected', [scope], undefined, `field=${field} count=${newCount} session=${tracker.sessionId}`);
+      }
+      // At threshold, log one final summary entry
+      if (newCount === Ledger.MAX_TAMPER_AUDIT_LOGS) {
+        this.logAudit('tamper_flood_capped', [scope], undefined,
+          `Tamper audit capped at ${Ledger.MAX_TAMPER_AUDIT_LOGS}. Further events suppressed. session=${tracker.sessionId}`);
+      }
+      // Hard stop at excessive count
+      if (newCount >= 50) {
+        throw new Error(`Excessive tampering detected in session ${tracker.sessionId}: ${newCount} failures`);
+      }
+    } finally {
+      this._handlingTamper = false;
     }
   }
 

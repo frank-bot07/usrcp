@@ -209,3 +209,79 @@ describe("Tamper Detection", () => {
     expect(events[0].domain).toBe(row.pseudonym);
   });
 });
+
+// v0.1.7: a damaged global_preferences `custom` blob used to recurse
+// infinitely (getPreferences → safeDecryptGlobal fails → handleTamper →
+// getTamperTracker → getPreferences → ...) and stack-overflow with a
+// RangeError before the count-based hard stop could fire. The handleTamper
+// re-entrancy guard breaks the cycle. These tests lock that in.
+describe("Tamper recursion bound (v0.1.7)", () => {
+  function corruptColumn(table: string, column: string, where: string): void {
+    const row = (ledger as any).db
+      .prepare(`SELECT ${column} AS v FROM ${table} WHERE ${where}`)
+      .get() as { v: string };
+    expect(row?.v?.startsWith("enc:")).toBe(true);
+    const parts = row.v.split(":");
+    const buf = Buffer.from(parts[1], "base64");
+    buf[buf.length - 1] ^= 0xff; // flip a GCM tag byte → MAC fail
+    (ledger as any).db
+      .prepare(`UPDATE ${table} SET ${column} = ? WHERE ${where}`)
+      .run("enc:" + buf.toString("base64"));
+  }
+
+  it("a damaged prefs custom blob does NOT stack-overflow on read", () => {
+    // Give custom real ciphertext, then corrupt it.
+    ledger.updatePreferences({ custom: { marker: "x" } });
+    corruptColumn("global_preferences", "custom", "id = 1");
+
+    let threw: unknown;
+    let prefs: any;
+    try {
+      prefs = ledger.getState(["global_preferences"]).global_preferences;
+    } catch (e) {
+      threw = e;
+    }
+    // A single damaged field should degrade gracefully (tampered flag,
+    // fallback custom), NOT throw, and definitely NOT stack-overflow.
+    expect(threw).toBeUndefined();
+    expect(prefs.tampered).toBe(true);
+    expect(prefs.custom).toEqual({});
+  });
+
+  it("a heavily damaged ledger raises a clean tamper error, not a RangeError", () => {
+    // Plant enough corrupt rows to exceed the 50-failure hard stop.
+    for (let i = 0; i < 60; i++) {
+      ledger.appendEvent(
+        { domain: "coding", summary: `evt ${i}`, intent: "t", outcome: "success" },
+        "test",
+      );
+    }
+    const rows = (ledger as any).db
+      .prepare("SELECT event_id, summary FROM timeline_events")
+      .all() as Array<{ event_id: string; summary: string }>;
+    for (const r of rows) {
+      if (!r.summary.startsWith("enc:")) continue;
+      const parts = r.summary.split(":");
+      const buf = Buffer.from(parts[1], "base64");
+      buf[buf.length - 1] ^= 0xff;
+      (ledger as any).db
+        .prepare("UPDATE timeline_events SET summary = ? WHERE event_id = ?")
+        .run("enc:" + buf.toString("base64"), r.event_id);
+    }
+    ledger.updatePreferences({ custom: { marker: "x" } });
+    corruptColumn("global_preferences", "custom", "id = 1");
+
+    let msg = "";
+    try {
+      ledger.getTimeline({ last_n: 100 });
+    } catch (e) {
+      msg = e instanceof Error ? e.message : String(e);
+    }
+    // Either it degrades without throwing, or it throws the structured
+    // "Excessive tampering" error — but NEVER a stack overflow.
+    expect(/call stack/i.test(msg)).toBe(false);
+    if (msg) {
+      expect(/Excessive tampering/i.test(msg)).toBe(true);
+    }
+  });
+});
