@@ -317,7 +317,7 @@ class TestHandleToolCall:
     def test_returns_json_string(self, provider, fake_client):
         fake_client.set_response(
             "usrcp_status",
-            [{"type": "text", "text": '{"usrcp_version": "0.1.6"}'}],
+            [{"type": "text", "text": '{"usrcp_version": "0.1.7"}'}],
         )
         result = provider.handle_tool_call("usrcp_status", {})
         parsed = json.loads(result)

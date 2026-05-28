@@ -95,7 +95,7 @@ class TestUsrcpMcpClientCallTool:
 
     def test_async_returns_content_list(self):
         client = UsrcpMcpClient(user_slug="default")
-        fake_content = [{"type": "text", "text": '{"usrcp_version": "0.1.6"}'}]
+        fake_content = [{"type": "text", "text": '{"usrcp_version": "0.1.7"}'}]
 
         async def fake_call_tool(name, args):
             result = MagicMock()
