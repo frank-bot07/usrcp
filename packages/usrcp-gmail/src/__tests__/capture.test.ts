@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Ledger } from "usrcp-local/dist/ledger/index.js";
-import { setUserSlug } from "usrcp-local/dist/encryption.js";
+import { Ledger } from "usrcp-local/ledger";
+import { setUserSlug } from "usrcp-local/encryption";
 import {
   captureGmailActivity,
   type GmailActivity,
