@@ -1,0 +1,63 @@
+name: publish
+
+# Coordinated npm release of the USRCP packages, driven by
+# scripts/release/publish.mjs. Triggered by pushing a version tag
+# (e.g. v0.1.8) or manually via the Actions tab.
+#
+# Requires a repository secret `NPM_TOKEN` — an npm automation token with
+# publish rights to the usrcp-* packages. Until that secret exists this
+# workflow will fail at the publish step (by design: nothing publishes
+# without explicit auth). The build + pack dry run runs regardless, so a
+# tag still gets a tarball-level sanity check even before auth is wired.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      execute:
+        description: 'Actually publish to npm (false = dry-run pack only)'
+        type: boolean
+        default: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+
+      # Each publishable package is built from its own dir; the release
+      # script calls `npm run build` per package (prebuild handles the
+      # sibling chain), but it needs deps installed first. Install the
+      # tier-1/2 packages plus every adapter so tsc + sibling builds resolve.
+      - name: Install deps in publishable packages
+        run: |
+          for pkg in usrcp-local usrcp-adapter-kit usrcp-stream \
+                     usrcp-obsidian usrcp-linear usrcp-github usrcp-gmail \
+                     usrcp-google-calendar usrcp-discord usrcp-telegram \
+                     usrcp-slack usrcp-claude-code usrcp-extension; do
+            echo "::group::npm ci in $pkg"
+            (cd "packages/$pkg" && npm ci)
+            echo "::endgroup::"
+          done
+
+      # Always run the dry-run pack first — builds everything, rewrites
+      # deps, packs each tarball, restores. Catches build/metadata errors
+      # before any publish.
+      - name: Dry-run pack
+        run: node scripts/release/publish.mjs
+
+      # Publish only on a tag push, or when the manual dispatch sets
+      # execute=true. The release script restores package.json regardless.
+      - name: Publish to npm
+        if: github.event_name == 'push' || inputs.execute == true
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: node scripts/release/publish.mjs --execute

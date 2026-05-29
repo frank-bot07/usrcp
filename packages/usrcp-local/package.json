@@ -63,5 +63,12 @@
     "@types/qrcode-terminal": "^0.12.2",
     "typescript": "5.9.3",
     "vitest": "4.1.4"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/frank-bot07/usrcp.git",
+    "directory": "packages/usrcp-local"
+  },
+  "homepage": "https://github.com/frank-bot07/usrcp/tree/main/packages/usrcp-local#readme",
+  "bugs": "https://github.com/frank-bot07/usrcp/issues"
 }

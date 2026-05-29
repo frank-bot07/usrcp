@@ -45,5 +45,12 @@
     "better-sqlite3": "12.10.0",
     "typescript": "5.9.3",
     "vitest": "4.1.4"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/frank-bot07/usrcp.git",
+    "directory": "packages/usrcp-slack"
+  },
+  "homepage": "https://github.com/frank-bot07/usrcp/tree/main/packages/usrcp-slack#readme",
+  "bugs": "https://github.com/frank-bot07/usrcp/issues"
 }

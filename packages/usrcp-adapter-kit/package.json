@@ -38,5 +38,12 @@
     "@types/node": "22.19.17",
     "typescript": "5.9.3",
     "vitest": "4.1.4"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/frank-bot07/usrcp.git",
+    "directory": "packages/usrcp-adapter-kit"
+  },
+  "homepage": "https://github.com/frank-bot07/usrcp/tree/main/packages/usrcp-adapter-kit#readme",
+  "bugs": "https://github.com/frank-bot07/usrcp/issues"
 }
