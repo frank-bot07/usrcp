@@ -4,8 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { Ledger } from "usrcp-local/dist/ledger/index.js";
-import { setUserSlug } from "usrcp-local/dist/encryption.js";
+import { Ledger } from "usrcp-local/ledger";
+import { setUserSlug } from "usrcp-local/encryption";
 import { registerStreamTools, type StreamRegistration } from "../register.js";
 
 // Codex P1-4: when entity_refs is not supplied, capture should scan content

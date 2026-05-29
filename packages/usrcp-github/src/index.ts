@@ -22,7 +22,7 @@
 
 import { execSync } from "node:child_process";
 import { Octokit } from "@octokit/rest";
-import { Ledger } from "usrcp-local/dist/ledger/index.js";
+import { Ledger } from "usrcp-local/ledger";
 import {
   loadConfig,
   preflightConfig,

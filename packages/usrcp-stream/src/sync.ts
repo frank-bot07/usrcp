@@ -23,11 +23,11 @@
  */
 
 import * as crypto from "node:crypto";
-import type { Ledger } from "usrcp-local/dist/ledger/index.js";
+import type { Ledger } from "usrcp-local/ledger";
 import {
   getIdentity,
   getDecryptedPrivateKeyPem,
-} from "usrcp-local/dist/crypto.js";
+} from "usrcp-local/crypto";
 import type { StreamHandle } from "./db/index.js";
 import {
   encryptEmbeddingForSync,
