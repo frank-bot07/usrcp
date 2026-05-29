@@ -106,12 +106,38 @@ export interface ScopedToolDef {
   kind: ToolKind;
   /**
    * Returns the domain(s) the call would touch. For multi-domain-read,
-   * may return the literal `"all"` if the call is unconstrained - in
-   * that case the handler itself must filter its results to the
-   * effective allowlist. The wrapper still rejects explicit
-   * out-of-scope filters.
+   * may return the literal `"all"` if the call is unconstrained. The
+   * wrapper rejects an explicit out-of-scope filter at the INPUT layer;
+   * the `"all"` (unconstrained) case is redacted at the OUTPUT layer by
+   * `readProjection` (see below) rather than trusting the handler to
+   * self-filter.
    */
   scopeOf?: (params: any) => string[] | "all";
+  /**
+   * Central, authoritative output redaction for cross-domain READ tools.
+   *
+   * When a tool can surface data spanning multiple domains (kind
+   * `multi-domain-read` or `global-read`), it returns its result as a
+   * plain payload object and declares this projection. The wrapper then:
+   *
+   *   - serializes the payload into the MCP text envelope (always), and
+   *   - applies `readProjection(payload, readScopes)` first whenever the
+   *     server is read-scoped, so out-of-scope facets are stripped in ONE
+   *     enforced place instead of inside each handler.
+   *
+   * This inverts the pre-v0.1.8 contract. Previously each multi-domain
+   * read hand-rolled its filtering inside its handler closure; forgetting
+   * a facet was a silent cross-domain leak (the v0.1.3 globals leak and
+   * the v0.1.4 audit-log leak were both this class). Now a cross-domain
+   * read tool MUST declare a projection — `registerToolsWithScopes`
+   * refuses to register one that doesn't when reads are scoped (fail
+   * closed), so the omission surfaces as a loud, test-caught registration
+   * error rather than a leak.
+   *
+   * A tool that declares `readProjection` returns a raw payload object;
+   * a tool that does not returns a fully-formed MCP envelope.
+   */
+  readProjection?: (payload: any, readScopes: string[]) => any;
 }
 
 /**
@@ -254,6 +280,116 @@ export function outOfScopeResponse(
   };
 }
 
+/**
+ * Serialize a raw payload object into the MCP text-content envelope.
+ *
+ * Read tools that declare a `readProjection` return their payload as a
+ * plain object; the wrapper projects it (when scoped) then serializes it
+ * here. Centralizing serialization keeps every projected read tool's
+ * envelope shape identical to the hand-written `JSON.stringify(..., 2)`
+ * envelopes the handlers used to build inline.
+ */
+export function toTextResult(payload: unknown) {
+  return {
+    content: [
+      { type: "text" as const, text: JSON.stringify(payload, null, 2) },
+    ],
+  };
+}
+
+/**
+ * Keep only events whose resolved (plaintext) domain is in the read
+ * allowlist. Events without a resolved domain are dropped — fail closed:
+ * an event we can't attribute to an allowed domain must not be returned
+ * to a scoped reader.
+ */
+export function filterEventsToScopes<T extends { domain?: string }>(
+  events: T[] | undefined,
+  readScopes: string[],
+): T[] {
+  if (!Array.isArray(events)) return [];
+  const allowed = new Set(readScopes);
+  return events.filter(
+    (e) => typeof e?.domain === "string" && allowed.has(e.domain),
+  );
+}
+
+/**
+ * Authoritative read-projection for `usrcp_get_state`. A scoped agent must
+ * never receive (a) the global facets `core_identity` / `global_preferences`
+ * or (b) per-domain facets (active_projects, domain_context, recent_timeline)
+ * for domains outside its read allowlist.
+ *
+ * Mutates and returns `payload` for caller convenience (the wrapper hands
+ * it a fresh per-call object). See {@link ScopedToolDef.readProjection}
+ * for why this lives here rather than in the handler.
+ */
+export function projectStateResult(payload: any, readScopes: string[]): any {
+  const state = payload?.state;
+  if (!state || typeof state !== "object") return payload;
+  const allowed = new Set(readScopes);
+
+  // Globals are owner-only in scoped mode (v0.1.3 leak class).
+  delete state.core_identity;
+  delete state.global_preferences;
+
+  if (Array.isArray(state.active_projects)) {
+    state.active_projects = state.active_projects.filter((p: any) =>
+      allowed.has(p?.domain),
+    );
+  }
+  if (state.domain_context && typeof state.domain_context === "object") {
+    state.domain_context = Object.fromEntries(
+      Object.entries(state.domain_context).filter(([d]) => allowed.has(d)),
+    );
+  }
+  if (Array.isArray(state.recent_timeline)) {
+    state.recent_timeline = filterEventsToScopes(state.recent_timeline, readScopes);
+  }
+  return payload;
+}
+
+/**
+ * Authoritative read-projection for `usrcp_search_timeline`: drop any
+ * result event outside the read allowlist and recompute the count so a
+ * scoped caller can't infer out-of-scope hit volume from `result_count`.
+ */
+export function projectSearchResult(payload: any, readScopes: string[]): any {
+  const events = filterEventsToScopes(payload?.events, readScopes);
+  return { ...payload, result_count: events.length, events };
+}
+
+/**
+ * Shape the scoped envelope for `usrcp_status`. Status reports aggregates
+ * (counts, domain/platform lists) that cannot be reconstructed by
+ * filtering an unscoped payload after the fact — `stats` and the project
+ * count must be computed against the scope at query time. The caller
+ * gathers those scoped figures (it has the ledger) and passes them here;
+ * this builder owns the envelope SHAPE so a scoped caller never receives
+ * the unscoped `total_projects` / `db_size_bytes` / `audit_log_entries`
+ * fields, only the scope-safe subset.
+ */
+export interface ScopedStatusInput {
+  usrcp_version: string;
+  user_id: string;
+  /** Result of `Ledger.getStatsForScopes(readScopes)`. */
+  stats: unknown;
+  /** Count of active projects whose domain is in the read allowlist. */
+  active_projects: number;
+  allowed_domains: string[];
+}
+export function buildScopedStatusPayload(input: ScopedStatusInput) {
+  return {
+    usrcp_version: input.usrcp_version,
+    user_id: input.user_id,
+    ledger: "local (SQLite)",
+    scoped: true,
+    allowed_domains: input.allowed_domains,
+    stats: input.stats,
+    active_projects: input.active_projects,
+  };
+}
+
 /** Compact display string for the audit row. */
 function formatScopeArr(s: string[] | undefined): string {
   return s === undefined ? "*" : s.length === 0 ? "[]" : `[${s.join(",")}]`;
@@ -281,6 +417,26 @@ export interface RegisterToolsOptions {
    * Default: true (strict). Stream passes false explicitly.
    */
   strictAudit?: boolean;
+
+  /**
+   * Enforce the v0.1.8 default-deny read-projection invariant: when reads
+   * are scoped, every cross-domain read tool (multi-domain-read /
+   * global-read) MUST declare a `readProjection` or registration throws.
+   *
+   * Default: true. usrcp-local relies on the default — its cross-domain
+   * read tools (get_state, search_timeline, status) all declare
+   * projections, and a future read tool that forgets one fails closed.
+   *
+   * usrcp-stream passes `false`: it predates readProjection and redacts
+   * cross-domain reads via "scope-wall injection" instead (its tool
+   * factories receive the allowed-scope list and post-filter rows in the
+   * handler — see register.ts). That is the older, more fragile
+   * self-filter pattern this invariant exists to replace, so stream's
+   * opt-out is MIGRATION DEBT, not a blanket exemption: stream should move
+   * its cross-domain reads onto readProjection in a follow-up, after which
+   * this flag and the scope-wall injection plumbing both come out.
+   */
+  enforceReadProjection?: boolean;
 
   /**
    * Invoked when `strictAudit: false` swallows a logAudit failure.
@@ -331,6 +487,36 @@ export function registerToolsWithScopes(
   registerOpts: RegisterToolsOptions = {},
 ): void {
   const { readScopes, writeScopes } = resolveScopes(opts);
+
+  // Default-deny registration invariant (v0.1.8). A read tool that can
+  // surface data spanning multiple domains (multi-domain-read or
+  // global-read) MUST declare a `readProjection` so the wrapper can
+  // redact its output to the read allowlist in one enforced place. With
+  // no projection the wrapper has no way to scrub cross-domain output, so
+  // we refuse to register the tool rather than let it leak. This converts
+  // "new read tool forgot to self-filter" (the v0.1.3 globals leak and the
+  // v0.1.4 audit-log leak were both this shape) from a silent bypass into
+  // a loud error caught by the first scoped test. Only enforced when reads
+  // are actually scoped — an unscoped server returns everything to its
+  // owner and has nothing to project. Defaults on; usrcp-stream opts out
+  // (it uses scope-wall injection — see RegisterToolsOptions).
+  const enforceReadProjection = registerOpts.enforceReadProjection ?? true;
+  if (enforceReadProjection && readScopes !== undefined) {
+    for (const def of defs) {
+      const crossDomainRead =
+        !def.mutating &&
+        (def.kind === "multi-domain-read" || def.kind === "global-read");
+      if (crossDomainRead && typeof def.readProjection !== "function") {
+        throw new Error(
+          `scope-enforcement: read tool '${def.name}' (kind=${def.kind}) is ` +
+            `registered under a read scope but declares no readProjection. ` +
+            `Cross-domain read tools must declare a projection so their ` +
+            `output can be redacted to the read allowlist. Refusing to ` +
+            `register a tool that could leak out-of-scope data.`,
+        );
+      }
+    }
+  }
 
   // A mutating tool is stripped entirely (not registered) when
   // writes are disallowed across all domains - i.e.
@@ -461,14 +647,31 @@ export function registerToolsWithScopes(
               return outOfScopeResponse(def.name, out, effective);
             }
           }
-          // If "all", the handler is responsible for self-filtering
-          // to readScopes from its own closure. The wrapper does
-          // not inject anything here - the caller's handler holds
-          // the read allowlist.
+          // If "all" (unconstrained), the wrapper does NOT reject at the
+          // input layer — instead the OUTPUT is redacted centrally by
+          // `def.readProjection` below. The registration invariant
+          // guarantees a multi-domain-read tool has one.
         }
       }
 
-      return def.handler(params);
+      const result = await def.handler(params);
+
+      // Central read-projection. A tool that declares `readProjection`
+      // returns a raw payload object; serialize it here (and redact to
+      // the read allowlist first whenever the server is read-scoped).
+      // This is the single enforced chokepoint for cross-domain read
+      // redaction — handlers no longer self-filter. Tools without a
+      // projection (mutations, domain-scoped reads gated at the input
+      // layer above, audit-read) return a fully-formed envelope as before.
+      if (def.readProjection) {
+        const projected =
+          readScopes !== undefined
+            ? def.readProjection(result, readScopes)
+            : result;
+        return toTextResult(projected);
+      }
+
+      return result;
     };
 
     server.tool(def.name, def.description, def.inputShape, wrappedHandler);

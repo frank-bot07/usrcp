@@ -52,8 +52,10 @@ export {
 import {
   type ServeOptions,
   type ScopedToolDef,
-  resolveScopes,
   registerToolsWithScopes,
+  projectStateResult,
+  projectSearchResult,
+  buildScopedStatusPayload,
 } from "./scope-enforcement.js";
 
 // Local alias - everything in this file used to call it ToolDef.
@@ -118,17 +120,14 @@ export function createServer(
     version: "0.1.7",
   });
 
-  // Resolve once and share across registerAll + the multi-domain-read
-  // handlers (which need to filter their own output to the agent's
-  // read allowlist).
-  const resolved = resolveScopes(opts);
-  const readScopes = resolved.readScopes;
-
-  // Tool definitions — declarative table. registerAll filters and wraps
-  // based on opts (readonly/noAudit/readScopes/writeScopes/agentId).
-  // Multi-domain-read handlers (get_state, search_timeline, status)
-  // additionally read `readScopes` from this closure to filter their
-  // output when the caller did not constrain the request.
+  // Tool definitions — declarative table. registerToolsWithScopes filters
+  // and wraps based on opts (readonly/noAudit/readScopes/writeScopes/
+  // agentId). Cross-domain read handlers (get_state, search_timeline,
+  // status) are scope-UNAWARE: they always produce full output and declare
+  // a `readProjection`. The wrapper applies that projection centrally to
+  // redact output to the read allowlist (and refuses to register a
+  // cross-domain read tool that omits one). Scope resolution happens once,
+  // inside registerToolsWithScopes — handlers no longer re-resolve it.
   const defs: ToolDef[] = [
     // --- Tool: usrcp_get_state -------------------------------------------
     {
@@ -188,17 +187,15 @@ export function createServer(
           .default("unknown")
           .describe("Identifying name of the calling agent/platform"),
       },
+      // Scope-unaware: always produces full state. The wrapper redacts to
+      // the read allowlist via `readProjection` (projectStateResult) when
+      // the server is read-scoped. The redaction rules (drop globals,
+      // filter per-domain facets) live in scope-enforcement.ts so they
+      // can't drift per-handler — the v0.1.3 globals leak was exactly that
+      // drift. Explicit out-of-scope `timeline_domains` is still rejected
+      // at the input layer by the wrapper (scopeOf), before this runs.
+      readProjection: projectStateResult,
       handler: async (params) => {
-        // If read-scope-restricted and the caller did not pass
-        // timeline_domains, inject the read allowlist so we don't
-        // leak events from other domains.
-        if (
-          readScopes &&
-          (!params.timeline_domains || params.timeline_domains.length === 0)
-        ) {
-          params.timeline_domains = [...readScopes];
-        }
-
         const state = ledger.getState(params.scopes);
 
         if (
@@ -214,62 +211,11 @@ export function createServer(
           });
         }
 
-        // Post-filter the per-domain facets so a read-scoped agent never
-        // sees projects or context for domains outside its read allowlist.
-        if (readScopes) {
-          if (state.active_projects) {
-            state.active_projects = state.active_projects.filter((p) =>
-              readScopes.includes(p.domain)
-            );
-          }
-          if (state.domain_context) {
-            state.domain_context = Object.fromEntries(
-              Object.entries(state.domain_context).filter(([d]) =>
-                readScopes.includes(d)
-              )
-            );
-          }
-
-          // SECURITY (v0.1.3): redact globals from scoped responses.
-          //
-          // Before v0.1.3 the post-filter handled domain-scoped facets
-          // (active_projects, domain_context) but let core_identity and
-          // global_preferences pass through untouched. A scoped agent
-          // (e.g. `--read-scopes=coding`) calling
-          // `usrcp_get_state({scopes:['global_preferences']})` could
-          // read everything the user had stored in
-          // `global_preferences.custom`, including ad-hoc secrets the
-          // user wrote there. That contradicts the scope-enforcement
-          // promise.
-          //
-          // For v0.1.3 we fail closed: scoped responses do not include
-          // core_identity or global_preferences. Users who explicitly
-          // want a scoped agent to see those can run unscoped (the
-          // common case) or wait for an opt-in flag in a later release.
-          if (state.core_identity) {
-            delete state.core_identity;
-          }
-          if (state.global_preferences) {
-            delete state.global_preferences;
-          }
-        }
-
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(
-                {
-                  usrcp_version: "0.1.7",
-                  user_id: formatUserId(identity?.user_id),
-                  resolved_at: new Date().toISOString(),
-                  state,
-                },
-                null,
-                2
-              ),
-            },
-          ],
+          usrcp_version: "0.1.7",
+          user_id: formatUserId(identity?.user_id),
+          resolved_at: new Date().toISOString(),
+          state,
         };
       },
     },
@@ -617,50 +563,21 @@ export function createServer(
           .default("unknown")
           .describe("Identifying name of the calling agent/platform"),
       },
+      // Scope-unaware: searches the full ledger (or the caller's explicit
+      // in-scope `domain`, which the wrapper already gated at the input
+      // layer). The wrapper redacts results to the read allowlist via
+      // `readProjection` (projectSearchResult) when read-scoped.
+      readProjection: projectSearchResult,
       handler: async (params) => {
-        let results;
-        if (readScopes && !params.domain) {
-          // Run a per-scope search and merge — searchTimeline only takes a
-          // single domain filter, but a read-scoped agent can search across
-          // all its allowed domains in one call.
-          const merged: any[] = [];
-          const seen = new Set<string>();
-          for (const d of readScopes) {
-            const r = ledger.searchTimeline(params.query, {
-              limit: params.limit,
-              domain: d,
-            });
-            for (const ev of r) {
-              if (!seen.has(ev.event_id)) {
-                seen.add(ev.event_id);
-                merged.push(ev);
-              }
-            }
-          }
-          merged.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
-          results = merged.slice(0, params.limit ?? 20);
-        } else {
-          results = ledger.searchTimeline(params.query, {
-            limit: params.limit,
-            domain: params.domain,
-          });
-        }
+        const results = ledger.searchTimeline(params.query, {
+          limit: params.limit,
+          domain: params.domain,
+        });
 
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(
-                {
-                  query: params.query,
-                  result_count: results.length,
-                  events: results,
-                },
-                null,
-                2
-              ),
-            },
-          ],
+          query: params.query,
+          result_count: results.length,
+          events: results,
         };
       },
     },
@@ -1038,62 +955,36 @@ export function createServer(
       mutating: false,
       kind: "global-read",
       inputShape: {},
-      handler: async () => {
-        // Read-scope filtering: a read-scoped agent must not see
-        // ledger-wide totals, domain names, or platform names outside
-        // its authorized read allowlist.
-        if (readScopes) {
-          const scopedStats = ledger.getStatsForScopes(readScopes);
-          const allowed = new Set(readScopes);
-          const scopedActiveProjects = ledger
+      // Status reports aggregates (counts, domain/platform lists) that
+      // can't be reconstructed by filtering the unscoped payload after the
+      // fact — `stats` must be computed against the scope at query time.
+      // So the projection re-derives the scope-safe figures from the
+      // ledger (which it has in closure) rather than projecting `_full`,
+      // and buildScopedStatusPayload owns the envelope shape so a scoped
+      // caller never sees the unscoped totals. The handler stays
+      // scope-unaware: it always returns the owner (unscoped) view, and
+      // the wrapper swaps in the scoped envelope when read-scoped.
+      readProjection: (_full, rs) =>
+        buildScopedStatusPayload({
+          usrcp_version: "0.1.7",
+          user_id: formatUserId(identity?.user_id),
+          stats: ledger.getStatsForScopes(rs),
+          active_projects: ledger
             .getProjects()
-            .filter((p) => p.status === "active" && allowed.has(p.domain))
-            .length;
-
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify(
-                  {
-                    usrcp_version: "0.1.7",
-                    user_id: formatUserId(identity?.user_id),
-                    ledger: "local (SQLite)",
-                    scoped: true,
-                    allowed_domains: readScopes,
-                    stats: scopedStats,
-                    active_projects: scopedActiveProjects,
-                  },
-                  null,
-                  2
-                ),
-              },
-            ],
-          };
-        }
-
+            .filter((p) => p.status === "active" && rs.includes(p.domain))
+            .length,
+          allowed_domains: rs,
+        }),
+      handler: async () => {
         const stats = ledger.getStats();
         const projects = ledger.getProjects();
 
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(
-                {
-                  usrcp_version: "0.1.7",
-                  user_id: formatUserId(identity?.user_id),
-                  ledger: "local (SQLite)",
-                  stats,
-                  active_projects: projects.filter(
-                    (p) => p.status === "active"
-                  ).length,
-                },
-                null,
-                2
-              ),
-            },
-          ],
+          usrcp_version: "0.1.7",
+          user_id: formatUserId(identity?.user_id),
+          ledger: "local (SQLite)",
+          stats,
+          active_projects: projects.filter((p) => p.status === "active").length,
         };
       },
     },
