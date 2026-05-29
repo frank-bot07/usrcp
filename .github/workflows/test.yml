@@ -21,6 +21,7 @@ jobs:
       matrix:
         node-version: ['22', '24', '26']
         package:
+          - usrcp-adapter-kit
           - usrcp-claude-code
           - usrcp-cloud
           - usrcp-discord
@@ -41,6 +42,7 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
           cache-dependency-path: |
+            packages/usrcp-adapter-kit/package-lock.json
             packages/usrcp-claude-code/package-lock.json
             packages/usrcp-cloud/package-lock.json
             packages/usrcp-discord/package-lock.json
@@ -93,16 +95,19 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
           cache-dependency-path: |
+            packages/usrcp-adapter-kit/package-lock.json
             packages/usrcp-imessage/package-lock.json
             packages/usrcp-local/package-lock.json
             packages/usrcp-stream/package-lock.json
       - name: Upgrade npm
         run: npm install -g npm@latest
-      # usrcp-imessage's pretest now builds usrcp-local AND usrcp-stream
-      # (PR #42 wired stream-mode into the adapters). Install all three.
+      # usrcp-imessage's pretest builds usrcp-adapter-kit (which builds
+      # usrcp-local) AND usrcp-stream. Install all four so those sibling
+      # builds resolve their tsc.
       - name: Install deps
         run: |
           (cd packages/usrcp-local && npm ci)
+          (cd packages/usrcp-adapter-kit && npm ci)
           (cd packages/usrcp-stream && npm ci)
           (cd packages/usrcp-imessage && npm ci)
       - name: Test usrcp-imessage

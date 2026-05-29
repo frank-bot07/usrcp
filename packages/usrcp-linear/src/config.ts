@@ -1,12 +1,4 @@
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
-import {
-  encrypt,
-  decrypt,
-  deriveGlobalEncryptionKey,
-  zeroBuffer,
-} from "usrcp-local/dist/encryption.js";
+import { createAdapterConfig } from "usrcp-adapter-kit";
 
 export interface LinearConfig {
   linear_api_key: string;
@@ -21,237 +13,33 @@ export interface LinearConfig {
   last_synced_at?: string;
 }
 
-const CONFIG_FILENAME = "linear-config.json";
+// Encrypted-at-rest config store. All the crypto / atomic-write /
+// validation / legacy-plaintext-migration / rotation / debounced-cursor
+// machinery lives once in usrcp-adapter-kit; this file just declares
+// linear's field shape and re-exports the store under the names linear's
+// other modules already import.
+const store = createAdapterConfig<LinearConfig>({
+  adapterName: "linear",
+  filename: "linear-config.json",
+  fields: [
+    { name: "linear_api_key", kind: "secret" },
+    { name: "allowlisted_team_ids", kind: "requiredNonEmptyArray" },
+    { name: "domain", kind: "required" },
+    { name: "poll_interval_s", kind: "requiredNumber" },
+    { name: "last_synced_at", kind: "optional" },
+  ],
+  cursorFields: ["last_synced_at"],
+});
 
-export function getConfigPath(): string {
-  return path.join(os.homedir(), ".usrcp", CONFIG_FILENAME);
-}
+export const getConfigPath = store.getConfigPath;
+export const readPartialConfig = store.readPartialConfig;
+export const readPartialDecryptedConfig = store.readPartialDecryptedConfig;
+export const writeLinearConfig = store.writeConfig;
+export const preflightConfig = store.preflightConfig;
+export const loadConfig = store.loadConfig;
+export const reencryptConfigUnderNewKey = store.reencryptConfigUnderNewKey;
 
-function encryptSecret(plaintext: string, masterKey: Buffer): string {
-  const key = deriveGlobalEncryptionKey(masterKey);
-  try {
-    return encrypt(plaintext, key);
-  } finally {
-    zeroBuffer(key);
-  }
-}
-
-function maybeDecryptSecret(value: string, masterKey: Buffer): string {
-  if (!value.startsWith("enc:")) return value;
-  const key = deriveGlobalEncryptionKey(masterKey);
-  try {
-    return decrypt(value, key);
-  } finally {
-    zeroBuffer(key);
-  }
-}
-
-export function readPartialConfig(): Partial<LinearConfig> {
-  try {
-    return JSON.parse(fs.readFileSync(getConfigPath(), "utf8")) as Partial<LinearConfig>;
-  } catch {
-    return {};
-  }
-}
-
-/**
- * Like readPartialConfig, but decrypts any `enc:<base64>` envelope on
- * linear_api_key back to plaintext. The setup wizard uses this so
- * "Enter to keep existing key" defaults are the actual key the user
- * pasted, not the encrypted envelope on disk.
- */
-export function readPartialDecryptedConfig(masterKey: Buffer): Partial<LinearConfig> {
-  const partial = readPartialConfig();
-  const out: Partial<LinearConfig> = { ...partial };
-  try {
-    if (partial.linear_api_key) {
-      out.linear_api_key = maybeDecryptSecret(partial.linear_api_key, masterKey);
-    }
-  } catch {
-    /* Best effort: wizard validation will catch decrypt failures. */
-  }
-  return out;
-}
-
-/**
- * Re-encrypt the on-disk config under a new master key. Used during
- * `usrcp_rotate_key` so the rotation doesn't leave this adapter
- * unable to decrypt its API key on next boot.
- *
- * Returns "absent" if no config exists; "rotated" if successfully
- * re-encrypted. Throws on parse / decrypt failure - the dispatcher
- * logs the adapter as needing manual re-setup. Atomic per-file
- * (tmp + rename) so the file is either fully old-key or fully new-key.
- */
-export function reencryptConfigUnderNewKey(
-  oldKey: Buffer,
-  newKey: Buffer,
-): "absent" | "rotated" {
-  const p = getConfigPath();
-  if (!fs.existsSync(p)) return "absent";
-
-  const raw = fs.readFileSync(p, "utf8");
-  const partial = JSON.parse(raw) as Partial<LinearConfig>;
-  if (!partial.linear_api_key) {
-    throw new Error(`incomplete linear config at ${p}; cannot re-encrypt`);
-  }
-
-  const oldGlobal = deriveGlobalEncryptionKey(oldKey);
-  const newGlobal = deriveGlobalEncryptionKey(newKey);
-  try {
-    const passthrough = (v: string) =>
-      v.startsWith("enc:") ? decrypt(v, oldGlobal) : v;
-    const onDisk = {
-      ...partial,
-      linear_api_key: encrypt(passthrough(partial.linear_api_key), newGlobal),
-    };
-    const body = JSON.stringify(onDisk, null, 2);
-    const tmp = `${p}.rotate-tmp.${process.pid}.${Date.now()}`;
-    const fd = fs.openSync(tmp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC, 0o600);
-    try { fs.writeSync(fd, body); } finally { fs.closeSync(fd); }
-    fs.chmodSync(tmp, 0o600);
-    fs.renameSync(tmp, p);
-    return "rotated";
-  } finally {
-    zeroBuffer(oldGlobal);
-    zeroBuffer(newGlobal);
-  }
-}
-
-export function writeLinearConfig(cfg: LinearConfig, masterKey: Buffer): void {
-  const p = getConfigPath();
-  fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });
-  const onDisk: LinearConfig = {
-    ...cfg,
-    linear_api_key: encryptSecret(cfg.linear_api_key, masterKey),
-  };
-  const body = JSON.stringify(onDisk, null, 2);
-  const fd = fs.openSync(p, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC, 0o600);
-  try {
-    fs.writeSync(fd, body);
-  } finally {
-    fs.closeSync(fd);
-  }
-  // O_CREAT mode is a no-op if the file already existed.
-  fs.chmodSync(p, 0o600);
-}
-
-/**
- * Read + validate the config without decrypting. Exits cleanly if the
- * file is missing, malformed, or incomplete. Shared by preflightConfig
- * (called before the Ledger is constructed) and loadConfig.
- */
-function readValidatedPartial(): Partial<LinearConfig> {
-  const p = getConfigPath();
-  let raw: string;
-  try {
-    raw = fs.readFileSync(p, "utf8");
-  } catch {
-    console.error(
-      `usrcp-linear: no config found at ${p}.\n` +
-      `Run 'usrcp setup --adapter=linear' to configure.`
-    );
-    process.exit(1);
-  }
-  let partial: Partial<LinearConfig>;
-  try {
-    partial = JSON.parse(raw) as Partial<LinearConfig>;
-  } catch {
-    console.error(
-      `usrcp-linear: failed to parse config at ${p}.\n` +
-      `Run 'usrcp setup --adapter=linear' to re-configure.`
-    );
-    process.exit(1);
-  }
-  const missing: string[] = [];
-  if (!partial.linear_api_key) missing.push("linear_api_key");
-  if (!partial.allowlisted_team_ids || partial.allowlisted_team_ids.length === 0) {
-    missing.push("allowlisted_team_ids");
-  }
-  if (!partial.domain) missing.push("domain");
-  if (typeof partial.poll_interval_s !== "number") missing.push("poll_interval_s");
-  if (missing.length > 0) {
-    console.error(
-      `usrcp-linear: incomplete config (missing: ${missing.join(", ")}).\n` +
-      `Run 'usrcp setup --adapter=linear' to re-configure.`
-    );
-    process.exit(1);
-  }
-  return partial;
-}
-
-/**
- * Validate the on-disk config without needing the master key. Daemons
- * MUST call this before constructing the Ledger to avoid silently
- * auto-initializing a dev-mode ledger on a fresh install.
- */
-export function preflightConfig(): void {
-  readValidatedPartial();
-}
-
-export function loadConfig(masterKey: Buffer): LinearConfig {
-  const partial = readValidatedPartial();
-  let decrypted: LinearConfig;
-  try {
-    decrypted = {
-      ...(partial as LinearConfig),
-      linear_api_key: maybeDecryptSecret(partial.linear_api_key!, masterKey),
-    };
-  } catch (err) {
-    console.error(
-      `usrcp-linear: failed to decrypt config secret (wrong passphrase or corrupt file): ${err instanceof Error ? err.message : String(err)}`
-    );
-    process.exit(1);
-  }
-  // Auto-migrate legacy plaintext configs at load time, not only on
-  // cursor advance.
-  if (!partial.linear_api_key!.startsWith("enc:")) {
-    try {
-      writeLinearConfig(decrypted, masterKey);
-    } catch {
-      /* Non-fatal; next save will retry. */
-    }
-  }
-  return decrypted;
-}
-
-let _pendingTs: string | undefined;
-let _pendingMasterKey: Buffer | undefined;
-let _flushTimer: ReturnType<typeof setTimeout> | undefined;
-
-export function saveLastSyncedAt(ts: string, masterKey: Buffer): void {
-  _pendingTs = ts;
-  _pendingMasterKey = masterKey;
-  if (_flushTimer !== undefined) clearTimeout(_flushTimer);
-  _flushTimer = setTimeout(() => {
-    _flushTimer = undefined;
-    flushLastSyncedAt();
-  }, 500);
-}
-
-export function flushLastSyncedAt(): void {
-  if (_pendingTs === undefined || !_pendingMasterKey) return;
-  const existing = readPartialConfig();
-  // Bail if the on-disk config is gone or stripped — better to lose the
-  // cursor than overwrite a missing key/team list with empty strings.
-  if (
-    !existing.linear_api_key ||
-    !existing.allowlisted_team_ids?.length ||
-    !existing.domain ||
-    typeof existing.poll_interval_s !== "number"
-  ) {
-    _pendingTs = undefined;
-    return;
-  }
-  try {
-    const decrypted: LinearConfig = {
-      ...(existing as LinearConfig),
-      linear_api_key: maybeDecryptSecret(existing.linear_api_key!, _pendingMasterKey),
-      last_synced_at: _pendingTs,
-    };
-    writeLinearConfig(decrypted, _pendingMasterKey);
-  } catch {
-    // Non-fatal — next restart may re-process a few events.
-  }
-  _pendingTs = undefined;
-}
+/** Debounced single-cursor write (createdAt >= last_synced_at). */
+export const saveLastSyncedAt = (ts: string, masterKey: Buffer): void =>
+  store.saveCursors({ last_synced_at: ts }, masterKey);
+export const flushLastSyncedAt = store.flushCursors;

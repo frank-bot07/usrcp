@@ -12,12 +12,12 @@
   },
   "scripts": {
     "postinstall": "node -e \"const fs=require(\\\"fs\\\"); for (const p of [\\\"node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-local/node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-stream/node_modules/better-sqlite3/build\\\"]) fs.rmSync(p,{recursive:true,force:true})\" && npm rebuild better-sqlite3",
-    "prebuild": "cd ../usrcp-local && npm run build",
+    "prebuild": "cd ../usrcp-adapter-kit && npm run build",
     "build": "tsc",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
     "lint": "tsc --noEmit",
-    "pretest": "cd ../usrcp-local && npm run build",
+    "pretest": "cd ../usrcp-adapter-kit && npm run build",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -35,7 +35,8 @@
   },
   "dependencies": {
     "@octokit/rest": "^20.1.2",
-    "usrcp-local": "file:../usrcp-local"
+    "usrcp-local": "file:../usrcp-local",
+    "usrcp-adapter-kit": "file:../usrcp-adapter-kit"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",

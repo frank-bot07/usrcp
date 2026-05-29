@@ -3,6 +3,16 @@
   "version": "0.1.7",
   "description": "Local MCP server for USRCP — persistent AI memory on your machine",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./encryption": "./dist/encryption.js",
+    "./ledger": "./dist/ledger/index.js",
+    "./scope-enforcement": "./dist/scope-enforcement.js",
+    "./google-oauth": "./dist/adapters/google-oauth/index.js",
+    "./dist/*": "./dist/*",
+    "./package.json": "./package.json"
+  },
   "files": [
     "dist/**/*.js",
     "dist/**/*.d.ts"
