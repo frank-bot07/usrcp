@@ -163,7 +163,9 @@ Ledger.prototype.getProjects = function (
   this: Ledger,
   status?: string
 ): (ActiveProject & {tampered?: boolean})[] {
-  // All project fields are encrypted — fetch all and filter in memory
+  // Project content (name/domain/status/summary) is encrypted; project_id
+  // and last_touched are plaintext (see upsertProject). status is encrypted
+  // so we can't filter in SQL — fetch all and filter in memory after decrypt.
   const rows = this.db
     .prepare("SELECT * FROM active_projects ORDER BY last_touched DESC")
     .all() as any[];
@@ -216,6 +218,12 @@ Ledger.prototype.upsertProject = function (
         summary = excluded.summary`
     )
     .run(
+      // project_id is stored PLAINTEXT: it's the ON CONFLICT key, and GCM
+      // encryption uses a random IV per write, so the same id would produce
+      // a different ciphertext each time and never match for upsert. It's
+      // the opaque slug the caller chooses, not user content. last_touched
+      // (a timestamp) is likewise plaintext. All actual content —
+      // name/domain/status/summary — is encrypted.
       project.project_id,
       this.encryptGlobal(project.name),
       this.encryptGlobal(project.domain),

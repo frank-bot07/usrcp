@@ -218,12 +218,15 @@ Read-only clients that browse the encrypted ledger via a local `usrcp serve` sub
 
 ## What's Encrypted
 
-**Everything.** An attacker reading the SQLite file sees:
+**All your content.** Every field that carries what you said, did, or stored is
+ciphertext at rest. What stays in the clear is structural metadata — opaque
+identifiers and timestamps that reveal *when*, never *what*. An attacker reading
+the SQLite file sees:
 
 | Column | What they see |
 |--------|--------------|
-| `event_id` | Opaque ULID |
-| `timestamp` | When (not what) |
+| `event_id` | Opaque ULID (plaintext — random identifier, no content) |
+| `timestamp` | When, not what (plaintext) |
 | `domain` | HMAC pseudonym (`d_1ac6397ab4d2`) |
 | `summary` | `enc:base64ciphertext...` |
 | `intent` | `enc:base64ciphertext...` |
@@ -232,6 +235,12 @@ Read-only clients that browse the encrypted ledger via a local `usrcp serve` sub
 | `detail` | `enc:base64ciphertext...` |
 | `tags` | `enc:base64ciphertext...` |
 | `audit_log.*` | `enc:base64ciphertext...` |
+
+The same rule holds in the other tables: in `active_projects`, the content
+fields (`name`, `domain`, `status`, `summary`) are `enc:` ciphertext, while
+`project_id` (the opaque slug you choose — it's the upsert key, so it can't be a
+random-IV ciphertext) and `last_touched` stay plaintext. No field that holds
+user content is ever stored in the clear.
 
 In passphrase mode, no key file exists on disk. The key is derived via scrypt on startup and zeroed on shutdown.
 
