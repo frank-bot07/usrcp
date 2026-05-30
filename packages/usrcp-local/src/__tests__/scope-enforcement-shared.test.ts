@@ -22,6 +22,10 @@ import {
   outOfScopeResponse,
   registerToolsWithScopes,
   resolveScopes,
+  projectStateResult,
+  projectSearchResult,
+  buildScopedStatusPayload,
+  filterEventsToScopes,
 } from "../scope-enforcement.js";
 
 describe("resolveScopes (shared) - core contract", () => {
@@ -425,5 +429,232 @@ describe("registerToolsWithScopes (shared) - direct wrapper exercise", () => {
     );
     expect(failWrite.status).toBe("out_of_scope");
     expect(failWrite.allowed_domains).toEqual(["coding"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v0.1.8 — central default-deny read projection
+//
+// Before v0.1.8 a multi-domain-read tool whose scopeOf returned "all" was
+// trusted to self-filter its output inside its own handler closure. The
+// wrapper enforced nothing on the output, so a read tool that forgot to
+// redact a facet leaked cross-domain data silently (the v0.1.3 globals
+// leak and the v0.1.4 audit-log leak were both this shape). The wrapper
+// now (a) REFUSES to register a cross-domain read tool that declares no
+// readProjection when reads are scoped, and (b) applies the declared
+// projection centrally to every cross-domain read's output. These tests
+// pin both halves of that contract.
+// ---------------------------------------------------------------------------
+
+describe("default-deny registration invariant (v0.1.8)", () => {
+  function makeServer(): {
+    server: McpServer;
+    registered: Record<string, { handler: (p: any) => Promise<any> }>;
+  } {
+    const server = new McpServer({ name: "t", version: "0.0.0" });
+    return { server, registered: (server as any)._registeredTools };
+  }
+
+  const crossDomainNoProjection: ScopedToolDef = {
+    name: "t_leaky_read",
+    description: "a cross-domain read that forgot to declare a projection",
+    inputShape: {},
+    handler: async () => ({ content: [{ type: "text" as const, text: "{}" }] }),
+    mutating: false,
+    kind: "multi-domain-read",
+    scopeOf: () => "all",
+    // readProjection intentionally omitted — this is the bug class.
+  };
+
+  it("refuses to register a multi-domain-read tool with no readProjection when reads are scoped", () => {
+    const { server } = makeServer();
+    expect(() =>
+      registerToolsWithScopes(
+        server,
+        [crossDomainNoProjection],
+        { readScopes: ["coding"], agentId: "a1" } as ServeOptions,
+        null,
+      ),
+    ).toThrow(/t_leaky_read.*readProjection/s);
+  });
+
+  it("refuses to register a global-read tool with no readProjection when reads are scoped", () => {
+    const { server } = makeServer();
+    expect(() =>
+      registerToolsWithScopes(
+        server,
+        [{ ...crossDomainNoProjection, name: "t_leaky_global", kind: "global-read", scopeOf: undefined }],
+        { scopes: ["coding"], agentId: "a1" } as ServeOptions,
+        null,
+      ),
+    ).toThrow(/t_leaky_global.*readProjection/s);
+  });
+
+  it("allows the same tool when reads are UNscoped (owner sees everything; nothing to project)", () => {
+    const { server, registered } = makeServer();
+    // --write-scopes only leaves reads unrestricted → readScopes undefined.
+    registerToolsWithScopes(
+      server,
+      [crossDomainNoProjection],
+      { writeScopes: ["coding"], agentId: "a1" } as ServeOptions,
+      null,
+    );
+    expect(Object.keys(registered)).toContain("t_leaky_read");
+  });
+
+  it("allows a cross-domain read tool that DOES declare a readProjection under a read scope", () => {
+    const { server, registered } = makeServer();
+    registerToolsWithScopes(
+      server,
+      [{ ...crossDomainNoProjection, readProjection: (p) => p }],
+      { readScopes: ["coding"], agentId: "a1" } as ServeOptions,
+      null,
+    );
+    expect(Object.keys(registered)).toContain("t_leaky_read");
+  });
+
+  it("domain-scoped reads do NOT require a projection (gated at the input layer)", () => {
+    const { server, registered } = makeServer();
+    registerToolsWithScopes(
+      server,
+      [
+        {
+          name: "t_domain_read",
+          description: "domain-scoped read",
+          inputShape: { domain: z.string() },
+          handler: async () => ({ content: [{ type: "text" as const, text: "{}" }] }),
+          mutating: false,
+          kind: "domain-scoped",
+          scopeOf: (p) => [String(p.domain)],
+        },
+      ],
+      { readScopes: ["coding"], agentId: "a1" } as ServeOptions,
+      null,
+    );
+    expect(Object.keys(registered)).toContain("t_domain_read");
+  });
+});
+
+describe("central projection application (v0.1.8)", () => {
+  function makeServer(): {
+    server: McpServer;
+    registered: Record<string, { handler: (p: any) => Promise<any> }>;
+  } {
+    const server = new McpServer({ name: "t", version: "0.0.0" });
+    return { server, registered: (server as any)._registeredTools };
+  }
+
+  const def = (readProjection: ScopedToolDef["readProjection"]): ScopedToolDef => ({
+    name: "t_proj",
+    description: "projected read",
+    inputShape: {},
+    // Handler returns a RAW payload (not an envelope) — the wrapper serializes.
+    handler: async () => ({ secret: "GLOBAL", events: [{ domain: "coding" }, { domain: "personal" }] }),
+    mutating: false,
+    kind: "multi-domain-read",
+    scopeOf: () => "all",
+    readProjection,
+  });
+
+  it("applies the projection to handler output and serializes it when read-scoped", async () => {
+    const { server, registered } = makeServer();
+    registerToolsWithScopes(
+      server,
+      [def((payload, rs) => filterEventsToScopes(payload.events, rs))],
+      { readScopes: ["coding"], agentId: "a1" } as ServeOptions,
+      { logAudit() {} },
+    );
+    const out = JSON.parse((await registered["t_proj"].handler({}, {})).content[0].text);
+    // Projection returned only the in-scope events; the global secret is gone.
+    expect(out).toEqual([{ domain: "coding" }]);
+  });
+
+  it("serializes the raw payload WITHOUT projecting when unscoped (--write-scopes only)", async () => {
+    const { server, registered } = makeServer();
+    const proj = vi.fn((payload) => payload);
+    registerToolsWithScopes(
+      server,
+      [def(proj)],
+      { writeScopes: ["coding"], agentId: "a1" } as ServeOptions,
+      { logAudit() {} },
+    );
+    const out = JSON.parse((await registered["t_proj"].handler({}, {})).content[0].text);
+    // Owner (unscoped reads) sees the full payload; projection not invoked.
+    expect(proj).not.toHaveBeenCalled();
+    expect(out.secret).toBe("GLOBAL");
+    expect(out.events).toHaveLength(2);
+  });
+});
+
+describe("read-projection pure functions (v0.1.8)", () => {
+  it("projectStateResult drops globals and filters per-domain facets to the allowlist", () => {
+    const payload = {
+      state: {
+        core_identity: { display_name: "owner" },
+        global_preferences: { custom: { secret: "PLANTED" } },
+        active_projects: [
+          { project_id: "a", domain: "coding" },
+          { project_id: "b", domain: "personal" },
+        ],
+        domain_context: { coding: { framework: "x" }, personal: { mood: "y" } },
+        recent_timeline: [
+          { event_id: "1", domain: "coding" },
+          { event_id: "2", domain: "personal" },
+        ],
+      },
+    };
+    const out = projectStateResult(payload, ["coding"]);
+    expect(out.state.core_identity).toBeUndefined();
+    expect(out.state.global_preferences).toBeUndefined();
+    expect(out.state.active_projects).toEqual([{ project_id: "a", domain: "coding" }]);
+    expect(out.state.domain_context).toEqual({ coding: { framework: "x" } });
+    expect(out.state.recent_timeline).toEqual([{ event_id: "1", domain: "coding" }]);
+  });
+
+  it("projectSearchResult filters events and recomputes result_count (no out-of-scope volume leak)", () => {
+    const out = projectSearchResult(
+      {
+        query: "q",
+        result_count: 3,
+        events: [
+          { event_id: "1", domain: "coding" },
+          { event_id: "2", domain: "personal" },
+          { event_id: "3", domain: "coding" },
+        ],
+      },
+      ["coding"],
+    );
+    expect(out.result_count).toBe(2);
+    expect(out.events.every((e: any) => e.domain === "coding")).toBe(true);
+    expect(out.query).toBe("q");
+  });
+
+  it("filterEventsToScopes fails closed on events with no resolvable domain", () => {
+    const events = [
+      { event_id: "1", domain: "coding" },
+      { event_id: "2" }, // no domain — must be dropped, not passed through
+      { event_id: "3", domain: undefined },
+    ];
+    expect(filterEventsToScopes(events as any, ["coding"])).toEqual([
+      { event_id: "1", domain: "coding" },
+    ]);
+  });
+
+  it("buildScopedStatusPayload emits only the scope-safe envelope fields", () => {
+    const out = buildScopedStatusPayload({
+      usrcp_version: "0.1.7",
+      user_id: "usrcp://local/u_x",
+      stats: { total_events: 2, domains: ["coding"], platforms: ["cli"], encryption_enabled: true },
+      active_projects: 1,
+      allowed_domains: ["coding"],
+    });
+    expect(out.scoped).toBe(true);
+    expect(out.allowed_domains).toEqual(["coding"]);
+    expect(out.active_projects).toBe(1);
+    expect(out.ledger).toBe("local (SQLite)");
+    // Unscoped-only aggregates must never appear in the scoped envelope.
+    expect(out).not.toHaveProperty("total_projects");
+    expect(out).not.toHaveProperty("db_size_bytes");
+    expect(out).not.toHaveProperty("audit_log_entries");
   });
 });

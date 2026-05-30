@@ -148,8 +148,20 @@ export function registerStreamTools(
   // swallow gap Codex Tier-2 #4 flagged. A future PR could pass an
   // explicit callback here to route the warning through the cloud
   // metrics pipeline instead.
+  //
+  // `enforceReadProjection: false` opts out of the v0.1.8 default-deny
+  // read-projection invariant. usrcp-local's cross-domain reads declare a
+  // central `readProjection` that the wrapper applies as the authoritative
+  // output redaction; stream still redacts via the older scope-wall
+  // injection above (allowedScopes threaded into each tool factory). That
+  // is the more fragile self-filter pattern the invariant exists to
+  // replace — MIGRATION DEBT: move stream's recall/thread/active-surface/
+  // status reads onto readProjection, then drop this flag and the
+  // allowedScopes plumbing. Until then, the opt-out is explicit and
+  // documented rather than a silent bypass.
   registerToolsWithScopes(mcpServer, defs, serveOpts, ledger ?? null, {
     strictAudit: false,
+    enforceReadProjection: false,
   });
 
   return {
