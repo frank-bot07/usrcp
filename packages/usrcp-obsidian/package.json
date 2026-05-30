@@ -1,6 +1,6 @@
 {
   "name": "usrcp-obsidian",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Obsidian capture adapter for USRCP — watches a local vault and appends note edits to the ledger",
   "main": "dist/index.js",
   "files": [
@@ -28,7 +28,7 @@
     "memory",
     "notes"
   ],
-  "author": "USRCP Contributors",
+  "author": "Chad Garner",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=20.0.0"

@@ -1,6 +1,6 @@
 {
   "name": "usrcp-github",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "GitHub capture adapter for USRCP - polls the REST API for pull requests authored by the configured user and appends them to the local ledger",
   "main": "dist/index.js",
   "files": [
@@ -28,7 +28,7 @@
     "memory",
     "pull-requests"
   ],
-  "author": "USRCP Contributors",
+  "author": "Chad Garner",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=20.0.0"

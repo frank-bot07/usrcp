@@ -1,6 +1,6 @@
 {
   "name": "usrcp-gmail",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Gmail capture adapter for USRCP - polls the configured user's SENT messages and appends them to the local ledger",
   "main": "dist/index.js",
   "files": [
@@ -28,7 +28,7 @@
     "memory",
     "email"
   ],
-  "author": "USRCP Contributors",
+  "author": "Chad Garner",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=20.0.0"

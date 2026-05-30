@@ -1,6 +1,6 @@
 {
   "name": "usrcp-imessage",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "iMessage capture+reader adapter for USRCP — macOS-only, shells out to steipete/imsg for chat.db access",
   "main": "dist/index.js",
   "os": [
@@ -31,7 +31,7 @@
     "memory",
     "macos"
   ],
-  "author": "USRCP Contributors",
+  "author": "Chad Garner",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=20.0.0"

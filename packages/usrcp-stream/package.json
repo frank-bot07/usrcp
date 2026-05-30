@@ -1,6 +1,6 @@
 {
   "name": "usrcp-stream",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Cross-surface conversation layer for USRCP - encrypted local capture, embeddings, thread stitching, active-surface presence",
   "main": "dist/index.js",
   "files": [
@@ -29,7 +29,7 @@
     "embeddings",
     "vector-search"
   ],
-  "author": "USRCP Contributors",
+  "author": "Chad Garner",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=20.0.0"

@@ -117,7 +117,7 @@ export function createServer(
 
   const server = new McpServer({
     name: "usrcp-local",
-    version: "0.1.7",
+    version: "0.1.8",
   });
 
   // Tool definitions — declarative table. registerToolsWithScopes filters
@@ -212,7 +212,7 @@ export function createServer(
         }
 
         return {
-          usrcp_version: "0.1.7",
+          usrcp_version: "0.1.8",
           user_id: formatUserId(identity?.user_id),
           resolved_at: new Date().toISOString(),
           state,
@@ -307,7 +307,7 @@ export function createServer(
               type: "text" as const,
               text: JSON.stringify(
                 {
-                  usrcp_version: "0.1.7",
+                  usrcp_version: "0.1.8",
                   status: result.duplicate ? "duplicate" : "accepted",
                   ...result,
                 },
@@ -966,7 +966,7 @@ export function createServer(
       // the wrapper swaps in the scoped envelope when read-scoped.
       readProjection: (_full, rs) =>
         buildScopedStatusPayload({
-          usrcp_version: "0.1.7",
+          usrcp_version: "0.1.8",
           user_id: formatUserId(identity?.user_id),
           stats: ledger.getStatsForScopes(rs),
           active_projects: ledger
@@ -980,7 +980,7 @@ export function createServer(
         const projects = ledger.getProjects();
 
         return {
-          usrcp_version: "0.1.7",
+          usrcp_version: "0.1.8",
           user_id: formatUserId(identity?.user_id),
           ledger: "local (SQLite)",
           stats,
