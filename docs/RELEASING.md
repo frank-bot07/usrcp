@@ -63,8 +63,11 @@ npm install /path/to/usrcp/release-artifacts/usrcp-local-*.tgz \
 
 ## Real publish
 
-Requires an npm automation token with publish rights to the `usrcp-*` names,
-exposed as `NODE_AUTH_TOKEN` (CI reads the `NPM_TOKEN` repo secret).
+Requires an npm token with publish rights to the `usrcp-*` names — a granular
+token scoped to **All packages / Read and write** (classic Automation also
+works if your account still offers it) — exposed as `NODE_AUTH_TOKEN` (CI reads
+the `NPM_TOKEN` repo secret). This is the token path; the Trusted Publishing
+section below is the eventual token-free upgrade.
 
 **Via CI (preferred):** push a version tag.
 
@@ -72,8 +75,8 @@ exposed as `NODE_AUTH_TOKEN` (CI reads the `NPM_TOKEN` repo secret).
 git tag v0.1.8 && git push origin v0.1.8
 ```
 
-`.github/workflows/publish.yml` runs the dry-run pack, then publishes with the
-token. It can also be run manually from the Actions tab (`execute: true`).
+`.github/workflows/publish.yml` runs the dry-run pack, then publishes. It can
+also be run manually from the Actions tab (`execute: true`).
 
 **Locally (fallback):**
 
@@ -81,6 +84,39 @@ token. It can also be run manually from the Actions tab (`execute: true`).
 npm whoami                                  # confirm you're authed
 node scripts/release/publish.mjs --execute
 ```
+
+## Trusted Publishing (OIDC) — token-free CI, with provenance
+
+The workflow is wired for npm Trusted Publishing: it requests an OIDC
+`id-token`, so once a package trusts this workflow, CI publishes it **without
+the `NPM_TOKEN` secret** and attaches a signed **provenance** attestation
+(the "Published via GitHub Actions" badge on npm). The token stays as a
+fallback, so nothing breaks before OIDC is configured — each package upgrades
+to OIDC the moment you set its trusted publisher.
+
+**Chicken-and-egg:** trusted publishing can only be configured on a package
+that already exists. So the sequence is:
+
+1. **First publish** creates the names (token path — CI or local `--execute`).
+2. For each published package, on npmjs.com:
+   **Package → Settings → Publishing access → "Require two-factor… or
+   automation/granular tokens" + Add trusted publisher** →
+   - Publisher: **GitHub Actions**
+   - Organization/user: `frank-bot07`
+   - Repository: `usrcp`
+   - Workflow filename: `publish.yml`
+   - Environment: *(leave blank — the workflow uses none)*
+3. After that, tag-triggered releases authenticate via OIDC; the `NPM_TOKEN`
+   secret can eventually be removed once **all** packages are configured.
+
+Requires npm CLI ≥ 11.5.1 in CI (the workflow's `npm install -g npm@latest`
+covers it) and a **public** repo (provenance requires it — this repo is public).
+
+> Note: this is the one release step that can't be dry-run locally — the OIDC
+> handshake only happens inside GitHub Actions on a real tag/dispatch run.
+> Verify it on the first tagged release after configuring a package (the run
+> log shows `Provenance statement published` and the npm page shows the
+> provenance badge).
 
 ## Versioning
 
@@ -91,9 +127,11 @@ release script to bump them together.)
 
 ## First publish checklist
 
-- [ ] Add the `NPM_TOKEN` repo secret (automation token, publish scope).
+- [ ] Add the `NPM_TOKEN` repo secret (granular token, All packages / read+write).
 - [ ] Confirm the `usrcp-*` package names are available / owned on npm.
 - [ ] Run a full local dry run and inspect tarballs.
 - [ ] Tag and let CI publish, or publish locally with `--execute`.
 - [ ] After publish, flip the README install section from the source-build path
       to `npm i -g` / `npx`, and update the Homebrew adapter note.
+- [ ] (Optional, post-first-publish) Configure a trusted publisher per package
+      for token-free OIDC + provenance; once all are set, drop `NPM_TOKEN`.

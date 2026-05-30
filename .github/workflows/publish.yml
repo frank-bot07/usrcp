@@ -4,11 +4,23 @@ name: publish
 # scripts/release/publish.mjs. Triggered by pushing a version tag
 # (e.g. v0.1.8) or manually via the Actions tab.
 #
-# Requires a repository secret `NPM_TOKEN` — an npm automation token with
-# publish rights to the usrcp-* packages. Until that secret exists this
-# workflow will fail at the publish step (by design: nothing publishes
-# without explicit auth). The build + pack dry run runs regardless, so a
-# tag still gets a tarball-level sanity check even before auth is wired.
+# Auth model — hybrid, OIDC-preferred:
+#
+#   - Trusted Publishing (OIDC): once a package has a trusted publisher
+#     configured on npm (Package settings → Publishing access → GitHub
+#     Actions: repo frank-bot07/usrcp, workflow publish.yml), npm CLI
+#     >= 11.5.1 authenticates via the `id-token` minted below — no token,
+#     and a signed provenance attestation is attached automatically.
+#   - Token fallback: for the FIRST publish (trusted publishing can only
+#     be configured on a package that already exists) and for any package
+#     not yet OIDC-configured, npm falls back to NODE_AUTH_TOKEN from the
+#     NPM_TOKEN secret.
+#
+# So this workflow works today via the token, and transparently upgrades
+# to token-free OIDC + provenance per package as you configure each one
+# on npm — no edit to this file required. See docs/RELEASING.md for the
+# per-package npm-side setup. The build + pack dry run runs regardless, so
+# a tag always gets a tarball-level sanity check even before any auth.
 
 on:
   push:
@@ -24,12 +36,20 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # id-token: write lets npm mint the OIDC token for Trusted Publishing
+    # and provenance. contents: read is the least-privilege default for
+    # checkout. Without id-token:write, npm silently uses the token only.
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
+      # Trusted Publishing + provenance require npm >= 11.5.1; npm@latest
+      # satisfies that and is already needed for the EBADPLATFORM fix.
       - name: Upgrade npm
         run: npm install -g npm@latest
 
@@ -56,6 +76,12 @@ jobs:
 
       # Publish only on a tag push, or when the manual dispatch sets
       # execute=true. The release script restores package.json regardless.
+      #
+      # NODE_AUTH_TOKEN is the fallback; when a package has Trusted
+      # Publishing configured, npm prefers the OIDC id-token (from the
+      # job permissions above) and ignores the token. Keeping both means
+      # the first publish works before any OIDC config exists, and each
+      # package upgrades to OIDC the moment its trusted publisher is set.
       - name: Publish to npm
         if: github.event_name == 'push' || inputs.execute == true
         env:
