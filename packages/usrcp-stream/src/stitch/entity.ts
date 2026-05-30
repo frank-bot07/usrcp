@@ -1,4 +1,4 @@
-import type { Ledger } from "usrcp-local/dist/ledger/index.js";
+import type { Ledger } from "usrcp-local/ledger";
 
 export interface EntityResolver {
   resolve(content: string): Promise<string[]>;

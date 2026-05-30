@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { StreamHandle } from "../db/index.js";
-import type { Ledger } from "usrcp-local/dist/ledger/index.js";
+import type { Ledger } from "usrcp-local/ledger";
 import { syncStreamPush } from "../sync.js";
 import { okResponse, errorResponse, type StreamToolDef } from "./types.js";
 

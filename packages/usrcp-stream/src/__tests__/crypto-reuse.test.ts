@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import * as encryption from "usrcp-local/dist/encryption.js";
+import * as encryption from "usrcp-local/encryption";
 import { _crypto } from "../db/encrypted-row.js";
 
 // This test catches the regression where someone copy-pastes the crypto

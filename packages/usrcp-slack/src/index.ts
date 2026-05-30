@@ -23,8 +23,8 @@
 import { execSync } from "node:child_process";
 import { App, LogLevel } from "@slack/bolt";
 import type { GenericMessageEvent } from "@slack/types";
-import { Ledger } from "usrcp-local/dist/ledger/index.js";
-import { getUserDir } from "usrcp-local/dist/encryption.js";
+import { Ledger } from "usrcp-local/ledger";
+import { getUserDir } from "usrcp-local/encryption";
 import { loadConfig, preflightConfig } from "./config.js";
 import { captureMessage, type CaptureMessage } from "./capture.js";
 import { captureMessageToStream } from "./stream-capture.js";

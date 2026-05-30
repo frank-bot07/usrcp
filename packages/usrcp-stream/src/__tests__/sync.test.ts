@@ -3,8 +3,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
-import { Ledger } from "usrcp-local/dist/ledger/index.js";
-import { setUserSlug } from "usrcp-local/dist/encryption.js";
+import { Ledger } from "usrcp-local/ledger";
+import { setUserSlug } from "usrcp-local/encryption";
 import { createStreamCaptureClient } from "../capture-client.js";
 import {
   syncStreamPush,

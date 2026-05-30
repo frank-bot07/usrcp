@@ -13,7 +13,7 @@
  */
 
 import { OAuth2Client } from "google-auth-library";
-import { runLocalhostOauthFlow } from "usrcp-local/dist/adapters/google-oauth/index.js";
+import { runLocalhostOauthFlow } from "usrcp-local/google-oauth";
 import {
   getConfigPath,
   writeGoogleCalendarConfig,
