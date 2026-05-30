@@ -1,6 +1,6 @@
 {
   "name": "usrcp-claude-code",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "USRCP capture adapter for Claude Code CLI - tails ~/.claude/projects/<dir>/*.jsonl session transcripts into usrcp-stream",
   "main": "dist/index.js",
   "files": [
@@ -28,7 +28,7 @@
     "memory",
     "stream"
   ],
-  "author": "USRCP Contributors",
+  "author": "Chad Garner",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=20.0.0"

@@ -1,6 +1,6 @@
 {
   "name": "usrcp-discord",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Discord capture+reader adapter for USRCP — vision-proof cross-channel memory",
   "main": "dist/index.js",
   "files": [
@@ -27,7 +27,7 @@
     "adapter",
     "memory"
   ],
-  "author": "USRCP Contributors",
+  "author": "Chad Garner",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=20.0.0"

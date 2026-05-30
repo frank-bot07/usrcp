@@ -1,6 +1,6 @@
 {
   "name": "usrcp-linear",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Linear capture adapter for USRCP — polls Linear's GraphQL API for issues and comments authored by the configured user, and appends them to the local ledger",
   "main": "dist/index.js",
   "files": [
@@ -28,7 +28,7 @@
     "memory",
     "issue-tracker"
   ],
-  "author": "USRCP Contributors",
+  "author": "Chad Garner",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=20.0.0"

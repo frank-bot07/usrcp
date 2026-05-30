@@ -1,6 +1,6 @@
 {
   "name": "usrcp-local",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Local MCP server for USRCP — persistent AI memory on your machine",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -41,7 +41,7 @@
     "llm",
     "agent"
   ],
-  "author": "USRCP Contributors",
+  "author": "Chad Garner",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=18.0.0"
