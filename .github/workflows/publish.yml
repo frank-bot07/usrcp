@@ -34,6 +34,10 @@ on:
         default: false
 
 jobs:
+  # The 13 cross-platform packages publish from Linux. usrcp-imessage is
+  # darwin-only (`"os": ["darwin"]`) — it can't even `npm ci` on Linux
+  # (EBADPLATFORM), so it's excluded here and published from the macOS job
+  # below (mirrors the split in test.yml).
   publish:
     runs-on: ubuntu-latest
     # id-token: write lets npm mint the OIDC token for Trusted Publishing
@@ -56,8 +60,9 @@ jobs:
       # Each publishable package is built from its own dir; the release
       # script calls `npm run build` per package (prebuild handles the
       # sibling chain), but it needs deps installed first. Install the
-      # tier-1/2 packages plus every adapter so tsc + sibling builds resolve.
-      - name: Install deps in publishable packages
+      # tier-1/2 packages plus every cross-platform adapter so tsc +
+      # sibling builds resolve. (usrcp-imessage omitted — darwin-only.)
+      - name: Install deps in cross-platform packages
         run: |
           for pkg in usrcp-local usrcp-adapter-kit usrcp-stream \
                      usrcp-obsidian usrcp-linear usrcp-github usrcp-gmail \
@@ -71,8 +76,8 @@ jobs:
       # Always run the dry-run pack first — builds everything, rewrites
       # deps, packs each tarball, restores. Catches build/metadata errors
       # before any publish.
-      - name: Dry-run pack
-        run: node scripts/release/publish.mjs
+      - name: Dry-run pack (excl. darwin-only imessage)
+        run: node scripts/release/publish.mjs --exclude=usrcp-imessage
 
       # Publish only on a tag push, or when the manual dispatch sets
       # execute=true. The release script restores package.json regardless.
@@ -82,8 +87,42 @@ jobs:
       # job permissions above) and ignores the token. Keeping both means
       # the first publish works before any OIDC config exists, and each
       # package upgrades to OIDC the moment its trusted publisher is set.
-      - name: Publish to npm
+      - name: Publish to npm (excl. darwin-only imessage)
         if: github.event_name == 'push' || inputs.execute == true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: node scripts/release/publish.mjs --execute
+        run: node scripts/release/publish.mjs --execute --exclude=usrcp-imessage
+
+  # usrcp-imessage is darwin-only, so it builds + publishes from macOS.
+  # Runs after the Linux job so its ^0.1.8 deps (usrcp-local / -stream /
+  # -adapter-kit) already exist on npm by the time anyone installs it.
+  publish-imessage:
+    needs: publish
+    runs-on: macos-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+      # imessage's prebuild builds usrcp-adapter-kit + usrcp-stream (which
+      # build usrcp-local), so install all four.
+      - name: Install deps (imessage + sibling build chain)
+        run: |
+          for pkg in usrcp-local usrcp-adapter-kit usrcp-stream usrcp-imessage; do
+            echo "::group::npm ci in $pkg"
+            (cd "packages/$pkg" && npm ci)
+            echo "::endgroup::"
+          done
+      - name: Dry-run pack (imessage only)
+        run: node scripts/release/publish.mjs --only=usrcp-imessage
+      - name: Publish usrcp-imessage to npm
+        if: github.event_name == 'push' || inputs.execute == true
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: node scripts/release/publish.mjs --execute --only=usrcp-imessage
