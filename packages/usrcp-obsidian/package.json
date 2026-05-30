@@ -43,5 +43,12 @@
     "better-sqlite3": "12.10.0",
     "typescript": "5.9.3",
     "vitest": "4.1.4"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/frank-bot07/usrcp.git",
+    "directory": "packages/usrcp-obsidian"
+  },
+  "homepage": "https://github.com/frank-bot07/usrcp/tree/main/packages/usrcp-obsidian#readme",
+  "bugs": "https://github.com/frank-bot07/usrcp/issues"
 }

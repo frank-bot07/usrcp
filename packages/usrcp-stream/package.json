@@ -51,5 +51,12 @@
     "typescript": "5.9.3",
     "usrcp-cloud": "file:../usrcp-cloud",
     "vitest": "4.1.4"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/frank-bot07/usrcp.git",
+    "directory": "packages/usrcp-stream"
+  },
+  "homepage": "https://github.com/frank-bot07/usrcp/tree/main/packages/usrcp-stream#readme",
+  "bugs": "https://github.com/frank-bot07/usrcp/issues"
 }
