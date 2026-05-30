@@ -12,6 +12,9 @@
 
 set -euo pipefail
 
+# Directory this script lives in (for locating sibling scripts + packages).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # ─── Config ────────────────────────────────────────────────────────────────
 # Override any of these in the environment before invoking the script.
 : "${DEMO_PASSPHRASE:=demo-passphrase}"
@@ -208,6 +211,22 @@ scenario_adapter() {
   HOME="$DEMO_HOME" USRCP_PASSPHRASE="$DEMO_PASSPHRASE_V2" usrcp setup
 }
 
+# ─── Cross-editor proof ────────────────────────────────────────────────────
+# The headless version of the pitch's central artifact: two MCP sessions
+# (= two editors) sharing one ledger, plus a raw-DB ciphertext scan. Runs
+# in its own isolated HOME — independent of DEMO_HOME — so it's safe to run
+# standalone before recording the on-camera two-editor demo
+# (docs/demos/cross-editor.md).
+scenario_cross_client() {
+  banner "Cross-editor proof (headless)"
+  local entry="$SCRIPT_DIR/../packages/usrcp-local/dist/index.js"
+  if [[ ! -f "$entry" ]]; then
+    warn "Building usrcp-local first…"
+    (cd "$SCRIPT_DIR/../packages/usrcp-local" && npm run build >/dev/null) || fail "build failed"
+  fi
+  node "$SCRIPT_DIR/cross-client-proof.mjs"
+}
+
 # ─── Cleanup ───────────────────────────────────────────────────────────────
 scenario_cleanup() {
   banner "Cleanup"
@@ -238,6 +257,8 @@ Scenarios:
   pair-join PAIRING    Scenario 3 device B: join with the string from device A
   cloud-down           Scenario 3 teardown: stop cloud + Postgres
   adapter              Scenario 4: claude-code adapter (interactive wizard)
+  cross-client         Headless cross-editor proof: 2 MCP sessions share one
+                       ledger + raw-DB ciphertext scan (docs/demos/cross-editor.md)
   cleanup              Stop docker, remove DEMO_HOME / DEMO_HOME_B
   all-local            Run scenarios 1+2+4 in order (no cloud, no pairing)
 
@@ -261,6 +282,7 @@ case "${1:-}" in
   pair-init)    scenario_pair_init ;;
   pair-join)    shift; scenario_pair_join "$@" ;;
   adapter)      scenario_adapter ;;
+  cross-client) scenario_cross_client ;;
   cleanup)      scenario_cleanup ;;
   all-local)    scenario_check && scenario_setup && scenario_rotate && scenario_adapter ;;
   ""|-h|--help|help) usage ;;
