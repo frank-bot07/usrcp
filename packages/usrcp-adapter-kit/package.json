@@ -1,0 +1,42 @@
+{
+  "name": "usrcp-adapter-kit",
+  "version": "0.1.7",
+  "description": "Shared encrypted-at-rest config store and helpers for USRCP capture adapters",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts"
+  ],
+  "scripts": {
+    "prebuild": "cd ../usrcp-local && npm run build",
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "lint": "tsc --noEmit",
+    "pretest": "cd ../usrcp-local && npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "usrcp",
+    "adapter",
+    "config"
+  ],
+  "author": "USRCP Contributors",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "usrcp-local": "file:../usrcp-local"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.17",
+    "typescript": "5.9.3",
+    "vitest": "4.1.4"
+  }
+}
