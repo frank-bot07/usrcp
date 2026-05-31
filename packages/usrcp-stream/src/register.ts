@@ -24,6 +24,84 @@ import { streamSyncPull } from "./tools/stream-sync-pull.js";
 import { streamSyncStatus } from "./tools/stream-sync-status.js";
 import type { StreamToolDef } from "./tools/types.js";
 
+function payloadFromTextResult(result: any): any {
+  const text = result?.content?.[0]?.text;
+  if (typeof text !== "string") {
+    throw new Error("stream read tool returned an invalid MCP text envelope");
+  }
+  return JSON.parse(text);
+}
+
+function projectedRead(
+  def: StreamToolDef,
+  project: (payload: any, readScopes: string[]) => any,
+): StreamToolDef {
+  return {
+    ...def,
+    handler: async (params) => payloadFromTextResult(await def.handler(params)),
+    readProjection: project,
+  };
+}
+
+function projectRecall(payload: any, readScopes: string[]): any {
+  if (!Array.isArray(payload?.hits)) return payload;
+  const allowed = new Set(readScopes);
+  return { ...payload, hits: payload.hits.filter((hit: any) => allowed.has(hit?.surface)) };
+}
+
+function projectThread(payload: any, readScopes: string[]): any {
+  if (!Array.isArray(payload?.events)) return payload;
+  const allowed = new Set(readScopes);
+  const events = payload.events.filter((event: any) => allowed.has(event?.surface));
+  if (events.length === 0) {
+    return { status: "not_found", thread_id: payload.thread_id, events: [] };
+  }
+  return {
+    ...payload,
+    first_ts_ms: events[0].ts_ms,
+    last_ts_ms: events[events.length - 1].ts_ms,
+    surfaces: Array.from(new Set(events.map((event: any) => event.surface))),
+    // Thread-level entity refs are an aggregate across surfaces. The public
+    // event shape intentionally omits per-event refs, so the final projector
+    // cannot prove which aggregate refs came from an allowed surface.
+    entity_refs: [],
+    events,
+  };
+}
+
+function projectActiveSurface(payload: any, readScopes: string[]): any {
+  if (!payload?.active || readScopes.includes(payload.active.surface)) return payload;
+  return { ...payload, active: null };
+}
+
+function projectStatus(payload: any, readScopes: string[]): any {
+  const { db_path: _dbPath, ...rest } = payload ?? {};
+  return { ...rest, scoped: true, allowed_surfaces: readScopes };
+}
+
+function projectPrewarm(payload: any, readScopes: string[]): any {
+  if (!Array.isArray(payload?.source_surfaces)) return payload;
+  const unexpected = payload.source_surfaces.filter(
+    (surface: unknown) => typeof surface !== "string" || !readScopes.includes(surface),
+  );
+  if (unexpected.length === 0) return payload;
+  // The summary is aggregate text. If an unsafe handler included any
+  // out-of-scope source, discard the full summary rather than attempting to
+  // redact prose after generation.
+  return {
+    status: "out_of_scope",
+    error: "OUT_OF_SCOPE",
+    source_surfaces: [],
+    summary: "",
+  };
+}
+
+function projectSyncStatus(payload: any): any {
+  // Sync cursors and pending totals span every surface. A scoped process may
+  // learn that sync is configured, but not ledger-wide cursor metadata.
+  return { status: payload?.status ?? "ok", scoped: true };
+}
+
 /**
  * Stream's scope-enforcement options. After PR #64 these are an exact
  * alias for `ServeOptions` from `usrcp-local/scope-enforcement` -
@@ -103,20 +181,32 @@ export function registerStreamTools(
   // not scopes - this is what was buggy in the pre-#61 stream code.
   const defs: StreamToolDef[] = [
     streamCapture(handle, embedder, stitcher, entityResolver),
-    streamRecall(handle, embedder, { allowedScopes: readScopes }),
-    streamThread(handle, { allowedScopes: readScopes }),
+    projectedRead(
+      streamRecall(handle, embedder, { allowedScopes: readScopes }),
+      projectRecall,
+    ),
+    projectedRead(streamThread(handle, { allowedScopes: readScopes }), projectThread),
     // global-read tools (stream_active_surface, stream_status) bypass
     // the wrapper's domain check entirely. Without injecting
     // readScopes here, a read-scoped agent could call them and learn
     // metadata about surfaces outside its read allowlist (most-recent
     // surface name, ledger-wide event/thread counts, db_path). Codex
     // round-5 review on PR #61 caught the metadata leak.
-    streamActiveSurface(handle, { allowedScopes: readScopes }),
-    streamPrewarm(handle, {
-      summarizer: options.prewarmSummarizer,
-      allowedScopes: readScopes,
-    }),
-    streamStatus(handle, embedder, { allowedScopes: readScopes }),
+    projectedRead(
+      streamActiveSurface(handle, { allowedScopes: readScopes }),
+      projectActiveSurface,
+    ),
+    projectedRead(
+      streamPrewarm(handle, {
+        summarizer: options.prewarmSummarizer,
+        allowedScopes: readScopes,
+      }),
+      projectPrewarm,
+    ),
+    projectedRead(
+      streamStatus(handle, embedder, { allowedScopes: readScopes }),
+      projectStatus,
+    ),
   ];
 
   // Sync tools register only when a Ledger is wired AND a cloud
@@ -126,7 +216,10 @@ export function registerStreamTools(
     defs.push(
       streamSyncPush(handle, { ledger, endpoint: options.cloudEndpoint }),
       streamSyncPull(handle, { ledger, endpoint: options.cloudEndpoint }),
-      streamSyncStatus(handle, { endpoint: options.cloudEndpoint })
+      projectedRead(
+        streamSyncStatus(handle, { endpoint: options.cloudEndpoint }),
+        projectSyncStatus,
+      )
     );
   }
   // Apply the shared scope-enforcement wrapper. Identical semantics
@@ -149,19 +242,11 @@ export function registerStreamTools(
   // explicit callback here to route the warning through the cloud
   // metrics pipeline instead.
   //
-  // `enforceReadProjection: false` opts out of the v0.1.8 default-deny
-  // read-projection invariant. usrcp-local's cross-domain reads declare a
-  // central `readProjection` that the wrapper applies as the authoritative
-  // output redaction; stream still redacts via the older scope-wall
-  // injection above (allowedScopes threaded into each tool factory). That
-  // is the more fragile self-filter pattern the invariant exists to
-  // replace — MIGRATION DEBT: move stream's recall/thread/active-surface/
-  // status reads onto readProjection, then drop this flag and the
-  // allowedScopes plumbing. Until then, the opt-out is explicit and
-  // documented rather than a silent bypass.
+  // Query-time allowlists above keep reads efficient. The projectedRead
+  // wrappers add a second, authoritative output wall, allowing the shared
+  // registration helper to enforce its default-deny readProjection invariant.
   registerToolsWithScopes(mcpServer, defs, serveOpts, ledger ?? null, {
     strictAudit: false,
-    enforceReadProjection: false,
   });
 
   return {

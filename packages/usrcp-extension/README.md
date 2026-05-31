@@ -12,7 +12,7 @@ command in the composer.
 
 ```
 claude.ai tab
-  └── page-hook.js          (MAIN world)
+  └── injected fetch patch  (MAIN world, bundled into service-worker.js)
         window.fetch patch → tee SSE → parse content_block_delta
         → window.postMessage → content-claude.js
 
@@ -56,7 +56,6 @@ This produces `dist/` containing:
 - `manifest.json`
 - `service-worker.js`
 - `content-claude.js`
-- `page-hook.js`
 - `setup.js` + `config.js` (wizard modules)
 
 ### 2. Run the wizard
@@ -69,9 +68,10 @@ The wizard will:
 1. Verify `native-host/usrcp-bridge.cjs` exists.
 2. Tell you to open Chrome → chrome://extensions → Developer Mode → Load Unpacked → select `packages/usrcp-extension/dist/`.
 3. Prompt you to paste the extension ID shown in chrome://extensions.
-4. Write the Chrome Native Messaging manifest at:
+4. Write a pinned-Node native host launcher under `~/.usrcp/native-host/`.
+5. Write the Chrome Native Messaging manifest at:
    `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.usrcp.bridge.json`
-5. Write `~/.usrcp/extension-config.json` (mode 0600).
+6. Write `~/.usrcp/extension-config.json` (mode 0600).
 
 ### 3. Reload the extension
 

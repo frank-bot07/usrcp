@@ -29,7 +29,7 @@ npm install
 npm run build
 ```
 
-This produces `dist/` with `manifest.json`, `service-worker.js`, `content-claude.js`, `page-hook.js`, plus the wizard modules.
+This produces `dist/` with `manifest.json`, `service-worker.js`, `content-claude.js`, plus the wizard modules.
 
 Then load it in Chrome:
 
@@ -47,9 +47,10 @@ usrcp setup --adapter=extension
 The wizard:
 1. Verifies the native host script exists.
 2. Prompts you to paste the extension ID (validated as `^[a-p]{32}$`).
-3. Writes the Chrome Native Messaging manifest:
+3. Writes a pinned-Node native host launcher under `~/.usrcp/native-host/`.
+4. Writes the Chrome Native Messaging manifest:
    - macOS: `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.usrcp.bridge.json`
-4. Writes `~/.usrcp/extension-config.json` at mode `0600`.
+5. Writes `~/.usrcp/extension-config.json` at mode `0600`.
 
 **Reload the extension** in `chrome://extensions` (click the refresh icon on the USRCP card) so it picks up the new NM manifest.
 

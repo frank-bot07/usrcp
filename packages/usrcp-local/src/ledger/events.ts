@@ -74,7 +74,7 @@ function validateEventInput(
 ): void {
   if (event.domain.length > 100) throw new Error("domain exceeds 100 chars");
   if (event.summary.length > 500) throw new Error("summary exceeds 500 chars");
-  if (event.intent.length > 300) throw new Error("intent exceeds 300 chars");
+  if (event.intent && event.intent.length > 300) throw new Error("intent exceeds 300 chars");
   if (platform.length > 100) throw new Error("platform exceeds 100 chars");
   if (idempotencyKey && idempotencyKey.length > 100)
     throw new Error("idempotency_key exceeds 100 chars");

@@ -19,6 +19,7 @@
     "postinstall": "node -e \"const fs=require(\\\"fs\\\"); for (const p of [\\\"node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-local/node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-stream/node_modules/better-sqlite3/build\\\"]) fs.rmSync(p,{recursive:true,force:true})\" && npm rebuild better-sqlite3",
     "build": "node build.mjs",
     "lint": "tsc --noEmit",
+    "pretest": "cd ../usrcp-local && npm run build",
     "test": "vitest run"
   },
   "keywords": [

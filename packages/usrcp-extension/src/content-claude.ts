@@ -9,8 +9,8 @@
  * v0.1.6 change: page-hook is no longer declared as a MAIN-world content
  * script in the manifest. This script generates a fresh per-tab 32-byte
  * secret at document_start and asks the SW to inject page-hook via
- * chrome.scripting.executeScript({world:"MAIN"}) with the secret bound
- * inside a follow-up func call. The executeScript path bypasses page CSP
+ * chrome.scripting.executeScript({world:"MAIN", func, args}) with the secret
+ * bound atomically inside the injected function. The executeScript path bypasses page CSP
  * (the extension runtime executes the script, not the page DOM); the
  * previous attempt at injecting an inline <script>.textContent was blocked
  * by claude.ai's CSP, leaving capture inert. Every incoming turn is HMAC-

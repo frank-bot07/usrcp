@@ -28,6 +28,11 @@
  *   node scripts/release/publish.mjs            # dry run (pack + inspect)
  *   node scripts/release/publish.mjs --execute  # real npm publish (needs auth)
  *   node scripts/release/publish.mjs --only=usrcp-local,usrcp-linear
+ *   node scripts/release/publish.mjs --exclude=usrcp-imessage   # darwin-only; publish it from a macOS runner
+ *
+ * --only and --exclude compose (only-set minus exclude-set). usrcp-imessage
+ * is darwin-only (`"os": ["darwin"]`) — it can't `npm ci`/build on Linux, so
+ * the Linux release run excludes it and a macOS run publishes it via --only.
  */
 
 import { execFileSync } from "node:child_process";
@@ -78,6 +83,8 @@ const args = process.argv.slice(2);
 const EXECUTE = args.includes("--execute");
 const onlyArg = args.find((a) => a.startsWith("--only="));
 const ONLY = onlyArg ? onlyArg.slice("--only=".length).split(",") : null;
+const excludeArg = args.find((a) => a.startsWith("--exclude="));
+const EXCLUDE = excludeArg ? excludeArg.slice("--exclude=".length).split(",") : [];
 
 function log(msg) {
   process.stdout.write(`${msg}\n`);
@@ -113,8 +120,7 @@ function versionIndex() {
  * in place on disk. Returns the list of package.json paths touched so the
  * caller can restore them.
  */
-function rewriteDeps(versions) {
-  const touched = [];
+function rewriteDeps(versions, touched = []) {
   for (const name of PUBLISH_ORDER) {
     const pkgPath = path.join(PKG_DIR, name, "package.json");
     const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
@@ -158,12 +164,16 @@ function showRewrittenDeps(name) {
 }
 
 function main() {
-  const targets = ONLY
+  const targets = (ONLY
     ? PUBLISH_ORDER.filter((n) => ONLY.includes(n))
-    : PUBLISH_ORDER;
+    : PUBLISH_ORDER
+  ).filter((n) => !EXCLUDE.includes(n));
   if (targets.length === 0) {
-    throw new Error(`--only matched no packages. Known: ${PUBLISH_ORDER.join(", ")}`);
+    throw new Error(
+      `No packages to publish after --only/--exclude. Known: ${PUBLISH_ORDER.join(", ")}`,
+    );
   }
+  if (EXCLUDE.length) log(`excluding: ${EXCLUDE.join(", ")}`);
 
   if (!gitTreeClean()) {
     throw new Error(
@@ -190,10 +200,11 @@ function main() {
     fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
   }
 
-  // Step 2: rewrite deps. Wrap everything after this in try/finally so the
-  // restore always runs.
-  const touched = rewriteDeps(versions);
+  // Step 2: rewrite deps. Track paths incrementally so restoration also runs
+  // if rewriteDeps itself fails midway through a package set.
+  const touched = [];
   try {
+    rewriteDeps(versions, touched);
     for (const name of targets) {
       const dir = path.join(PKG_DIR, name);
       if (EXECUTE) {

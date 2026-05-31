@@ -423,18 +423,10 @@ export interface RegisterToolsOptions {
    * are scoped, every cross-domain read tool (multi-domain-read /
    * global-read) MUST declare a `readProjection` or registration throws.
    *
-   * Default: true. usrcp-local relies on the default — its cross-domain
-   * read tools (get_state, search_timeline, status) all declare
-   * projections, and a future read tool that forgets one fails closed.
-   *
-   * usrcp-stream passes `false`: it predates readProjection and redacts
-   * cross-domain reads via "scope-wall injection" instead (its tool
-   * factories receive the allowed-scope list and post-filter rows in the
-   * handler — see register.ts). That is the older, more fragile
-   * self-filter pattern this invariant exists to replace, so stream's
-   * opt-out is MIGRATION DEBT, not a blanket exemption: stream should move
-   * its cross-domain reads onto readProjection in a follow-up, after which
-   * this flag and the scope-wall injection plumbing both come out.
+   * Default: true. usrcp-local and usrcp-stream both rely on the default:
+   * query-time filtering may remain for efficiency, but every cross-domain
+   * read declares a final output projection and a future tool that forgets
+   * one fails closed.
    */
   enforceReadProjection?: boolean;
 

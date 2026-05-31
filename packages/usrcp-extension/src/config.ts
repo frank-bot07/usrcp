@@ -17,6 +17,10 @@ export interface ExtensionConfig {
   extension_id: string;
   /** Absolute path to usrcp-bridge.cjs on this machine. */
   bridge_path: string;
+  /** Absolute path to the pinned-Node launcher registered with Chrome. */
+  native_host_path?: string;
+  /** Absolute path to the Node executable pinned by native_host_path. */
+  node_path?: string;
   /** Path where the Chrome NM manifest was written. */
   manifest_path: string;
   /** ISO timestamp of when setup was run. */
@@ -26,7 +30,7 @@ export interface ExtensionConfig {
    * SECURITY (v0.1.3+): the bridge requires this to be a non-empty
    * array — if empty / undefined, memory.search returns no results.
    * Defense-in-depth: even if page JS finds a way around the
-   * isTrusted check in content-claude.ts, the bridge only ever
+   * content-script HMAC boundary, the bridge only ever
    * surfaces snippets from these specific domains, never the whole
    * ledger. The setup wizard prompts for this; legacy configs
    * without the field fail closed with a clear error.
@@ -44,6 +48,30 @@ export function getUsrcpDir(): string {
 
 export function getConfigPath(): string {
   return path.join(getUsrcpDir(), "extension-config.json");
+}
+
+export function getNativeHostLauncherPath(): string {
+  return path.join(getUsrcpDir(), "native-host", "usrcp-extension-bridge.sh");
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\"'\"'`)}'`;
+}
+
+export function writeNativeHostLauncher(nodePath: string, bridgePath: string): string {
+  if (!path.isAbsolute(nodePath) || !path.isAbsolute(bridgePath)) {
+    throw new Error("Native host launcher requires absolute Node and bridge paths.");
+  }
+
+  const launcherPath = getNativeHostLauncherPath();
+  fs.mkdirSync(path.dirname(launcherPath), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(
+    launcherPath,
+    `#!/bin/sh\nexec ${shellQuote(nodePath)} ${shellQuote(bridgePath)} \"$@\"\n`,
+    { encoding: "utf8", mode: 0o700, flag: "w" }
+  );
+  fs.chmodSync(launcherPath, 0o700);
+  return launcherPath;
 }
 
 /**

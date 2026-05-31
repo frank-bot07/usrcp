@@ -10,23 +10,19 @@
  * script would forward it to the SW → bridge → ledger. Ledger poisoning.
  *
  * Defense: content-claude generates a fresh per-tab 32-byte secret at
- * document_start, wraps page-hook source in an IIFE that captures the
- * secret in its closure, injects via <script>.textContent then removes the
- * element. page-hook computes HMAC-SHA256(secret, canonical(turn) || "|" ||
- * ts) on every post; content-claude verifies before forwarding. Attackers
- * can't forge without the secret, and the secret lives only in the closure
- * of the IIFE that's already been detached from the DOM.
+ * document_start. The service worker injects a self-contained page-hook
+ * function with chrome.scripting.executeScript({world:"MAIN", func, args}),
+ * binding the secret atomically into the fetch-patch closure. page-hook
+ * computes HMAC-SHA256(secret, canonical(turn) || "|" || ts) on every post;
+ * content-claude verifies before forwarding. Attackers can't forge without
+ * the secret, and no secret-bearing handoff is exposed on window or the DOM.
  *
  * Anti-replay: messages include ts; receiver rejects if Date.now() - ts >
  * MAC_MAX_AGE_MS. A leaked message can't be replayed beyond the window.
  *
- * Race-window: a mutation observer in the MAIN world COULD read the script
- * element's textContent in the brief moment between append and remove,
- * extracting the secret. That's a residual risk we accept for v0.1.6 — the
- * fix raises the bar from "trivial shape forgery" to "race document_start
- * injection," which is a meaningful improvement and matches the strongest
- * guarantee that's achievable without architectural changes (e.g. moving
- * capture entirely into a debugger-protocol attach).
+ * Residual boundary: code already executing in MAIN world can still tamper
+ * with fetch before or after this patch. The HMAC channel prevents direct
+ * postMessage forgery; it does not make hostile page execution trustworthy.
  *
  * Implementation note: uses globalThis.crypto.subtle which exists in both
  * MAIN-world page context (browser) AND Node 16+ (for unit tests). The
@@ -145,7 +141,7 @@ export async function verifyTurn(
 
 /**
  * Generate a fresh 32-byte secret. Caller passes this into both the
- * injected page-hook IIFE (signing) and content-claude's verifier.
+ * atomically injected page-hook function and content-claude's verifier.
  */
 export function generateSecret(): Uint8Array<ArrayBuffer> {
   const out = new Uint8Array(32);

@@ -329,9 +329,10 @@ describe("scope enforcement (Model A)", () => {
     expect(res.events).toHaveLength(1);
     expect(res.events[0].surface).toBe("discord");
     expect(res.surfaces).toEqual(["discord"]);
-    // entity_refs are derived from the in-scope event only, so SECRETIVE_ENTITY
-    // (which only appears on the telegram event) MUST NOT be returned.
-    expect(res.entity_refs).toEqual(["p_shared"]);
+    // The final central projector cannot prove which thread-level aggregate
+    // refs came from an allowed event because the public event shape omits
+    // refs. Fail closed: scoped responses expose no aggregate entity refs.
+    expect(res.entity_refs).toEqual([]);
     expect(JSON.stringify(res)).not.toContain("SECRETIVE_ENTITY");
   });
 

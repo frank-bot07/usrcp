@@ -11,7 +11,7 @@
  *   1. Verify usrcp-bridge.cjs exists (build check).
  *   2. Instruct user to load extension unpacked in Chrome.
  *   3. Prompt for extension ID (validated as 32 lowercase a-p chars).
- *   4. Write Chrome NM manifest with absolute bridge path + extension ID.
+ *   4. Write a pinned-Node native host launcher and Chrome NM manifest.
  *   5. Write ~/.usrcp/extension-config.json (mode 0600).
  *   6. Print verification instructions.
  *   7. Return ExtensionConfig.
@@ -26,6 +26,7 @@ import {
   type ExtensionConfig,
   getConfigPath,
   getNMManifestPath,
+  writeNativeHostLauncher,
   writeExtensionConfig,
 } from "./config.js";
 
@@ -201,7 +202,12 @@ export async function runExtensionSetup(): Promise<ExtensionConfig> {
     );
   }
 
-  const nmManifest = buildNMManifest(bridgePath, extensionId);
+  // Chrome launches Native Messaging hosts outside the user's interactive
+  // shell. Pin the Node binary used by setup so a different launchd PATH
+  // cannot load better-sqlite3 with an incompatible Node ABI.
+  const nodePath = fs.realpathSync(process.execPath);
+  const nativeHostPath = writeNativeHostLauncher(nodePath, bridgePath);
+  const nmManifest = buildNMManifest(nativeHostPath, extensionId);
   const nmDir = path.dirname(manifestPath);
 
   if (!fs.existsSync(nmDir)) {
@@ -216,12 +222,14 @@ export async function runExtensionSetup(): Promise<ExtensionConfig> {
 
   process.stderr.write(`  ✓ NM manifest written to:\n`);
   process.stderr.write(`    ${manifestPath}\n\n`);
+  process.stderr.write(`  ✓ Native host launcher pinned to:\n`);
+  process.stderr.write(`    ${nodePath}\n\n`);
 
   // ── Step 5: Allowed-domains for /usrcp search (SECURITY) ───────────────────
 
   // SECURITY (v0.1.3+): the bridge refuses memory.search unless
   // allowed_domains is non-empty. This limits exfil blast radius if
-  // page JS finds a way past the content-script isTrusted check —
+  // page JS finds a way past the content-script HMAC boundary —
   // the bridge will only ever surface snippets from these specific
   // domains, never the whole ledger.
   process.stderr.write("  ┌─ /usrcp search authorization ──────────────────────────────┐\n");
@@ -245,6 +253,8 @@ export async function runExtensionSetup(): Promise<ExtensionConfig> {
   const cfg: ExtensionConfig = {
     extension_id: extensionId,
     bridge_path: bridgePath,
+    native_host_path: nativeHostPath,
+    node_path: nodePath,
     manifest_path: manifestPath,
     configured_at: new Date().toISOString(),
     allowed_domains: allowedDomains,
