@@ -17,15 +17,16 @@ export interface StreamToolDef {
   inputShape: z.ZodRawShape;
   // The handler emits MCP's `content` envelope. Tool definitions never
   // throw on caller-shaped errors; they return a JSON-shaped text block.
-  handler: (params: any) => Promise<{
-    content: { type: "text"; text: string }[];
-  }>;
+  handler: (params: any) => Promise<any>;
   kind: ToolKind;
   mutating?: boolean;
   // Returns the domain(s) the call would touch. Required for
   // domain-scoped; optional for multi-domain-read (returns "all" when
   // unconstrained).
   scopeOf?: (params: any) => string[] | "all";
+  // Required for cross-surface reads when a server is read-scoped. The
+  // shared wrapper applies this as the final output redaction chokepoint.
+  readProjection?: (payload: any, readScopes: string[]) => any;
 }
 
 export function okResponse(payload: unknown) {

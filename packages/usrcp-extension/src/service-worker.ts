@@ -24,6 +24,7 @@ import type {
   BridgeSearchResponse,
   SwSearchResult,
 } from "./shared/types.js";
+import { installPageHook } from "./page-hook.js";
 
 // ---------------------------------------------------------------------------
 // Native Messaging port lifecycle
@@ -185,32 +186,17 @@ chrome.runtime.onMessage.addListener(
 );
 
 // ---------------------------------------------------------------------------
-// Inject page-hook into a tab's MAIN world and bind its closure secret.
-//
-// Two-step: load page-hook.js (which defines globalThis.__USRCP_INSTALL_HOOK__
-// without running it), then a func call that reads the installer, deletes
-// the global, and invokes with the per-tab secret. chrome.scripting.executeScript
-// is the CSP-safe path; inline DOM script injection from a content script
-// trips claude.ai's script-src restriction.
+// Inject page-hook into a tab's MAIN world and bind its closure secret in one
+// executeScript call. The injected function is self-contained so Chrome can
+// serialize it directly. No secret-bearing installer is exposed on window.
 // ---------------------------------------------------------------------------
 
 async function installPageHookInTab(tabId: number, secretHex: string): Promise<void> {
   await chrome.scripting.executeScript({
     target: { tabId },
     world: "MAIN",
-    files: ["page-hook.js"],
-  });
-  await chrome.scripting.executeScript({
-    target: { tabId },
-    world: "MAIN",
     args: [secretHex],
-    func: (hex: string) => {
-      type Holder = { __USRCP_INSTALL_HOOK__?: (h: string) => void };
-      const g = globalThis as Holder;
-      const fn = g.__USRCP_INSTALL_HOOK__;
-      delete g.__USRCP_INSTALL_HOOK__;
-      if (typeof fn === "function") fn(hex);
-    },
+    func: installPageHook,
   });
 }
 

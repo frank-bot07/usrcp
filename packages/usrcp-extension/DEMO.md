@@ -29,7 +29,7 @@ npm install
 npm run build
 ```
 
-This produces `dist/` with `manifest.json`, `service-worker.js`, `content-claude.js`, `page-hook.js`, plus the wizard modules.
+This produces `dist/` with `manifest.json`, `service-worker.js`, `content-claude.js`, plus the wizard modules.
 
 Then load it in Chrome:
 

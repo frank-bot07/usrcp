@@ -3,10 +3,12 @@
  *
  * Produces dist/ which can be loaded as "Load Unpacked" in chrome://extensions.
  *
- * Three entry points:
+ * Two browser entry points:
  *   src/service-worker.ts → dist/service-worker.js  (SW context, no DOM)
  *   src/content-claude.ts → dist/content-claude.js  (isolated world)
- *   src/page-hook.ts      → dist/page-hook.js        (MAIN world IIFE)
+ *
+ * page-hook.ts exports a self-contained function that is bundled into the
+ * service worker and atomically injected into MAIN world with executeScript.
  *
  * The setup module (src/setup.ts) is compiled separately by tsc (via tsconfig.json)
  * to produce dist/setup.js as a Node ESM module for the wizard. esbuild is only
@@ -26,8 +28,20 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const distDir = path.join(__dirname, "dist");
 if (fs.existsSync(distDir)) {
-  // Remove only browser bundle files; preserve tsc output (setup.js, config.js, etc.)
-  for (const f of ["service-worker.js", "content-claude.js", "page-hook.js", "manifest.json"]) {
+  // Remove browser bundle files plus stale browser-only compiler output from
+  // older layouts; preserve Node-side tsc output (setup.js, config.js, etc.).
+  for (const f of [
+    "service-worker.js",
+    "service-worker.d.ts",
+    "service-worker.js.map",
+    "content-claude.js",
+    "content-claude.d.ts",
+    "content-claude.js.map",
+    "page-hook.js",
+    "page-hook.d.ts",
+    "page-hook.js.map",
+    "manifest.json",
+  ]) {
     const fp = path.join(distDir, f);
     if (fs.existsSync(fp)) fs.rmSync(fp);
   }
@@ -66,17 +80,6 @@ await esbuild.build({
   ...sharedOpts,
   entryPoints: [path.join(__dirname, "src", "content-claude.ts")],
   outfile: path.join(distDir, "content-claude.js"),
-  format: "iife",
-});
-
-// ---------------------------------------------------------------------------
-// Page hook — IIFE (injected as a classic <script> into the MAIN world)
-// ---------------------------------------------------------------------------
-
-await esbuild.build({
-  ...sharedOpts,
-  entryPoints: [path.join(__dirname, "src", "page-hook.ts")],
-  outfile: path.join(distDir, "page-hook.js"),
   format: "iife",
 });
 

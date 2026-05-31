@@ -120,8 +120,7 @@ function versionIndex() {
  * in place on disk. Returns the list of package.json paths touched so the
  * caller can restore them.
  */
-function rewriteDeps(versions) {
-  const touched = [];
+function rewriteDeps(versions, touched = []) {
   for (const name of PUBLISH_ORDER) {
     const pkgPath = path.join(PKG_DIR, name, "package.json");
     const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
@@ -201,10 +200,11 @@ function main() {
     fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
   }
 
-  // Step 2: rewrite deps. Wrap everything after this in try/finally so the
-  // restore always runs.
-  const touched = rewriteDeps(versions);
+  // Step 2: rewrite deps. Track paths incrementally so restoration also runs
+  // if rewriteDeps itself fails midway through a package set.
+  const touched = [];
   try {
+    rewriteDeps(versions, touched);
     for (const name of targets) {
       const dir = path.join(PKG_DIR, name);
       if (EXECUTE) {

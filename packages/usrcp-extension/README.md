@@ -12,7 +12,7 @@ command in the composer.
 
 ```
 claude.ai tab
-  └── page-hook.js          (MAIN world)
+  └── injected fetch patch  (MAIN world, bundled into service-worker.js)
         window.fetch patch → tee SSE → parse content_block_delta
         → window.postMessage → content-claude.js
 
@@ -56,7 +56,6 @@ This produces `dist/` containing:
 - `manifest.json`
 - `service-worker.js`
 - `content-claude.js`
-- `page-hook.js`
 - `setup.js` + `config.js` (wizard modules)
 
 ### 2. Run the wizard
