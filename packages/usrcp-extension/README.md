@@ -68,9 +68,10 @@ The wizard will:
 1. Verify `native-host/usrcp-bridge.cjs` exists.
 2. Tell you to open Chrome → chrome://extensions → Developer Mode → Load Unpacked → select `packages/usrcp-extension/dist/`.
 3. Prompt you to paste the extension ID shown in chrome://extensions.
-4. Write the Chrome Native Messaging manifest at:
+4. Write a pinned-Node native host launcher under `~/.usrcp/native-host/`.
+5. Write the Chrome Native Messaging manifest at:
    `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.usrcp.bridge.json`
-5. Write `~/.usrcp/extension-config.json` (mode 0600).
+6. Write `~/.usrcp/extension-config.json` (mode 0600).
 
 ### 3. Reload the extension
 

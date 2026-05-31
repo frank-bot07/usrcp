@@ -55,6 +55,27 @@ describe("getConfigPath", () => {
   });
 });
 
+describe("writeNativeHostLauncher", () => {
+  it("writes an executable launcher that pins Node and safely quotes paths", async () => {
+    const { getNativeHostLauncherPath, writeNativeHostLauncher } = await getConfig();
+    const nodePath = "/tmp/node versions/node's bin/node";
+    const bridgePath = "/tmp/usrcp package/native-host/usrcp-bridge.cjs";
+
+    expect(writeNativeHostLauncher(nodePath, bridgePath)).toBe(getNativeHostLauncherPath());
+
+    const launcher = fs.readFileSync(getNativeHostLauncherPath(), "utf8");
+    expect(launcher).toContain("#!/bin/sh");
+    expect(launcher).toContain("'/tmp/node versions/node'\"'\"'s bin/node'");
+    expect(launcher).toContain("'/tmp/usrcp package/native-host/usrcp-bridge.cjs'");
+    expect(fs.statSync(getNativeHostLauncherPath()).mode & 0o777).toBe(0o700);
+  });
+
+  it("refuses relative executable paths", async () => {
+    const { writeNativeHostLauncher } = await getConfig();
+    expect(() => writeNativeHostLauncher("node", "/tmp/usrcp-bridge.cjs")).toThrow(/absolute/i);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // writeExtensionConfig / loadExtensionConfig round-trip
 // ---------------------------------------------------------------------------
