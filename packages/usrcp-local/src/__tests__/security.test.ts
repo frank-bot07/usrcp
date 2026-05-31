@@ -68,6 +68,12 @@ describe("Ledger input validation — string lengths", () => {
     ).toThrow("intent exceeds 300 chars");
   });
 
+  it("accepts an omitted optional intent", () => {
+    const { intent: _intent, ...event } = validEvent;
+    const result = ledger.appendEvent(event, "test");
+    expect(result.event_id).toBeTruthy();
+  });
+
   it("rejects platform over 100 chars", () => {
     expect(() =>
       ledger.appendEvent(validEvent, "x".repeat(101))

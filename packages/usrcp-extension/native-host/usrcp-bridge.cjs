@@ -58,56 +58,7 @@ function getLedger() {
 // Chrome NM framing
 // ---------------------------------------------------------------------------
 
-/** Read one NM message from stdin. Returns a Buffer or null on EOF. */
-function readNMMessage() {
-  return new Promise((resolve, reject) => {
-    const lenBuf = Buffer.alloc(4);
-    let lenRead = 0;
-
-    function readLength() {
-      process.stdin.once("readable", () => {
-        const chunk = process.stdin.read(4 - lenRead);
-        if (!chunk) {
-          // EOF
-          resolve(null);
-          return;
-        }
-        chunk.copy(lenBuf, lenRead);
-        lenRead += chunk.length;
-        if (lenRead < 4) {
-          readLength();
-        } else {
-          const msgLen = lenBuf.readUInt32LE(0);
-          readBody(msgLen);
-        }
-      });
-    }
-
-    function readBody(len) {
-      let bodyBuf = Buffer.alloc(0);
-      function tryRead() {
-        process.stdin.once("readable", () => {
-          const chunk = process.stdin.read(len - bodyBuf.length);
-          if (!chunk) {
-            // EOF before full message
-            resolve(null);
-            return;
-          }
-          bodyBuf = Buffer.concat([bodyBuf, chunk]);
-          if (bodyBuf.length < len) {
-            tryRead();
-          } else {
-            resolve(bodyBuf);
-          }
-        });
-      }
-      tryRead();
-    }
-
-    process.stdin.on("error", reject);
-    readLength();
-  });
-}
+const MAX_MESSAGE_BYTES = 8 * 1024 * 1024;
 
 /** Write one NM message to stdout. */
 function writeNMMessage(obj) {
@@ -146,6 +97,8 @@ async function handleMessage(msg) {
           {
             domain: "claude.ai",
             summary,
+            intent: "Capture Claude conversation turn",
+            outcome: "success",
             detail: {
               conversation_id: turn.conversation_id,
               message_id: turn.id,
@@ -249,20 +202,34 @@ async function handleMessage(msg) {
 process.stdin.resume();
 
 async function main() {
-  while (true) {
-    const buf = await readNMMessage();
-    if (!buf) {
-      // EOF — Chrome closed the connection
-      break;
+  let pending = Buffer.alloc(0);
+
+  for await (const chunk of process.stdin) {
+    pending = Buffer.concat([pending, chunk]);
+
+    while (pending.length >= 4) {
+      const msgLen = pending.readUInt32LE(0);
+      if (msgLen > MAX_MESSAGE_BYTES) {
+        throw new Error(`Native message exceeds ${MAX_MESSAGE_BYTES} byte limit`);
+      }
+      if (pending.length < 4 + msgLen) break;
+
+      const buf = pending.subarray(4, 4 + msgLen);
+      pending = pending.subarray(4 + msgLen);
+
+      let msg;
+      try {
+        msg = JSON.parse(buf.toString("utf8"));
+      } catch (err) {
+        writeNMMessage({ op: "error", error: `JSON parse error: ${err.message}` });
+        continue;
+      }
+      await handleMessage(msg);
     }
-    let msg;
-    try {
-      msg = JSON.parse(buf.toString("utf8"));
-    } catch (err) {
-      writeNMMessage({ op: "error", error: `JSON parse error: ${err.message}` });
-      continue;
-    }
-    await handleMessage(msg);
+  }
+
+  if (pending.length !== 0) {
+    throw new Error("Incomplete native message at EOF");
   }
 
   if (ledger) {
