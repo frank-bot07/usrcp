@@ -35,7 +35,7 @@
 "use strict";
 
 const path = require("node:path");
-const { Ledger } = require(path.join(__dirname, "..", "node_modules", "usrcp-local", "dist", "ledger", "index.js"));
+const fs = require("node:fs");
 
 // ---------------------------------------------------------------------------
 // Ledger initialization
@@ -43,10 +43,23 @@ const { Ledger } = require(path.join(__dirname, "..", "node_modules", "usrcp-loc
 
 let ledger = null;
 
+function loadLedger() {
+  const candidates = [
+    path.join(__dirname, "..", "node_modules", "usrcp-local", "dist", "ledger", "index.js"),
+    path.join(__dirname, "..", "..", "usrcp-local", "dist", "ledger", "index.js"),
+  ];
+  const ledgerPath = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!ledgerPath) {
+    throw new Error("Could not locate usrcp-local ledger module. Reinstall usrcp-extension or build usrcp-local.");
+  }
+  return require(ledgerPath).Ledger;
+}
+
 function getLedger() {
   if (ledger) return ledger;
   try {
     const passphrase = process.env.USRCP_PASSPHRASE || undefined;
+    const Ledger = loadLedger();
     ledger = new Ledger(undefined, passphrase);
     return ledger;
   } catch (err) {
