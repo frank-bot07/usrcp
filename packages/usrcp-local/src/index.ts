@@ -11,11 +11,19 @@ import {
   isPassphraseMode,
   initializeMasterKey,
   setUserSlug,
+  getUserSlug,
   getUserDir,
   getUsrcpBaseDir,
   listUserSlugs,
   migrateLegacyLayout,
 } from "./encryption.js";
+import {
+  detectKeychain,
+  readPassphraseFromKeychain,
+  storePassphraseInKeychain,
+  clearPassphraseFromKeychain,
+  KeychainError,
+} from "./keychain.js";
 import { startHttpTransport, ensureTlsCert, ensureAuthToken } from "./transport.js";
 import { readConfig, updateConfig } from "./config.js";
 import { syncPush, syncPull, syncStatus } from "./sync.js";
@@ -127,9 +135,15 @@ function printBanner(): void {
  * Get passphrase from:
  * 1. USRCP_PASSPHRASE environment variable (preferred — not visible in /proc/cmdline)
  * 2. --passphrase CLI flag (visible in process list — use only for init)
- * 3. undefined (dev mode)
+ * 3. OS keychain entry for the resolved user slug (opt-in via opts.keychain;
+ *    used by serve/status/sync/pair-init/rotate — NOT by init or pair join,
+ *    where a stale entry from a previous identity would be wrong)
+ * 4. undefined (dev mode)
+ *
+ * Keychain callers must run resolveUserSlug() first so getUserSlug() points
+ * at the right entry.
  */
-function getPassphrase(): string | undefined {
+function getPassphrase(opts: { keychain?: boolean } = {}): string | undefined {
   // Prefer env var — not visible in /proc/<pid>/cmdline
   if (process.env.USRCP_PASSPHRASE) {
     const passphrase = process.env.USRCP_PASSPHRASE;
@@ -149,6 +163,13 @@ function getPassphrase(): string | undefined {
       console.error("  Warning: --passphrase is visible in process list. Prefer USRCP_PASSPHRASE env var.");
       return args[i].split("=").slice(1).join("=");
     }
+  }
+
+  // OS keychain fallback — lets MCP clients auto-start the server without
+  // plaintext USRCP_PASSPHRASE in their JSON configs.
+  if (opts.keychain) {
+    const fromKeychain = readPassphraseFromKeychain(getUserSlug());
+    if (fromKeychain) return fromKeychain;
   }
 
   return undefined;
@@ -287,6 +308,39 @@ async function cmdInit(): Promise<void> {
   const ledger = new Ledger(undefined, passphrase);
   ledger.close();
 
+  // Offer to store the passphrase in the OS keychain so MCP clients can
+  // auto-start the server without plaintext USRCP_PASSPHRASE in their JSON
+  // configs. --keychain forces yes, --no-keychain forces no; otherwise
+  // prompt when interactive and a backend exists.
+  let keychainStored = false;
+  if (passphrase) {
+    const kc = detectKeychain();
+    let wantKeychain = false;
+    if (hasFlag("keychain")) {
+      if (!kc.available) {
+        console.error(`  Error: --keychain requested but no OS keychain backend: ${kc.reason}`);
+        process.exit(1);
+      }
+      wantKeychain = true;
+    } else if (!hasFlag("no-keychain") && kc.available && process.stdin.isTTY) {
+      const ans = (await readPlainLine(
+        `  Store passphrase in the OS keychain (${kc.backend === "macos-keychain" ? "macOS Keychain" : "Secret Service"})\n` +
+        `  so MCP clients can unlock automatically? [Y/n]: `
+      )).trim().toLowerCase();
+      wantKeychain = ans !== "n" && ans !== "no";
+    }
+    if (wantKeychain) {
+      try {
+        const backend = storePassphraseInKeychain(slug, passphrase);
+        keychainStored = true;
+        console.error(`  Keychain:  passphrase stored (${backend}, service "usrcp", account "${slug}")`);
+      } catch (err) {
+        console.error(`  Warning: keychain storage failed — ${err instanceof Error ? err.message : String(err)}`);
+        console.error("  Falling back to USRCP_PASSPHRASE env var workflow.");
+      }
+    }
+  }
+
   // Which MCP clients to register with. Default: claude.
   // Accept comma-separated list or "all" for every known client.
   const clientArg = getArg("client") ?? "claude";
@@ -321,7 +375,9 @@ async function cmdInit(): Promise<void> {
   console.error(`
   ✓ USRCP local ledger initialized for user "${slug}".
   ${passphrase
-    ? "  ⚠ Passphrase mode: set USRCP_PASSPHRASE env var before starting.\n    The key exists only in memory while the server runs."
+    ? keychainStored
+      ? "  Passphrase mode: stored in the OS keychain — MCP clients will unlock\n    automatically. Remove anytime with: usrcp keychain clear"
+      : "  ⚠ Passphrase mode: set USRCP_PASSPHRASE env var before starting,\n    or store it once with: usrcp keychain store\n    The key exists only in memory while the server runs."
     : "  Your AI agents now have persistent memory."
   }
 
@@ -464,11 +520,12 @@ function cmdStatus(): void {
   }
 
   const passphraseRequired = isPassphraseMode();
-  const passphrase = passphraseRequired ? getPassphrase() : undefined;
+  const passphrase = passphraseRequired ? getPassphrase({ keychain: true }) : undefined;
 
   if (passphraseRequired && !passphrase) {
     console.error("  This ledger is passphrase-protected.");
-    console.error("  Provide passphrase via --passphrase or USRCP_PASSPHRASE env var.");
+    console.error("  Provide passphrase via --passphrase, USRCP_PASSPHRASE env var,");
+    console.error("  or store it once with: usrcp keychain store");
     process.exit(1);
   }
 
@@ -735,11 +792,12 @@ async function cmdServe(): Promise<void> {
   resolveUserSlug();
 
   const passphraseRequired = isPassphraseMode();
-  const passphrase = passphraseRequired ? getPassphrase() : undefined;
+  const passphrase = passphraseRequired ? getPassphrase({ keychain: true }) : undefined;
 
   if (passphraseRequired && !passphrase) {
     console.error("[usrcp] This ledger is passphrase-protected.");
-    console.error("[usrcp] Set USRCP_PASSPHRASE env var to unlock.");
+    console.error("[usrcp] Set USRCP_PASSPHRASE env var to unlock, or store the");
+    console.error("[usrcp] passphrase once with: usrcp keychain store");
     process.exit(1);
   }
 
@@ -818,7 +876,7 @@ async function cmdServe(): Promise<void> {
 async function cmdSync(subcommand: string | undefined): Promise<void> {
   migrateLegacyLayout();
   resolveUserSlug();
-  const passphrase = isPassphraseMode() ? getPassphrase() : undefined;
+  const passphrase = isPassphraseMode() ? getPassphrase({ keychain: true }) : undefined;
 
   switch (subcommand) {
     case "status": {
@@ -1085,7 +1143,7 @@ async function cmdPair(subcommand: string | undefined, rest: string[]): Promise<
     console.error("  Error: no identity in this user dir. Run `usrcp init` first.");
     process.exit(1);
   }
-  const passphrase = isPassphraseMode() ? getPassphrase() : undefined;
+  const passphrase = isPassphraseMode() ? getPassphrase({ keychain: true }) : undefined;
   const masterKey = initializeMasterKey(passphrase);
   let privateKeyPem: string;
   try {
@@ -1213,7 +1271,7 @@ async function cmdRotateIdentity(): Promise<void> {
     }
   }
 
-  const passphrase = isPassphraseMode() ? getPassphrase() : undefined;
+  const passphrase = isPassphraseMode() ? getPassphrase({ keychain: true }) : undefined;
   const masterKey = initializeMasterKey(passphrase);
   try {
     const r = await rotateIdentity({
@@ -1237,6 +1295,87 @@ async function cmdRotateIdentity(): Promise<void> {
 }
 
 // --- CLI Router ---
+/**
+ * usrcp keychain <store|status|clear>
+ *
+ * store  — verify the passphrase against this ledger, then store it in the
+ *          OS keychain (round-trip verified). Passphrase comes from
+ *          USRCP_PASSPHRASE / --passphrase or a hidden interactive prompt.
+ * status — show backend availability and whether an entry exists.
+ * clear  — remove the stored entry.
+ */
+async function cmdKeychain(subcommand: string | undefined): Promise<void> {
+  migrateLegacyLayout();
+  const slug = resolveUserSlug();
+  const kc = detectKeychain();
+
+  switch (subcommand) {
+    case "store": {
+      if (!kc.available) {
+        console.error(`  Error: no OS keychain backend available. ${kc.reason}`);
+        process.exit(1);
+      }
+      if (!isPassphraseMode()) {
+        console.error("  Error: this ledger is not passphrase-protected (dev mode) — nothing to store.");
+        process.exit(1);
+      }
+      let passphrase = getPassphrase();
+      if (!passphrase) {
+        if (!process.stdin.isTTY) {
+          console.error("  Error: no passphrase provided and stdin is not a TTY.");
+          console.error("  Pass --passphrase or set USRCP_PASSPHRASE.");
+          process.exit(1);
+        }
+        passphrase = await readHiddenLine("  Passphrase: ");
+        if (!passphrase) {
+          console.error("  Error: empty passphrase.");
+          process.exit(1);
+        }
+      }
+      // Refuse to store a passphrase that doesn't unlock this ledger —
+      // a wrong entry would silently break MCP auto-start later.
+      try {
+        initializeMasterKey(passphrase);
+      } catch {
+        console.error("  Error: that passphrase does not unlock this ledger. Nothing stored.");
+        process.exit(1);
+      }
+      try {
+        const backend = storePassphraseInKeychain(slug, passphrase);
+        console.error(`  ✓ Passphrase stored in ${backend === "macos-keychain" ? "macOS Keychain" : "Secret Service"} (service "usrcp", account "${slug}").`);
+        console.error("  MCP clients can now start the server without USRCP_PASSPHRASE.");
+      } catch (err) {
+        console.error(`  Error: ${err instanceof KeychainError ? err.message : String(err)}`);
+        process.exit(1);
+      }
+      return;
+    }
+    case "status": {
+      console.error(`  Backend:   ${kc.available ? kc.backend : `unavailable — ${kc.reason}`}`);
+      if (kc.available) {
+        const entry = readPassphraseFromKeychain(slug);
+        console.error(`  Entry:     ${entry ? `present for user "${slug}"` : `none for user "${slug}"`}`);
+      }
+      console.error(`  Mode:      ${isPassphraseMode() ? "passphrase-protected" : "dev (keychain not needed)"}`);
+      return;
+    }
+    case "clear": {
+      if (!kc.available) {
+        console.error(`  Error: no OS keychain backend available. ${kc.reason}`);
+        process.exit(1);
+      }
+      const removed = clearPassphraseFromKeychain(slug);
+      console.error(removed
+        ? `  ✓ Keychain entry removed for user "${slug}".`
+        : `  No keychain entry found for user "${slug}".`);
+      return;
+    }
+    default:
+      console.error("  Usage: usrcp keychain <store|status|clear> [--user=<slug>]");
+      process.exit(1);
+  }
+}
+
 const command = process.argv[2];
 
 switch (command) {
@@ -1294,6 +1433,12 @@ switch (command) {
       process.exit(1);
     });
     break;
+  case "keychain":
+    cmdKeychain(process.argv[3]).catch((err) => {
+      console.error("[usrcp keychain] Error:", err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    });
+    break;
   case "setup":
     runSetup({ adapter: getArg("adapter") }).catch((err) => {
       console.error("[usrcp setup] Fatal:", err instanceof Error ? err.message : "Unknown error");
@@ -1327,6 +1472,9 @@ switch (command) {
     pair <op>        init / join / status / cancel - multi-device identity pairing
     rotate-identity  Rotate the Ed25519 identity for this user (revokes old key)
     adapter <op>     add/remove/list terminal MCP registration for CLI agents
+    keychain <op>    store / status / clear — keep the passphrase in the OS
+                     keychain (macOS Keychain / Secret Service) so MCP clients
+                     can unlock without a plaintext env var in their configs
     snapshot         Take an atomic snapshot of the ledger (--list to view existing)
     restore          Restore from a snapshot (--from=<path> [--dry-run]; --list to view)
 
@@ -1362,8 +1510,12 @@ switch (command) {
     usrcp serve --user=frank
 
   Passphrase mode:
-    usrcp init --passphrase "my secret phrase"
-    USRCP_PASSPHRASE="my secret phrase" usrcp serve
+    usrcp init --passphrase "my secret phrase"          # prompts to store in OS keychain
+    usrcp init --passphrase "..." --keychain            # store without prompting
+    usrcp init --passphrase "..." --no-keychain         # never store
+    USRCP_PASSPHRASE="my secret phrase" usrcp serve     # env var still works
+    usrcp keychain store                                # add keychain entry later
+    usrcp serve                                         # unlocks via keychain
 
   Scoped agent examples:
     # Read-only Cursor agent on coding/work, no audit access:

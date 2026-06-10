@@ -76,7 +76,18 @@ usrcp init
 usrcp init --passphrase "your secret phrase"       # passphrase mode
 usrcp init --dev                                     # dev mode (key on disk)
 
-# Start the server (passphrase mode requires env var)
+# Start the server
+usrcp serve
+```
+
+In passphrase mode, `init` offers to store the passphrase in the **OS keychain** (macOS Keychain / Linux Secret Service); pass `--keychain` / `--no-keychain` to decide non-interactively. With a keychain entry present, MCP clients auto-start the server with no plaintext passphrase in any config file. Manage the entry anytime:
+
+```bash
+usrcp keychain store    # add/replace (verifies the passphrase unlocks this ledger first)
+usrcp keychain status   # show backend + whether an entry exists
+usrcp keychain clear    # remove it
+
+# Prefer no keychain? The env var path still works:
 USRCP_PASSPHRASE="your secret phrase" usrcp serve
 ```
 
@@ -112,47 +123,27 @@ Each user gets an independent ledger, passphrase, and MCP server entry.
 
 ### Passphrase mode and terminal agents
 
-If you initialized USRCP in passphrase mode (`usrcp init` with the default), the MCP server requires `USRCP_PASSPHRASE` in its environment to decrypt the ledger. The terminal-adapter `register()` writes only `command + args` to each agent's config — it never bakes the passphrase in. You have to provide it yourself, and *how* depends on whether the agent is launched from a shell or from a GUI app.
+If you initialized USRCP in passphrase mode (`usrcp init` with the default), the MCP server needs the passphrase to decrypt the ledger. The terminal-adapter `register()` writes only `command + args` to each agent's config — it never bakes the passphrase in.
 
-**Shell-launched agents** — `claude-code`, `codex`, `copilot-cli`, `aider`, `opencode`. Add this to `~/.zshrc` or `~/.bashrc` and restart your shell:
+**Recommended: the OS keychain.** One command covers every agent — shell-launched and GUI alike — with nothing in plaintext on disk:
 
 ```sh
-export USRCP_PASSPHRASE="your secret phrase"
+usrcp keychain store
 ```
 
-**GUI/IDE-launched agents** — `cursor`, `cline` (VS Code), `continue`, `antigravity`. These do **not** inherit shell environment. Two options:
+The server checks `USRCP_PASSPHRASE`, then `--passphrase`, then the keychain, so existing setups keep working unchanged. (Windows: keychain support isn't wired up yet — use the env-var paths below.)
 
-1. **Per-agent env block.** Edit the agent's config file and add an `env` block under the `usrcp` server entry:
+**Env-var alternatives**, if you'd rather not use the keychain:
 
-   ```jsonc
-   // ~/.cursor/mcp.json (and similar JSON configs)
-   "mcpServers": {
-     "usrcp": {
-       "command": "/opt/homebrew/bin/usrcp",
-       "args": ["serve", "--stdio"],
-       "env": { "USRCP_PASSPHRASE": "your secret phrase" }
-     }
-   }
-   ```
+- **Shell-launched agents** (`claude-code`, `codex`, `copilot-cli`, `aider`, `opencode`) — add to `~/.zshrc` / `~/.bashrc` and restart your shell:
 
-   For Codex (TOML), the equivalent is:
+  ```sh
+  export USRCP_PASSPHRASE="your secret phrase"
+  ```
 
-   ```toml
-   [mcp_servers.usrcp]
-   command = "/opt/homebrew/bin/usrcp"
-   args = ["serve", "--stdio"]
-   env = { USRCP_PASSPHRASE = "your secret phrase" }
-   ```
+- **GUI/IDE-launched agents** (`cursor`, `cline`, `continue`, `antigravity`) do **not** inherit shell environment. Either add an `env` block under the `usrcp` server entry in the agent's config file (JSON for Cursor/Cline/Continue, TOML for Codex), or set a system-wide GUI env on macOS with `launchctl setenv USRCP_PASSPHRASE "..."` (persists until reboot; use a `~/Library/LaunchAgents/` plist for permanence).
 
-2. **System-wide env (macOS).** Sets the variable for all GUI apps until reboot:
-
-   ```sh
-   launchctl setenv USRCP_PASSPHRASE "your secret phrase"
-   ```
-
-   For persistence across reboots, install a `LaunchAgent` plist under `~/Library/LaunchAgents/`.
-
-**Treat any config file you bake the passphrase into as a secret** — it sits in plaintext on disk. The system-wide `launchctl` path keeps the passphrase out of static files.
+**Treat any config file you bake the passphrase into as a secret** — it sits in plaintext on disk and is the weakest link in an otherwise-encrypted setup. This is exactly what `usrcp keychain store` exists to avoid.
 
 The wizard prints this same guidance after registration, so you can also re-run `usrcp setup` or `usrcp adapter add terminal --targets=<list>` for a reminder.
 

@@ -402,8 +402,13 @@ export function printPassphraseModeWarning(
   const guiTargets = registeredTargets.filter((t) => GUI_LAUNCHED.has(t));
 
   log("");
-  log("  ⚠️  Passphrase mode detected. The MCP servers you just registered cannot");
-  log("      decrypt your ledger without USRCP_PASSPHRASE in their environment.");
+  log("  ⚠️  Passphrase mode detected. The MCP servers you just registered need the");
+  log("      passphrase to decrypt your ledger.");
+  log("");
+  log("  Easiest fix (covers every agent below, nothing in plaintext on disk):");
+  log("    usrcp keychain store");
+  log("  The server resolves USRCP_PASSPHRASE → --passphrase → OS keychain.");
+  log("  Env-var alternatives if you prefer:");
 
   if (shellTargets.length > 0) {
     log("");
