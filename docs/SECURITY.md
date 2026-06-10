@@ -44,7 +44,7 @@ The `domain` column in `timeline_events` and `domain_context` stores HMAC-SHA256
 **Passphrase mode** (production):
 ```
 User passphrase
-  → scrypt(N=16384, r=8, p=1) + stored salt
+  → scrypt(N=131072, r=8, p=2) + stored salt
   → 32-byte master key (IN MEMORY ONLY)
   → HKDF per domain → domain encryption key
   → HKDF global → global encryption key
@@ -137,15 +137,17 @@ Search over encrypted data uses HMAC-SHA256 blind index tokens:
 1. On write: text is split into words. Each word generates:
    - A full-word HMAC token
    - Character n-gram tokens (3-6 chars) for prefix matching
-   - 3 random noise tokens (defeats frequency analysis)
+   - 3 random noise tokens (adds modest uncertainty; does not defeat frequency analysis — see below)
 2. On search: query words are HMAC'd with the same key
 3. Token matching finds events without exposing plaintext
 
 Example: "authentication" generates tokens for `aut`, `auth`, `uthen`, `thent`, `henti`, `authentication`, etc. Searching "auth" matches because both the stored n-gram and the query produce the same HMAC.
 
-### Frequency analysis resistance
+### Noise tokens — what they do and don't buy you
 
-Each event inserts 3 random 8-character hex tokens alongside real tokens. An attacker analyzing token frequency sees a mix of deterministic and random values with no way to distinguish them without the blind index key.
+Each event inserts 3 random 16-hex-character tokens alongside the real tokens. Noise tokens are the same length as real HMAC tokens, so they are length-indistinguishable from real tokens.
+
+Be clear about the limits: 3 random tokens next to many deterministic n-gram tokens do **not** meaningfully flatten the token distribution, and they do not defeat frequency analysis. Identical plaintext always produces identical real-token sets, so an attacker holding the blind index key (or simply observing the index over time) can still see exact-keyword membership, equality patterns, and co-occurrence patterns across events. The noise adds modest uncertainty to per-token frequency counts — nothing more. This is consistent with the blind-index tradeoff described in §3: a compromised blind-index key reveals keyword membership.
 
 ### What blind index does NOT provide
 
@@ -224,9 +226,10 @@ Key derivation uses hardened scrypt parameters: N=131072 (2^17), r=8, p=2. At th
 - **Disk theft / backup exposure**: All data encrypted at rest. In passphrase mode, no key file exists on disk.
 - **Unauthorized agent access**: Domain-scoped keys prevent cross-domain data access.
 - **Forensic recovery of deleted data**: `secure_delete` pragma + VACUUM zero-fill deleted pages.
-- **Frequency analysis of search index**: Noise tokens mixed with real blind index tokens.
 
 ### What this system does NOT protect against
+
+- **Frequency analysis of the search index under blind-index-key compromise**: Real tokens are deterministic HMACs — identical plaintext yields identical token sets. The 3 random noise tokens per event add modest uncertainty but do not flatten the distribution; an attacker holding a blind-index key can test exact-keyword membership and observe equality and co-occurrence patterns across events (see §3).
 
 - **Heap extraction (`gcore <PID>` + `strings`)**: A local attacker with root can dump process memory and extract the master key, derived keys, and any decrypted plaintext currently in the V8 heap. All Buffers we control are zeroed after use, but JavaScript strings are immutable and GC-managed — once plaintext becomes a string, we cannot zero it. **Mitigation for Pro/Enterprise: Rust or Go sidecar for decryption in a memory-safe runtime, or TEE (Trusted Execution Environment).**
 

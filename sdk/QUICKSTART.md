@@ -10,12 +10,15 @@
 
 ```bash
 # The current reference implementation is usrcp-local (an MCP server),
-# not usrcp-sdk. Install it from a clone:
+# not usrcp-sdk. Install the CLI via Homebrew:
 
-cd packages/usrcp-local
-npm install && npm run build && npm link
+brew install frank-bot07/usrcp/usrcp
 
 usrcp init --client=claude,cursor
+
+# Capture adapters still require a source build:
+#   git clone https://github.com/frank-bot07/usrcp.git
+#   cd usrcp/packages/usrcp-local && npm install && npm run build && npm link
 ```
 
 See the repo root [`README.md`](../README.md) for the full quickstart,

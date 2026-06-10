@@ -4,13 +4,19 @@
 
 ## 1. Install USRCP
 
-If you haven't already:
+If you haven't already (Homebrew is the canonical install for the core CLI):
 
 ```bash
-cd packages/usrcp-local && npm install && npm run build && npm link
+brew install frank-bot07/usrcp/usrcp
 ```
 
-(`npx usrcp` will work once published — see the root README.)
+If you need the capture adapters (Discord, Slack, iMessage, etc.), use the source-build path instead — see the root README:
+
+```bash
+git clone https://github.com/frank-bot07/usrcp.git
+cd usrcp/packages/usrcp-local
+npm install && npm run build && npm link
+```
 
 ## 2. Initialize for Cursor
 
@@ -81,7 +87,7 @@ usrcp init --client=cursor --transport=http --port=9876
 usrcp serve --transport=http --port=9876
 ```
 
-Cursor's MCP config receives a `{ type: "http", url, headers: { Authorization: ... } }` entry. The bearer token and TLS cert live at `~/.usrcp/users/<slug>/auth.token` and `~/.usrcp/users/<slug>/tls/`. See [`docs/SECURITY.md` §9](../SECURITY.md) for the threat model.
+Cursor's MCP config receives a `{ type: "http", url, headers: { Authorization: ... } }` entry. The bearer token and TLS cert live at `~/.usrcp/users/<slug>/auth.token` and `~/.usrcp/users/<slug>/tls/`. See [`docs/SECURITY.md` §10](../SECURITY.md#10-authenticated-https-transport-opt-in) for the threat model.
 
 Known caveat: Cursor needs to trust the self-signed localhost cert. If Cursor refuses, pin the cert via your system trust store or fall back to stdio.
 

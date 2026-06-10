@@ -36,7 +36,12 @@ const SALT_LENGTH = 32;
 // Blind index: 16 hex chars = 64 bits (was 8/32-bit — birthday collision fix)
 const TOKEN_HEX_LENGTH = 16;
 
-// Noise: dummy tokens per real token set
+// Noise: dummy tokens per real token set. Each is 16 hex chars
+// (randomBytes(TOKEN_HEX_LENGTH / 2)) — the same width as real HMAC
+// tokens, so noise is length-indistinguishable from real tokens.
+// Note: 3 random tokens do NOT defeat frequency analysis; real tokens
+// are deterministic, so equality/co-occurrence patterns remain visible
+// to anyone holding the blind index key (see docs/SECURITY.md §3, §8).
 const BLIND_INDEX_NOISE_COUNT = 3;
 
 // --- User scope (for multi-user on one machine) ---
