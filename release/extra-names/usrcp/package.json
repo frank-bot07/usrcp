@@ -1,0 +1,35 @@
+{
+  "name": "usrcp",
+  "version": "0.1.8",
+  "description": "USRCP — User Context Protocol. Installs the local CLI + encrypted ledger (usrcp-local): structured, encrypted, cross-platform memory for AI agents.",
+  "type": "module",
+  "bin": {
+    "usrcp": "bin/usrcp.mjs"
+  },
+  "files": [
+    "bin/**"
+  ],
+  "dependencies": {
+    "usrcp-local": "^0.1.8"
+  },
+  "keywords": [
+    "usrcp",
+    "mcp",
+    "ai-memory",
+    "context-protocol",
+    "llm",
+    "agent"
+  ],
+  "author": "Chad Garner",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/frank-bot07/usrcp.git",
+    "directory": "packages/usrcp-local"
+  },
+  "homepage": "https://github.com/frank-bot07/usrcp#readme",
+  "bugs": "https://github.com/frank-bot07/usrcp/issues",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

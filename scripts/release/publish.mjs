@@ -155,6 +155,24 @@ function restore(touchedPaths) {
   run("git", ["checkout", "--", ...rel], REPO_ROOT);
 }
 
+/**
+ * True if `name@version` is already on the registry. Makes the publish
+ * resumable: a re-run after a partial failure (e.g. npm's E429 new-package
+ * rate limit tripping mid-batch) skips what already shipped instead of
+ * erroring on "cannot publish over existing version". `npm view` exits
+ * non-zero when the exact version doesn't exist — we treat that as "not
+ * published". Any other failure (network) also returns false so we still
+ * attempt the publish and surface the real error there.
+ */
+function isAlreadyPublished(name, version) {
+  try {
+    const out = run("npm", ["view", `${name}@${version}`, "version"], REPO_ROOT).trim();
+    return out === version;
+  } catch {
+    return false;
+  }
+}
+
 function showRewrittenDeps(name) {
   const pkg = readPkg(name);
   const internal = Object.entries(pkg.dependencies || {})
@@ -208,6 +226,10 @@ function main() {
     for (const name of targets) {
       const dir = path.join(PKG_DIR, name);
       if (EXECUTE) {
+        if (isAlreadyPublished(name, versions[name])) {
+          log(`skipping ${name}@${versions[name]} — already on registry`);
+          continue;
+        }
         log(`publishing ${name} …`);
         showRewrittenDeps(name);
         run("npm", ["publish", "--access", "public"], dir);

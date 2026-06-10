@@ -1,0 +1,61 @@
+name: publish-extras
+
+# Publishes the namespace-defense / umbrella packages that live outside the
+# monorepo's interdependent set (release/extra-names/*): the `usrcp`
+# umbrella meta-package and the reserved roadmap placeholders usrcp-cli /
+# usrcp-core. These have no file: deps (usrcp depends on the already-
+# published usrcp-local@^0.1.8), so they publish directly — no dep rewrite.
+#
+# Separate from publish.yml so it can be dispatched on its own cadence:
+# npm rate-limits brand-new package CREATION per window, so these go in a
+# batch after the main 14 have landed. Idempotent — skips any name@version
+# already on the registry, so a re-run after a rate-limit (E429) only
+# publishes the remainder.
+#
+# Manual only (workflow_dispatch). Uses the NPM_TOKEN secret; OIDC
+# id-token is requested so provenance attaches once trusted publishers
+# are configured.
+
+on:
+  workflow_dispatch:
+    inputs:
+      execute:
+        description: 'Actually publish (false = list what would publish)'
+        type: boolean
+        default: false
+
+jobs:
+  publish-extras:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+      - name: Publish extra-name packages (resumable)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          EXECUTE: ${{ inputs.execute }}
+        run: |
+          set -e
+          for dir in release/extra-names/*/; do
+            name=$(node -p "require('./${dir}package.json').name")
+            version=$(node -p "require('./${dir}package.json').version")
+            # Resumable: skip if this exact name@version is already live.
+            if npm view "${name}@${version}" version >/dev/null 2>&1; then
+              echo "skip ${name}@${version} — already on registry"
+              continue
+            fi
+            if [ "$EXECUTE" = "true" ]; then
+              echo "publishing ${name}@${version} …"
+              (cd "$dir" && npm publish --access public)
+            else
+              echo "would publish ${name}@${version} (dry run)"
+            fi
+          done
