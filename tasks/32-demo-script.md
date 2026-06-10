@@ -1,11 +1,28 @@
 # USRCP demo script (recording-ready)
 
-Date: 2026-05-18
-Tested against: `main` @ c8c5453 (post PR #73)
+Date: 2026-06-10 (previously 2026-05-18)
+Tested against: `main` @ 8ec9f43 (post PR #100); previously c8c5453
 
 Verified end-to-end on a clean tmp HOME for every flow below except
-where called out. Cloud flow tested against in-process pg-mem; use a
-real Postgres + docker for the actual demo.
+where called out. Re-verification 2026-06-10, all on macOS / Node 24:
+
+- **Scenario 1** (init → key files 0600 → status → `usrcp_set_fact` /
+  `usrcp_get_facts` JSON-RPC round-trip): pass, output matches.
+- **Scenario 2** (rotate via `usrcp_rotate_key` → reopen with new
+  passphrase → fact survives → auto-snapshot listed): pass. Note:
+  `reencrypted` counts timeline events, so it reads `0` when only facts
+  exist — the fact still re-encrypts and survives (verified by reading
+  it back under the new passphrase).
+- **Scenario 3** (pair init on device A → pair join on device B →
+  identical `User ID` on both): pass, against the relay running on
+  in-process pg-mem via the new `scripts/demo-cloud-pgmem.mjs` — no
+  Docker needed (see the no-Docker option below). Docker/Postgres path
+  unchanged.
+- **`scripts/cross-client-proof.mjs`** (editor A writes / editor B
+  reads / raw-SQLite ciphertext scan): pass — "cross-editor claim
+  VERIFIED end-to-end".
+- **Scenario 4** is an interactive TTY wizard and was not re-verified
+  headlessly.
 
 ## Demo prerequisites
 
@@ -93,6 +110,17 @@ Requires a running `usrcp-cloud`. For the demo, the simplest path is
 to spin up Postgres + cloud locally via docker compose.
 
 ### Prep: stand up the cloud
+
+**No-Docker option (fastest):** the real Fastify app on in-process
+pg-mem — same substrate as the usrcp-cloud test suite. Ephemeral by
+design; fine for the pairing demo, not for anything persistent:
+
+```bash
+(cd packages/usrcp-cloud && npm install && npm run build)
+node scripts/demo-cloud-pgmem.mjs &        # listens on 127.0.0.1:19090
+```
+
+**Docker + real Postgres** (closer to production):
 
 ```bash
 # Postgres in a container.
@@ -191,6 +219,39 @@ turns into usrcp-stream. The demo narration:
   Worth a separate "permissions" demo.
 - Sync push / pull. Works but needs realistic data and a running
   cloud; better suited to its own scenario.
+
+## Press-record runbook: the cross-editor screencast
+
+The strategically load-bearing artifact (see `strategy/INTEGRATIONS.md`
+§"The demo artifact"): same structured state across two editors, 30s.
+Everything below the editor layer is already proven headless by
+`scripts/cross-client-proof.mjs` — if that passes on your machine, the
+only thing that can fail on camera is an editor's MCP wiring.
+
+```bash
+# 0. De-risk: run the headless proof first.
+node scripts/cross-client-proof.mjs        # expect "VERIFIED end-to-end"
+
+# 1. Register both editors against your real ledger (NOT a tmp HOME —
+#    Claude Desktop and Cursor read their real config paths):
+usrcp init --client=claude,cursor          # or `usrcp keychain store` first
+#    so neither editor needs USRCP_PASSPHRASE plumbing (see README →
+#    Passphrase mode and terminal agents).
+
+# 2. Restart both editors fully (quit, not window-close).
+#    Confirm the usrcp tools appear in each editor's MCP tool list.
+```
+
+3. **In Claude Desktop**: "I'm a TypeScript founder building USRCP —
+   remember that." → agent calls `usrcp_update_identity` /
+   `usrcp_append_event`. Show the tool-call confirmation on screen.
+4. **In Cursor**: "What languages am I an expert in, and what am I
+   working on?" → agent calls `usrcp_get_state`, answers TypeScript +
+   USRCP. This is the money shot — keep both editor windows visible.
+5. Publish at `docs/demos/cross-editor.mp4` (or a Loom link from
+   `docs/demos/cross-editor.md`), then flip the Cursor row to
+   `verified` in `docs/INTEGRATIONS/README.md` per the checklist in
+   `strategy/INTEGRATIONS.md`.
 
 ## If anything breaks on camera
 
