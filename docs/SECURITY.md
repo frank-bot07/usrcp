@@ -215,6 +215,27 @@ Key derivation uses hardened scrypt parameters: N=131072 (2^17), r=8, p=2. At th
 - Env var is deleted from `process.env` immediately after reading
 - Passphrase is never logged or echoed
 
+### OS keychain storage (opt-in)
+
+`usrcp keychain store` (or `usrcp init --keychain`) places the passphrase in the
+macOS Keychain or the Linux Secret Service, and `serve`/`status`/`sync` fall back
+to it when no env var or flag is provided. Honest framing of what this changes:
+
+- **Better than the env-block pattern**: nothing in plaintext in editor JSON/TOML
+  configs or shell rc files; the entry is encrypted at rest by the OS and gated
+  on the login session.
+- **Not a boundary change**: any process running as the logged-in user can read
+  the entry through the same CLI (`security` / `secret-tool`), exactly as it
+  could read a config file or the server's heap (see §8). The keychain removes
+  the at-rest plaintext copy; it does not defend against a compromised user
+  session.
+- Mechanics: the secret is stored base64-encoded (`usrcp-b64:` prefix) because
+  both backend CLIs are lossy for raw non-ASCII values; macOS commands are fed
+  via `security -i` stdin so the passphrase never appears in a process list;
+  every store is round-trip verified; all backend calls carry timeouts so a
+  locked keychain degrades to the env-var error path instead of hanging a
+  headless MCP-spawned server.
+
 ---
 
 ## 8. Known Limitations & Threat Model Boundaries
