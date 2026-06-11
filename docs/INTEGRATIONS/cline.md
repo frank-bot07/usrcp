@@ -10,7 +10,10 @@ Cline is the VS Code extension at `saoudrizwan.claude-dev`. It reads MCP servers
 
 ## 1. Init
 
+Install the CLI if you haven't (Homebrew is the canonical install; capture adapters need the source build — see the root README):
+
 ```bash
+brew install frank-bot07/usrcp/usrcp
 usrcp init --client=cline
 ```
 

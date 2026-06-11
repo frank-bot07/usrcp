@@ -35,15 +35,18 @@ The first integration is a **local MCP server** that any MCP-compatible AI agent
 
 2. **Narrow, honest value prop.** Install the MCP server. Every agent on your machine can now read and write the same structured state — your identity, your preferences, your active projects, your domain-scoped context, and your interaction timeline. Write a preference in Claude Desktop; Cursor sees it on the next call. The pitch is cross-platform structured state, not "AI that remembers everything."
 
-3. **Zero infrastructure.** The local MCP server runs an encrypted SQLite ledger on `localhost`. No cloud dependency. No account creation. No friction. `npx usrcp init` and you're running.
+3. **Zero infrastructure.** The local MCP server runs an encrypted SQLite ledger on `localhost`. No cloud dependency. No account creation. No friction. `brew install frank-bot07/usrcp/usrcp`, then `usrcp init`, and you're running.
 
 4. **Graduation path to the hosted ledger.** When developers want cross-device sync or team-scoped ledgers, they upgrade. The protocol is the same — they just configure a `cloud_endpoint` and the local client starts pushing ciphertext to the sync server. The hosted ledger never sees plaintext.
 
 ### The Install Experience
 
 ```bash
-npx usrcp init --client=claude,cursor
+brew install frank-bot07/usrcp/usrcp
+usrcp init --client=claude,cursor
 ```
+
+(Homebrew is the canonical install for the core CLI; capture adapters currently require the source-build path in the README.)
 
 This does three things:
 1. Creates `~/.usrcp/users/<slug>/` with an encrypted SQLite ledger and per-user keys (passphrase-derived master key, never written to disk in passphrase mode).
@@ -96,7 +99,7 @@ This is already better than what exists for the structured-state use case:
 
 **Target**: AI-native indie developers already using 2+ AI editors daily.
 
-1. **Ship `usrcp-local` as an npm package.** One command install. README shows a before/after: "Here's a Cursor session without USRCP: you re-explain your stack. Here's one with it: Cursor already knows because you told Claude Desktop yesterday."
+1. **Ship the `usrcp` CLI via Homebrew** (`brew install frank-bot07/usrcp/usrcp`; source build covers the capture adapters). One command install. README shows a before/after: "Here's a Cursor session without USRCP: you re-explain your stack. Here's one with it: Cursor already knows because you told Claude Desktop yesterday."
 
 2. **Launch on Hacker News** with the framing: *"We built structured user state as a protocol, not a product. MCP routes models. ACP routes agents. USRCP carries the human's structured state across both — encrypted, zero-knowledge, no vendor can read your state."* Lead with the cryptographic architecture, not the TAM.
 
@@ -137,7 +140,7 @@ The moat is the **cryptographic architecture**, not the schema. Anyone can clone
 
 | Metric | Week 4 Target | Week 12 Target |
 |--------|---------------|----------------|
-| npm installs of `usrcp-local` | 500 | 5,000 |
+| `usrcp` installs (brew + source) | 500 | 5,000 |
 | GitHub stars | 1,000 | 5,000 |
 | Daily active ledgers | 200 | 2,000 |
 | Events appended / day | 10,000 | 500,000 |

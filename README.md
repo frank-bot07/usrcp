@@ -241,7 +241,7 @@ Each adapter's test suite includes a **ciphertext-at-rest** check: it captures r
 
 - **AES-256-GCM** encryption at rest for all fields
 - **Domain-scoped keys** via HKDF-SHA256 — coding key cannot decrypt health data
-- **scrypt** passphrase derivation (N=16384, r=8, p=1) — key never on disk
+- **scrypt** passphrase derivation (N=131072, r=8, p=2) — key never on disk
 - **HMAC domain pseudonyms** — domain names are opaque identifiers
 - **Blind index search** with n-gram tokens and noise injection
 - **Encrypted audit log** — access patterns are ciphertext

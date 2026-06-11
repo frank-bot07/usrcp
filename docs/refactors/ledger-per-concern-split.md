@@ -2,7 +2,7 @@
 
 **Branch:** `refactor/ledger-per-concern-split`
 **Base:** `refactor/split-ledger` (commit `4fee107`)
-**Status:** Design doc only. No code changes yet.
+**Status:** Executed — implemented in `packages/usrcp-local/src/ledger/` (`core.ts`, `audit.ts`, `keys.ts`, `identity.ts`, `timeline.ts`, `events.ts`, `facts.ts`) using Pattern A below. Kept for the design rationale.
 
 ---
 
