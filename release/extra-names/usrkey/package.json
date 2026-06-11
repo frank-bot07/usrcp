@@ -1,0 +1,19 @@
+{
+  "name": "usrkey",
+  "version": "0.0.1",
+  "description": "Reserved for USRKey — portable, user-held encrypted context for AI tools (the user-facing layer of the USRCP protocol). For the working implementation today, use `usrcp-local`.",
+  "keywords": [
+    "usrkey",
+    "usrcp",
+    "user-context",
+    "placeholder"
+  ],
+  "author": "Chad Garner",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/frank-bot07/usrcp.git"
+  },
+  "homepage": "https://github.com/frank-bot07/usrcp#readme",
+  "bugs": "https://github.com/frank-bot07/usrcp/issues"
+}
