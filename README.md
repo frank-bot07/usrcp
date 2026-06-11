@@ -50,15 +50,35 @@ The two are complementary, not competitive. Nothing stops an agent from using bo
 
 ### Install
 
-**Homebrew (macOS / Linux)** — recommended for the core CLI:
+**npm (recommended)** — the `usrcp` CLI + encrypted ledger:
+
+```bash
+npm install -g usrcp        # the `usrcp` command + local ledger
+# …or run without installing:
+npx usrcp init
+```
+
+This ships the core CLI with the inline adapters (`terminal`, `mcp-agent`, `openclaw`). Capture adapters install as their own packages, then you configure each with the setup wizard:
+
+```bash
+# structured-state adapters:
+npm install -g usrcp-github   # or usrcp-linear, usrcp-obsidian, usrcp-claude-code, usrcp-google-calendar
+usrcp setup --adapter=github
+
+# experimental conversation-capture set:
+npm install -g usrcp-slack    # or usrcp-discord, usrcp-telegram, usrcp-imessage, usrcp-gmail
+usrcp setup --adapter=slack
+```
+
+See the [Adapters](#capture-adapters) table for the full list (the Chrome extension and VS Code viewer ship separately — see their package READMEs).
+
+**Homebrew (macOS / Linux)** — alternative for the core CLI:
 
 ```bash
 brew install frank-bot07/usrcp/usrcp
 ```
 
-This ships the `usrcp` CLI with the inline adapters (`terminal`, `mcp-agent`, `openclaw`). Capture adapters (GitHub, Linear, Obsidian, Claude Code, Google Calendar, plus the experimental conversation-capture set: Discord, Slack, Telegram, iMessage, Gmail, Chrome extension) and the VS Code viewer currently require the source-build path below — they'll move under brew in a future release.
-
-**From source** (required for capture adapters today):
+**From source** — for contributing or running unreleased changes:
 
 ```bash
 git clone https://github.com/frank-bot07/usrcp.git
@@ -101,11 +121,13 @@ Single-user is the default and what every shared-machine consideration in the re
 
 ### Adding capture adapters
 
-Adapters watch a source (a GitHub org, an Obsidian vault, a Linear workspace, etc.) and append the activity you authored into the same ledger your local MCP server reads from. One wizard installs and configures any adapter:
+Adapters watch a source (a GitHub org, an Obsidian vault, a Linear workspace, etc.) and append the activity you authored into the same ledger your local MCP server reads from. Install the adapter's package, then run the setup wizard to configure it:
 
 ```bash
+npm install -g usrcp-linear          # install the adapter you want
+usrcp setup --adapter=linear         # configure it (validates credentials, picks scope)
+# or, to browse what's installed:
 usrcp setup                          # interactive picker
-usrcp setup --adapter=linear         # straight to one adapter
 ```
 
 See the [Adapters](#capture-adapters) tables below for the full list.
@@ -178,7 +200,7 @@ These adapters capture messages you send — in iMessage, Slack, Discord, Telegr
 | [`usrcp-gmail`](packages/usrcp-gmail) | Messages you sent in Gmail (subject, body, recipients, labels) | Capture-only (v0) | Google Cloud OAuth client + Gmail API enabled |
 | [`usrcp-extension`](packages/usrcp-extension) | Conversations on claude.ai; `/usrcp` slash-command for ledger lookup | Capture + injector | **Chrome only.** Manual unpacked load (Developer Mode → Load Unpacked) |
 
-Install any adapter via `usrcp setup --adapter=<value>` (e.g. `usrcp setup --adapter=linear`), or run `usrcp setup` for an interactive picker.
+Install an adapter's package (`npm install -g usrcp-<value>`), then configure it with `usrcp setup --adapter=<value>` (e.g. `npm i -g usrcp-linear && usrcp setup --adapter=linear`). Run `usrcp setup` alone for an interactive picker over the adapters you've installed.
 
 All adapters write under a configurable `domain` (default matches the source name) and use stable, source-side IDs as idempotency keys, so re-polling or re-watching the same window cannot double-write. Capture-only adapters do not reply; bot adapters reply only to explicit `@usrcp` / `/usrcp` mentions and answer using the same ledger the user sees.
 
