@@ -1,12 +1,25 @@
 # USRCP — User Context Protocol
 
-**Structured, encrypted user state for AI agents. Cross-platform, ledger-style, content zero-knowledge.**
+**Structured user state that follows you across AI tools. Local-first. Open source. AES-256-GCM encrypted, and you hold the key.**
 
-AI agents today rebuild their understanding of the user every session: your stack, your preferences, your active projects, your timezone. Claude Desktop doesn't know what you told Cursor. Cursor doesn't know what Cline pulled from git this morning. The structured facts an agent needs to be useful on day two — identity, preferences, projects, interaction timeline — are fragmented across platforms, sessions, and devices.
+You told Claude Desktop your stack on Tuesday. On Wednesday, Cursor doesn't know. Thursday, Codex asks again. Every AI tool you use has its own memory, or none.
 
-USRCP is a cross-platform protocol for reading, writing, and syncing **structured user state** across AI agents, with all data encrypted at rest under a key the user controls.
+USRCP is a local, encrypted SQLite ledger that any MCP-aware tool can read and write. One install, one passphrase, and every tool shares the same structured user state — your timezone, your stack, your projects, your preferences.
 
-> **What USRCP is not.** USRCP is **not** a semantic memory layer. It doesn't do vector search, embeddings, or fuzzy conversational recall. If you ask "what did I tell you about my anxiety meds last week?" USRCP won't find that unless you stored it as a structured fact. For fuzzy recall over chat transcripts, use Mem0 or Zep — they solve a different problem. See [What USRCP is vs. isn't](#what-usrcp-is-vs-isnt) below.
+Registers with **Claude Desktop**, **Cursor**, **Continue**, **Cline**, and terminal agents (**Claude Code**, **Codex CLI**, **Copilot CLI**, **Aider**, **OpenCode**, **Antigravity**). Captures structured activity from **GitHub**, **Linear**, **Obsidian**, **Claude Code sessions**, and **Google Calendar** — plus an [experimental conversation-capture set](#conversation-capture-adapters-experimental).
+
+```bash
+brew install frank-bot07/usrcp/usrcp
+usrcp init
+```
+
+<!-- TODO(chad): swap the demo link below for the 30s screencast once recorded — runbook in tasks/32-demo-script.md -->
+→ **See it work:** [the cross-editor demo](docs/demos/cross-editor.md), or prove the claim on your own machine in one command — `node scripts/cross-client-proof.mjs` (writes state as one editor, reads it as another, then scans the raw DB to show it's all ciphertext).
+→ Apache 2.0 · 600+ tests · threat model in [`docs/SECURITY.md`](docs/SECURITY.md)
+
+---
+
+> **What USRCP is not.** USRCP is **not** a semantic memory layer. It doesn't do vector search, embeddings, or fuzzy conversational recall. If you ask "what did I tell you about my anxiety meds last week?" USRCP won't find that unless you stored it as a structured fact. For fuzzy recall over chat transcripts, use [Mem0](https://mem0.ai) or [Zep](https://www.getzep.com) — they solve a different problem. See [What USRCP is vs. isn't](#what-usrcp-is-vs-isnt) below.
 
 ## Protocol Stack
 
@@ -45,6 +58,27 @@ USRCP is a cross-platform protocol for reading, writing, and syncing **structure
 - The user trusts the memory provider with plaintext.
 
 The two are complementary, not competitive. Nothing stops an agent from using both.
+
+### vs OpenMemory MCP (Mem0)
+
+Mem0 shipped [OpenMemory MCP](https://mem0.ai/blog/introducing-openmemory-mcp) in early 2026 — a local-first MCP server that shares memory across Cursor / Claude / Windsurf / Cline. Closest neighbor on positioning. The differentiation is real but tight:
+
+|                              | USRCP                                                            | OpenMemory MCP                                  |
+| ---------------------------- | ---------------------------------------------------------------- | ----------------------------------------------- |
+| **Memory shape**             | Structured user state (identity, prefs, projects, timeline) + blind-index search over ciphertext | Vector-embedded semantic recall of chat turns   |
+| **Install footprint**        | One SQLite file, `brew install`                                  | Docker (frontend + MCP server + vector DB)      |
+| **External API dependency**  | None — works offline                                             | Requires an OpenAI API key (memory extraction is an LLM call) |
+| **Encryption at rest**       | AES-256-GCM; user owns the key; relay sees only content ciphertext ([metadata caveats](docs/SECURITY.md#9-cloud-sync-relay--what-the-operator-sees)) | Not a claim |
+| **Cross-vendor sync**        | Optional content-zero-knowledge relay (`usrcp-stream`)           | Not addressed                                   |
+| **License**                  | Apache 2.0                                                       | OSS                                             |
+
+Same broad goal (cross-tool memory you control); different shape of "memory" and a much smaller install footprint here. Worth using both if your workflow wants structured state *and* semantic chat recall.
+
+### vs vendor-built memory (Claude Memory, ChatGPT Memory, Cursor Memory)
+
+The 2026 vendor surfaces — Claude Memory, ChatGPT Memory, Gemini personalization — solve the cross-session problem **within** one vendor. USRCP solves it **across** vendors. If you only use Claude (or only ChatGPT), the vendor's built-in memory is probably enough. The day you add a second tool, USRCP starts paying for itself: the structured user state you typed once is there in every MCP-aware client, and the encryption key stays with you instead of the vendor.
+
+Cursor users specifically: native `@memories` was removed in v2.1.x. USRCP is one way to fill that gap that also bonus-shares the memory with the rest of your stack.
 
 ## Quickstart
 
