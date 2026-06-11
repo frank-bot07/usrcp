@@ -56,7 +56,7 @@ The two are complementary, not competitive. Nothing stops an agent from using bo
 brew install frank-bot07/usrcp/usrcp
 ```
 
-This ships the `usrcp` CLI with the inline adapters (`terminal`, `mcp-agent`, `openclaw`). Capture adapters (Discord, Slack, Telegram, iMessage, Obsidian, Linear, GitHub, Gmail, Google Calendar, Claude Code, Chrome extension) and the VS Code viewer currently require the source-build path below — they'll move under brew in a future release.
+This ships the `usrcp` CLI with the inline adapters (`terminal`, `mcp-agent`, `openclaw`). Capture adapters (GitHub, Linear, Obsidian, Claude Code, Google Calendar, plus the experimental conversation-capture set: Discord, Slack, Telegram, iMessage, Gmail, Chrome extension) and the VS Code viewer currently require the source-build path below — they'll move under brew in a future release.
 
 **From source** (required for capture adapters today):
 
@@ -101,14 +101,14 @@ Single-user is the default and what every shared-machine consideration in the re
 
 ### Adding capture adapters
 
-Adapters watch a source (a Slack workspace, an Obsidian vault, your iMessage chat.db, etc.) and append the activity you authored into the same ledger your local MCP server reads from. One wizard installs and configures any adapter:
+Adapters watch a source (a GitHub org, an Obsidian vault, a Linear workspace, etc.) and append the activity you authored into the same ledger your local MCP server reads from. One wizard installs and configures any adapter:
 
 ```bash
 usrcp setup                          # interactive picker
 usrcp setup --adapter=linear         # straight to one adapter
 ```
 
-See the [Adapters](#capture-adapters) table below for the full list.
+See the [Adapters](#capture-adapters) tables below for the full list.
 
 ### Multiple users on one machine
 
@@ -151,18 +151,31 @@ The wizard prints this same guidance after registration, so you can also re-run 
 
 Adapters are independent processes that read from a source and append events to the local ledger via the same encrypted-at-rest pipeline as the MCP server. Each adapter handles its own auth, idempotency, and cursor persistence.
 
+### Structured-state adapters
+
+These are the headline adapters: they capture genuinely structured dev/work state — issues, PRs, notes, calendar events, coding-session context — the kind of data USRCP's schema and exact-keyword search are built for.
+
+| Adapter | What it captures | Mode | Requirements |
+|---------|------------------|------|--------------|
+| [`usrcp-github`](packages/usrcp-github) | PRs you opened / merged / closed, issues you opened, comments + reviews you authored, in optional org allowlist | Capture-only (v0) | GitHub personal access token (`repo` + `read:user` scopes) |
+| [`usrcp-linear`](packages/usrcp-linear) | Issues + comments you author in Linear | Capture-only (v0) | Linear personal API key |
+| [`usrcp-obsidian`](packages/usrcp-obsidian) | Notes you create or edit in an Obsidian vault | Capture-only (v0) | A local vault directory |
+| [`usrcp-claude-code`](packages/usrcp-claude-code) | User / assistant turns from your Claude Code CLI sessions, tailed from `~/.claude/projects/<cwd>/*.jsonl` | Capture-only (stream) | Claude Code CLI installed; `allowlisted_projects` in `~/.usrcp/claude-code-config.json` |
+| [`usrcp-google-calendar`](packages/usrcp-google-calendar) | Timed events on your primary calendar that have already ended | Capture-only (v0) | Google Cloud OAuth client + Calendar API enabled |
+
+Alongside these, the inline adapters that ship with the brew CLI (`terminal`, `mcp-agent`, `openclaw`) wire the same structured state into terminal agents and agent harnesses — see [Editor & CLI Integrations](#editor--cli-integrations) and [Agent harness integrations](#agent-harness-integrations). The [VS Code viewer](#ledger-viewers) browses the resulting ledger read-only.
+
+### Conversation capture adapters (experimental)
+
+These adapters capture messages you send — in iMessage, Slack, Discord, Telegram, Gmail, or on claude.ai — into the encrypted ledger. Be clear-eyed about the trade: search over captured messages is exact-keyword only, with no semantic recall, which is the weakest retrieval model for free-form chat (see [What USRCP is vs. isn't](#what-usrcp-is-vs-isnt)). If conversational memory is your primary need, Mem0 or Zep are better tools for that job. These adapters exist for users who want specific structured facts pulled from their conversations to live under their own key, not for fuzzy recall over chat history.
+
 | Adapter | What it captures | Mode | Requirements |
 |---------|------------------|------|--------------|
 | [`usrcp-imessage`](packages/usrcp-imessage) | Messages you sent in Apple iMessage | Capture + reader | **macOS only.** Full Disk Access for Messages.app; `brew install steipete/tap/imsg` |
 | [`usrcp-slack`](packages/usrcp-slack) | Messages you sent in Slack; `@usrcp` queries from chat | Capture + reader + bot | **Paid Slack tier** (Pro/Business+/Enterprise) — bot APIs are restricted on free; Anthropic API key for `@usrcp` replies |
 | [`usrcp-discord`](packages/usrcp-discord) | Messages you sent in Discord; `@usrcp` queries from chat | Capture + reader + bot | A Discord server you control; Anthropic API key for `@usrcp` replies |
 | [`usrcp-telegram`](packages/usrcp-telegram) | Messages you sent in Telegram; `@usrcp` queries from chat | Capture + reader + bot | A Telegram bot token (BotFather); Anthropic API key for `@usrcp` replies |
-| [`usrcp-obsidian`](packages/usrcp-obsidian) | Notes you create or edit in an Obsidian vault | Capture-only (v0) | A local vault directory |
-| [`usrcp-linear`](packages/usrcp-linear) | Issues + comments you author in Linear | Capture-only (v0) | Linear personal API key |
-| [`usrcp-github`](packages/usrcp-github) | PRs you opened / merged / closed, issues you opened, comments + reviews you authored, in optional org allowlist | Capture-only (v0) | GitHub personal access token (`repo` + `read:user` scopes) |
 | [`usrcp-gmail`](packages/usrcp-gmail) | Messages you sent in Gmail (subject, body, recipients, labels) | Capture-only (v0) | Google Cloud OAuth client + Gmail API enabled |
-| [`usrcp-google-calendar`](packages/usrcp-google-calendar) | Timed events on your primary calendar that have already ended | Capture-only (v0) | Google Cloud OAuth client + Calendar API enabled |
-| [`usrcp-claude-code`](packages/usrcp-claude-code) | User / assistant turns from your Claude Code CLI sessions, tailed from `~/.claude/projects/<cwd>/*.jsonl` | Capture-only (stream) | Claude Code CLI installed; `allowlisted_projects` in `~/.usrcp/claude-code-config.json` |
 | [`usrcp-extension`](packages/usrcp-extension) | Conversations on claude.ai; `/usrcp` slash-command for ledger lookup | Capture + injector | **Chrome only.** Manual unpacked load (Developer Mode → Load Unpacked) |
 
 Install any adapter via `usrcp setup --adapter=<value>` (e.g. `usrcp setup --adapter=linear`), or run `usrcp setup` for an interactive picker.
