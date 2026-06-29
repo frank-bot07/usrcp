@@ -1,0 +1,60 @@
+{
+  "name": "usrcp-core",
+  "version": "0.1.8",
+  "description": "Framework-agnostic USRCP core — encrypted ledger, crypto, pairing, identity rotation, and scope enforcement. No MCP server, no CLI.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./encryption": "./dist/encryption.js",
+    "./crypto": "./dist/crypto.js",
+    "./types": "./dist/types.js",
+    "./pair": "./dist/pair.js",
+    "./rotate-identity": "./dist/rotate-identity.js",
+    "./scope-enforcement": "./dist/scope-enforcement.js",
+    "./ledger": "./dist/ledger/index.js",
+    "./ledger/*": "./dist/ledger/*.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts"
+  ],
+  "scripts": {
+    "postinstall": "node -e \"const fs=require('fs'); for (const p of ['node_modules/better-sqlite3/build']) fs.rmSync(p,{recursive:true,force:true})\" && npm rebuild better-sqlite3",
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "usrcp",
+    "ai-memory",
+    "context-protocol",
+    "encryption",
+    "ledger"
+  ],
+  "author": "Chad Garner",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "12.10.0",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "7.6.13",
+    "@types/node": "22.19.17",
+    "typescript": "5.9.3",
+    "vitest": "4.1.4"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/frank-bot07/usrcp.git",
+    "directory": "packages/usrcp-core"
+  },
+  "homepage": "https://github.com/frank-bot07/usrcp/tree/main/packages/usrcp-core#readme",
+  "bugs": "https://github.com/frank-bot07/usrcp/issues"
+}

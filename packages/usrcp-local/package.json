@@ -47,6 +47,7 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
+    "usrcp-core": "file:../usrcp-core",
     "@anthropic-ai/sdk": "^0.91.1",
     "@iarna/toml": "^2.2.5",
     "@inquirer/prompts": "^8.4.2",
