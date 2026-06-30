@@ -50,9 +50,10 @@ const ARTIFACT_DIR = path.join(REPO_ROOT, "release-artifacts");
  * strictly sequentially so a failure stops the release before dependents
  * ship against a version that never made it to the registry.
  *
- *   tier 1: no internal deps
- *   tier 2: depend on tier 1
- *   tier 3: adapters — depend on tier 1 + tier 2
+ *   tier 0: framework-agnostic core — no internal deps
+ *   tier 1: depend on tier 0
+ *   tier 2: depend on tier 0 + tier 1
+ *   tier 3: adapters — depend on tier 0 + tier 1 + tier 2
  *
  * Excluded by design:
  *   usrcp-cloud    — hosted server, deployed not npm-installed
@@ -60,7 +61,9 @@ const ARTIFACT_DIR = path.join(REPO_ROOT, "release-artifacts");
  *   usrcp-hermes   — Python, ships via pip
  */
 const PUBLISH_ORDER = [
-  // tier 1
+  // tier 0 — the protocol core (encrypted ledger, crypto, pairing, scope)
+  "usrcp-core",
+  // tier 1 — the local MCP server + CLI
   "usrcp-local",
   // tier 2
   "usrcp-adapter-kit",
