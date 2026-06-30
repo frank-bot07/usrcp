@@ -64,7 +64,7 @@ jobs:
       # sibling builds resolve. (usrcp-imessage omitted — darwin-only.)
       - name: Install deps in cross-platform packages
         run: |
-          for pkg in usrcp-local usrcp-adapter-kit usrcp-stream \
+          for pkg in usrcp-core usrcp-local usrcp-adapter-kit usrcp-stream \
                      usrcp-obsidian usrcp-linear usrcp-github usrcp-gmail \
                      usrcp-google-calendar usrcp-discord usrcp-telegram \
                      usrcp-slack usrcp-claude-code usrcp-extension; do
@@ -110,11 +110,11 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
       - name: Upgrade npm
         run: npm install -g npm@latest
-      # imessage's prebuild builds usrcp-adapter-kit + usrcp-stream (which
-      # build usrcp-local), so install all four.
+      # imessage's prebuild builds usrcp-adapter-kit + usrcp-stream, which build
+      # usrcp-core; install the whole chain so each has its toolchain.
       - name: Install deps (imessage + sibling build chain)
         run: |
-          for pkg in usrcp-local usrcp-adapter-kit usrcp-stream usrcp-imessage; do
+          for pkg in usrcp-core usrcp-local usrcp-adapter-kit usrcp-stream usrcp-imessage; do
             echo "::group::npm ci in $pkg"
             (cd "packages/$pkg" && npm ci)
             echo "::endgroup::"
