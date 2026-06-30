@@ -19,7 +19,7 @@ import {
   ADAPTER_ROTATION_CHECKPOINT_V,
   type AdapterRotationCheckpoint,
 } from "../rotate-adapter-configs.js";
-import { decrypt, deriveGlobalEncryptionKey, encrypt } from "../encryption.js";
+import { decrypt, deriveGlobalEncryptionKey, encrypt } from "usrcp-core/encryption";
 
 let tmpDir: string;
 

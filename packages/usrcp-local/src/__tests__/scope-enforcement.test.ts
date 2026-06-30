@@ -19,8 +19,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createServer } from "../server.js";
-import { setUserSlug } from "../encryption.js";
-import { Ledger } from "../ledger/index.js";
+import { setUserSlug } from "usrcp-core/encryption";
+import { Ledger } from "usrcp-core/ledger";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 let tmpHome: string;

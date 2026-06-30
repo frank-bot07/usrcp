@@ -21,7 +21,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 import { resolveUsrcpBin } from "./shared.js";
-import { isPassphraseMode as defaultIsPassphraseMode } from "../../encryption.js";
+import { isPassphraseMode as defaultIsPassphraseMode } from "usrcp-core/encryption";
 import * as claudeCode from "./claude-code.js";
 import * as cursor from "./cursor.js";
 import * as codex from "./codex.js";

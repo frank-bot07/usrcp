@@ -4,8 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { Ledger } from "usrcp-local/ledger";
-import { setUserSlug } from "usrcp-local/encryption";
+import { Ledger } from "usrcp-core/ledger";
+import { setUserSlug } from "usrcp-core/encryption";
 import { registerStreamTools, type StreamRegistration } from "../register.js";
 import type { EmbeddingProvider } from "../embeddings/provider.js";
 

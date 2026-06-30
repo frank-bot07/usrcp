@@ -21,9 +21,9 @@ import {
   initializeMasterKey,
   getUserDir,
   zeroBuffer,
-} from "usrcp-local/encryption";
-import { initializeIdentity, getDecryptedPrivateKeyPem } from "usrcp-local/crypto";
-import { pairInit, pairJoin, pairStatus, pairCancel } from "usrcp-local/pair";
+} from "usrcp-core/encryption";
+import { initializeIdentity, getDecryptedPrivateKeyPem } from "usrcp-core/crypto";
+import { pairInit, pairJoin, pairStatus, pairCancel } from "usrcp-core/pair";
 
 const PASSPHRASE = "correct-horse-battery-staple-pair-int";
 

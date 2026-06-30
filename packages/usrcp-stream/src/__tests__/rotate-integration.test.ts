@@ -21,9 +21,9 @@ import {
   initializeMasterKey,
   getUserDir,
   zeroBuffer,
-} from "usrcp-local/encryption";
-import { initializeIdentity, getDecryptedPrivateKeyPem } from "usrcp-local/crypto";
-import { rotateIdentity } from "usrcp-local/rotate-identity";
+} from "usrcp-core/encryption";
+import { initializeIdentity, getDecryptedPrivateKeyPem } from "usrcp-core/crypto";
+import { rotateIdentity } from "usrcp-core/rotate-identity";
 
 const PASSPHRASE = "correct-horse-battery-staple-rotate-int";
 

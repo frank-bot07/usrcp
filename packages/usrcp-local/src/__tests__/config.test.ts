@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { setUserSlug } from "../encryption.js";
+import { setUserSlug } from "usrcp-core/encryption";
 import { readConfig, writeConfig, updateConfig, getConfigPath } from "../config.js";
 
 let tmpHome: string;

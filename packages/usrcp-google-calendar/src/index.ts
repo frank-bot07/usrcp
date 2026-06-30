@@ -19,7 +19,7 @@
 
 import { execSync } from "node:child_process";
 import { calendar } from "@googleapis/calendar";
-import { Ledger } from "usrcp-local/ledger";
+import { Ledger } from "usrcp-core/ledger";
 import {
   loadConfig,
   preflightConfig,

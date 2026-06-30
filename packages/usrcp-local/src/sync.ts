@@ -11,10 +11,10 @@
  */
 
 import * as crypto from "node:crypto";
-import { Ledger } from "./ledger/index.js";
-import { getIdentity, getDecryptedPrivateKeyPem } from "./crypto.js";
+import { Ledger } from "usrcp-core/ledger";
+import { getIdentity, getDecryptedPrivateKeyPem } from "usrcp-core/crypto";
 import { readConfig, updateConfig } from "./config.js";
-import { initializeMasterKey, isPassphraseMode } from "./encryption.js";
+import { initializeMasterKey, isPassphraseMode } from "usrcp-core/encryption";
 
 export interface SyncStatus {
   cloud_endpoint: string | null;

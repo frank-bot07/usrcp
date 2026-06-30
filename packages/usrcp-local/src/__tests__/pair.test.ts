@@ -10,8 +10,8 @@ import {
   encrypt,
   zeroBuffer,
   getUserDir,
-} from "../encryption.js";
-import { initializeIdentity, getDecryptedPrivateKeyPem } from "../crypto.js";
+} from "usrcp-core/encryption";
+import { initializeIdentity, getDecryptedPrivateKeyPem } from "usrcp-core/crypto";
 import {
   pairInit,
   pairJoin,
@@ -20,12 +20,12 @@ import {
   formatCode,
   formatPairingString,
   parsePairingString,
-  renderPairingQr,
   InvalidPairingCode,
   WrongPassphrase,
   PairingExpired,
   PairingLocked,
-} from "../pair.js";
+} from "usrcp-core/pair";
+import { renderPairingQr } from "../pair-qr.js";
 
 const PASSPHRASE = "correct-horse-battery-staple";
 

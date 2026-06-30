@@ -1,4 +1,4 @@
-import type { Ledger } from "usrcp-local/ledger";
+import type { Ledger } from "usrcp-core/ledger";
 import { openStreamDb, closeStreamDb, type StreamHandle } from "./db/index.js";
 import { loadVectorExtension } from "./vector/index.js";
 import { makeStitcher } from "./stitch/thread.js";

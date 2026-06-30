@@ -6,7 +6,7 @@ import {
   decrypt,
   deriveGlobalEncryptionKey,
   zeroBuffer,
-} from "usrcp-local/encryption";
+} from "usrcp-core/encryption";
 
 /**
  * Shared, encrypted-at-rest config store for USRCP capture adapters.

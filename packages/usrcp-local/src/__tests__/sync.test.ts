@@ -3,9 +3,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
-import { setUserSlug, initializeMasterKey } from "../encryption.js";
-import { Ledger } from "../ledger/index.js";
-import { initializeIdentity } from "../crypto.js";
+import { setUserSlug, initializeMasterKey } from "usrcp-core/encryption";
+import { Ledger } from "usrcp-core/ledger";
+import { initializeIdentity } from "usrcp-core/crypto";
 import { updateConfig, readConfig } from "../config.js";
 import { syncPush, syncPull, syncStatus } from "../sync.js";
 

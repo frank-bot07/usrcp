@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   initializeMasterKey,
   getUserDir,
-} from "usrcp-local/encryption";
+} from "usrcp-core/encryption";
 import {
   registerStreamTools,
   type StreamServeOptions,

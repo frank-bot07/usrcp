@@ -11,13 +11,13 @@
     "usrcp-stream": "dist/index.js"
   },
   "scripts": {
-    "postinstall": "node -e \"const fs=require(\\\"fs\\\"); for (const p of [\\\"node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-local/node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-stream/node_modules/better-sqlite3/build\\\"]) fs.rmSync(p,{recursive:true,force:true})\" && npm rebuild better-sqlite3",
-    "prebuild": "cd ../usrcp-local && npm run build",
+    "postinstall": "node -e \"const fs=require(\\\"fs\\\"); for (const p of [\\\"node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-core/node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-stream/node_modules/better-sqlite3/build\\\"]) fs.rmSync(p,{recursive:true,force:true})\" && npm rebuild better-sqlite3",
+    "prebuild": "cd ../usrcp-core && npm run build",
     "build": "tsc",
     "dev": "tsc --watch",
     "start": "node dist/index.js serve",
     "lint": "tsc --noEmit",
-    "pretest": "(cd ../usrcp-local && npm run build) && (cd ../usrcp-cloud && npm run build)",
+    "pretest": "(cd ../usrcp-core && npm run build) && (cd ../usrcp-cloud && npm run build)",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -41,7 +41,7 @@
     "@modelcontextprotocol/sdk": "1.29.0",
     "better-sqlite3": "12.10.0",
     "sqlite-vec": "^0.1.6",
-    "usrcp-local": "file:../usrcp-local",
+    "usrcp-core": "file:../usrcp-core",
     "zod": "4.3.6"
   },
   "devDependencies": {

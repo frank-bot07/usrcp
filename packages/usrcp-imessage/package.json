@@ -14,7 +14,7 @@
     "usrcp-imessage": "dist/index.js"
   },
   "scripts": {
-    "postinstall": "node -e \"const fs=require(\\\"fs\\\"); for (const p of [\\\"node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-local/node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-stream/node_modules/better-sqlite3/build\\\"]) fs.rmSync(p,{recursive:true,force:true})\" && npm rebuild better-sqlite3",
+    "postinstall": "node -e \"const fs=require(\\\"fs\\\"); for (const p of [\\\"node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-core/node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-stream/node_modules/better-sqlite3/build\\\"]) fs.rmSync(p,{recursive:true,force:true})\" && npm rebuild better-sqlite3",
     "prebuild": "(cd ../usrcp-adapter-kit && npm run build) && (cd ../usrcp-stream && npm run build)",
     "build": "tsc",
     "dev": "tsc --watch",
@@ -38,7 +38,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
-    "usrcp-local": "file:../usrcp-local",
+    "usrcp-core": "file:../usrcp-core",
     "usrcp-stream": "file:../usrcp-stream",
     "usrcp-adapter-kit": "file:../usrcp-adapter-kit"
   },

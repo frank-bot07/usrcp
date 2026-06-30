@@ -6,6 +6,7 @@
   "types": "dist/index.d.ts",
   "exports": {
     ".": "./dist/index.js",
+    "./google-oauth": "./dist/google-oauth.js",
     "./package.json": "./package.json"
   },
   "files": [
@@ -13,11 +14,11 @@
     "dist/**/*.d.ts"
   ],
   "scripts": {
-    "prebuild": "cd ../usrcp-local && npm run build",
+    "prebuild": "cd ../usrcp-core && npm run build",
     "build": "tsc",
     "dev": "tsc --watch",
     "lint": "tsc --noEmit",
-    "pretest": "cd ../usrcp-local && npm run build",
+    "pretest": "cd ../usrcp-core && npm run build",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -32,7 +33,7 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "usrcp-local": "file:../usrcp-local"
+    "usrcp-core": "file:../usrcp-core"
   },
   "devDependencies": {
     "@types/node": "22.19.17",

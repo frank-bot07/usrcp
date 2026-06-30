@@ -6,13 +6,6 @@
   "types": "dist/index.d.ts",
   "exports": {
     ".": "./dist/index.js",
-    "./encryption": "./dist/encryption.js",
-    "./ledger": "./dist/ledger/index.js",
-    "./crypto": "./dist/crypto.js",
-    "./pair": "./dist/pair.js",
-    "./rotate-identity": "./dist/rotate-identity.js",
-    "./scope-enforcement": "./dist/scope-enforcement.js",
-    "./google-oauth": "./dist/adapters/google-oauth/index.js",
     "./package.json": "./package.json"
   },
   "files": [

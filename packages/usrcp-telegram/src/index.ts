@@ -24,8 +24,8 @@
 
 import { execSync } from "node:child_process";
 import { Bot, type Context } from "grammy";
-import { Ledger } from "usrcp-local/ledger";
-import { getUserDir } from "usrcp-local/encryption";
+import { Ledger } from "usrcp-core/ledger";
+import { getUserDir } from "usrcp-core/encryption";
 import { loadConfig, preflightConfig } from "./config.js";
 import { captureMessage, type CaptureMessage } from "./capture.js";
 import { captureMessageToStream } from "./stream-capture.js";

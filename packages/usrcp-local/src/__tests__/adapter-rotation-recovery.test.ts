@@ -2,11 +2,11 @@ import { describe, it, expect, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-// Importing the local ledger barrel registers the adapter-rotation recovery
-// hook (setAdapterRotationResumeHook(resumeAdapterRotationIfPending)) as a side
-// effect, which is exactly the integration this test exercises: the core
-// ledger's open-time recovery seam wired to usrcp-local's adapter rotation.
-import { Ledger } from "../ledger/index.js";
+// This import registers the adapter-rotation recovery hook on usrcp-core's
+// ledger — exactly the integration this test exercises: the core ledger's
+// open-time recovery seam wired to usrcp-local's adapter rotation.
+import "../register-adapter-rotation-hook.js";
+import { Ledger } from "usrcp-core/ledger";
 
 describe("Adapter-config rotation recovery on Ledger open (PR #67)", () => {
   it("resumes adapter-config rotation from a checkpoint on Ledger open", async () => {
@@ -30,7 +30,7 @@ describe("Adapter-config rotation recovery on Ledger open (PR #67)", () => {
         encrypt,
         deriveGlobalEncryptionKey,
         getUserDir,
-      } = await vi.importActual<typeof import("../encryption.js")>("../encryption.js");
+      } = await vi.importActual<typeof import("usrcp-core/encryption")>("usrcp-core/encryption");
       const globalKey = deriveGlobalEncryptionKey(masterKey);
       const fakeOldKey = Buffer.alloc(32, 0x42);
       const userDir = getUserDir();

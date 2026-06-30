@@ -7,7 +7,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getUserDir, safeWriteFile } from "./encryption.js";
+import { getUserDir, safeWriteFile } from "usrcp-core/encryption";
 
 export interface UsrcpConfig {
   cloud_endpoint?: string;

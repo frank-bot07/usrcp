@@ -2,9 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Ledger } from "../ledger/index.js";
+import { Ledger } from "usrcp-core/ledger";
 import { createServer } from "../server.js";
-import { initializeIdentity } from "../crypto.js";
+import { initializeIdentity } from "usrcp-core/crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 // --- Ledger-level validation tests (defense-in-depth) ---

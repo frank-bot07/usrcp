@@ -21,8 +21,8 @@
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { execSync } from "node:child_process";
-import { Ledger } from "usrcp-local/ledger";
-import { getUserDir } from "usrcp-local/encryption";
+import { Ledger } from "usrcp-core/ledger";
+import { getUserDir } from "usrcp-core/encryption";
 import { loadConfig, saveLastRowid, flushLastRowid } from "./config.js";
 import { captureMessage, type CaptureMessage } from "./capture.js";
 import { captureMessageToStream } from "./stream-capture.js";

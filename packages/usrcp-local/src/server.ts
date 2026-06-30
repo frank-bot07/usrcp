@@ -1,14 +1,17 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { Ledger, RotationRateLimitedError, RotationDamagedRowsError } from "./ledger/index.js";
-import { getIdentity } from "./crypto.js";
-import { VersionConflictError } from "./types.js";
-import type { CoreIdentity, GlobalPreferences } from "./types.js";
+// Side effect: register the adapter-rotation recovery hook on usrcp-core's
+// ledger before the server opens a Ledger.
+import "./register-adapter-rotation-hook.js";
+import { Ledger, RotationRateLimitedError, RotationDamagedRowsError } from "usrcp-core/ledger";
+import { getIdentity } from "usrcp-core/crypto";
+import { VersionConflictError } from "usrcp-core/types";
+import type { CoreIdentity, GlobalPreferences } from "usrcp-core/types";
 import {
   reencryptAdapterConfigs,
   type AdapterReencryptResult,
 } from "./rotate-adapter-configs.js";
-import { getUserDir } from "./encryption.js";
+import { getUserDir } from "usrcp-core/encryption";
 
 // --- Security constants ---
 const MAX_STRING_SHORT = 100; // identifiers, domains, keys
@@ -47,7 +50,7 @@ export {
   type ScopedToolDef,
   resolveScopes,
   registerToolsWithScopes,
-} from "./scope-enforcement.js";
+} from "usrcp-core/scope-enforcement";
 
 import {
   type ServeOptions,
@@ -56,7 +59,7 @@ import {
   projectStateResult,
   projectSearchResult,
   buildScopedStatusPayload,
-} from "./scope-enforcement.js";
+} from "usrcp-core/scope-enforcement";
 
 // Local alias - everything in this file used to call it ToolDef.
 type ToolDef = ScopedToolDef;
