@@ -1,8 +1,40 @@
 # Task 33 — Promote `usrcp-cli` and `usrcp-core` from reserved names to real packages
 
 Date: 2026-06-29
-Status: **approved — design brief / plan of record** (not yet implemented)
+Status: **Stage 1 + Stage 3 DONE** (branch `refactor/cli-core-split`). Stage 2
+(usrcp-cli) **recommended for deferral** — see "Stage 2 finding" below.
 Against: `main` @ #107 (packages live on npm at 0.1.8)
+
+## Outcome so far
+
+- **Stage 1 (commit d84c1e1):** `usrcp-core` extracted from `usrcp-local` —
+  encryption, crypto, types, pairing, identity rotation, scope enforcement, and
+  the ledger. Three couplings decoupled (adapter-rotation hook, structural
+  `ToolRegistrar` instead of the MCP SDK type, `renderPairingQr` → usrcp-local).
+- **Stage 3 (commit c6cd358):** all 13 dependents repointed to `usrcp-core`;
+  `google-oauth` moved to `usrcp-adapter-kit`; usrcp-local stubs removed; hook
+  registration relocated to `register-adapter-rotation-hook.ts`. Verified:
+  `usrcp-gmail`'s dependency tree no longer contains `@modelcontextprotocol/sdk`,
+  `@inquirer/prompts`, `qrcode-terminal`, or `usrcp-local`. Leaner install
+  achieved.
+- **All suites green** (behavior preserved): core 230, local 321, adapter-kit 32,
+  stream 125, and every adapter suite (513 total across adapters).
+- **Remaining:** version bump (0.1.9 / 0.2.0) + publish wiring for `usrcp-core`
+  (and the `usrcp-adapter-kit/google-oauth` subpath); back-compat note that
+  `usrcp-local`'s protocol subpath exports were removed (they were internal).
+
+## Stage 2 finding — recommend DEFER `usrcp-cli`
+
+A dependency survey settled this: **every** dependent imports only the protocol
+surface (now in `usrcp-core`) — **not one** imports the MCP server or CLI from
+`usrcp-local`. After Stage 3, the only consumer of `usrcp-local` is the browser
+extension, which bridges to it **as the installed CLI binary**, not as a
+library. So splitting the human CLI out of `usrcp-local` would let *no* consumer
+slim down — zero dependency/install benefit — while being the single riskiest
+edit in the plan (splitting the 1,537-line entangled `index.ts`, where the human
+commands and `serve` share arg-parsing/passphrase/slug helpers, across two
+packages with two bin names). High risk, ~zero reward. Keep `usrcp-cli` as the
+reserved 0.0.1 name until there's a concrete reason to split the CLI.
 
 ## The one rule for this task
 
