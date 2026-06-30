@@ -3,7 +3,7 @@ import {
   decrypt as _decrypt,
   isEncrypted as _isEncrypted,
   deriveDomainEncryptionKey as _deriveDomainEncryptionKey,
-} from "usrcp-local/encryption";
+} from "usrcp-core/encryption";
 
 // Re-exported under test-only names so crypto-reuse.test.ts can assert by
 // reference that we're calling usrcp-local's helpers rather than a local

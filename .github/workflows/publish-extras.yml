@@ -2,13 +2,15 @@ name: publish-extras
 
 # Publishes the namespace-defense / umbrella packages that live outside the
 # monorepo's interdependent set (release/extra-names/*): the `usrcp`
-# umbrella meta-package and the reserved roadmap placeholders usrcp-cli /
-# usrcp-core. These have no file: deps (usrcp depends on the already-
-# published usrcp-local@^0.1.8), so they publish directly — no dep rewrite.
+# umbrella meta-package and the reserved roadmap placeholder usrcp-cli.
+# (usrcp-core is now a real package published via publish.yml, so its
+# reservation stub was removed.) These have no file: deps (usrcp depends on
+# the already-published usrcp-local@^0.2.0), so they publish directly — no
+# dep rewrite.
 #
 # Separate from publish.yml so it can be dispatched on its own cadence:
 # npm rate-limits brand-new package CREATION per window, so these go in a
-# batch after the main 14 have landed. Idempotent — skips any name@version
+# batch after the main set has landed. Idempotent — skips any name@version
 # already on the registry, so a re-run after a rate-limit (E429) only
 # publishes the remainder.
 #

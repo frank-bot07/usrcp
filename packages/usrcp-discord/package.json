@@ -1,6 +1,6 @@
 {
   "name": "usrcp-discord",
-  "version": "0.1.8",
+  "version": "0.2.0",
   "description": "Discord capture+reader adapter for USRCP — vision-proof cross-channel memory",
   "main": "dist/index.js",
   "files": [
@@ -11,7 +11,7 @@
     "usrcp-discord": "dist/index.js"
   },
   "scripts": {
-    "postinstall": "node -e \"const fs=require(\\\"fs\\\"); for (const p of [\\\"node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-local/node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-stream/node_modules/better-sqlite3/build\\\"]) fs.rmSync(p,{recursive:true,force:true})\" && npm rebuild better-sqlite3",
+    "postinstall": "node -e \"const fs=require(\\\"fs\\\"); for (const p of [\\\"node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-core/node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-stream/node_modules/better-sqlite3/build\\\"]) fs.rmSync(p,{recursive:true,force:true})\" && npm rebuild better-sqlite3",
     "prebuild": "(cd ../usrcp-adapter-kit && npm run build) && (cd ../usrcp-stream && npm run build)",
     "build": "tsc",
     "dev": "tsc --watch",
@@ -35,7 +35,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
     "discord.js": "^14.16.3",
-    "usrcp-local": "file:../usrcp-local",
+    "usrcp-core": "file:../usrcp-core",
     "usrcp-stream": "file:../usrcp-stream",
     "usrcp-adapter-kit": "file:../usrcp-adapter-kit"
   },

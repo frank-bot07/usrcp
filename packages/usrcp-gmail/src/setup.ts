@@ -12,7 +12,7 @@
  */
 
 import { OAuth2Client } from "google-auth-library";
-import { runLocalhostOauthFlow } from "usrcp-local/google-oauth";
+import { runLocalhostOauthFlow } from "usrcp-adapter-kit/google-oauth";
 import {
   getConfigPath,
   writeGmailConfig,

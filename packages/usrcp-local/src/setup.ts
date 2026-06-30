@@ -26,9 +26,9 @@ import {
   listUserSlugs,
   migrateLegacyLayout,
   setUserSlug,
-} from "./encryption.js";
-import { initializeIdentity } from "./crypto.js";
-import { Ledger } from "./ledger/index.js";
+} from "usrcp-core/encryption";
+import { initializeIdentity } from "usrcp-core/crypto";
+import { Ledger } from "usrcp-core/ledger";
 import {
   type AdapterManifest,
   findAdapter,

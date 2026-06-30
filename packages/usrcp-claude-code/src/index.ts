@@ -17,8 +17,8 @@
  */
 
 import { execSync } from "node:child_process";
-import { Ledger } from "usrcp-local/ledger";
-import { getUserDir } from "usrcp-local/encryption";
+import { Ledger } from "usrcp-core/ledger";
+import { getUserDir } from "usrcp-core/encryption";
 import { loadConfig, flushOffsets } from "./config.js";
 import { makeWatcher } from "./watcher.js";
 

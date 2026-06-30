@@ -8,8 +8,8 @@ import {
   deriveGlobalEncryptionKey,
   deriveDomainEncryptionKey,
   deriveBlindIndexKey,
-} from "usrcp-local/encryption";
-import { Ledger } from "usrcp-local/ledger";
+} from "usrcp-core/encryption";
+import { Ledger } from "usrcp-core/ledger";
 
 // Proves that a user can switch between unified mode (running through
 // `usrcp serve`, which constructs a Ledger) and standalone stream mode
@@ -41,7 +41,7 @@ afterEach(() => {
 // silently passed when both were changed in lockstep.
 //
 // Master key for these vectors is bytes 0..31. To regenerate, run:
-//   node -e "const e=require('usrcp-local/encryption'); ..."
+//   node -e "const e=require('usrcp-core/encryption'); ..."
 // from inside packages/usrcp-stream/ where the import resolves.
 const FROZEN_MASTER_KEY = (() => {
   const buf = Buffer.alloc(32);

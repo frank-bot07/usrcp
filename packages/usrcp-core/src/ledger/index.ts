@@ -14,3 +14,8 @@ import "./facts.js";
 
 export { Ledger };
 export { RotationRateLimitedError, RotationDamagedRowsError } from "./keys.js";
+export { setAdapterRotationResumeHook } from "./core.js";
+export type {
+  AdapterRotationResumeHook,
+  AdapterRotationResumeResult,
+} from "./core.js";

@@ -3,10 +3,13 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+// Side effect: register the adapter-rotation recovery hook on usrcp-core's
+// ledger before any Ledger is opened by the CLI.
+import "./register-adapter-rotation-hook.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createServer, type ServeOptions } from "./server.js";
-import { Ledger } from "./ledger/index.js";
-import { initializeIdentity, getIdentity } from "./crypto.js";
+import { Ledger } from "usrcp-core/ledger";
+import { initializeIdentity, getIdentity } from "usrcp-core/crypto";
 import {
   isPassphraseMode,
   initializeMasterKey,
@@ -16,7 +19,7 @@ import {
   getUsrcpBaseDir,
   listUserSlugs,
   migrateLegacyLayout,
-} from "./encryption.js";
+} from "usrcp-core/encryption";
 import {
   detectKeychain,
   readPassphraseFromKeychain,
@@ -33,14 +36,14 @@ import {
   pairStatus,
   pairCancel,
   formatCode,
-  renderPairingQr,
   InvalidPairingCode,
   WrongPassphrase,
   PairingExpired,
   PairingLocked,
-} from "./pair.js";
-import { getDecryptedPrivateKeyPem } from "./crypto.js";
-import { rotateIdentity } from "./rotate-identity.js";
+} from "usrcp-core/pair";
+import { renderPairingQr } from "./pair-qr.js";
+import { getDecryptedPrivateKeyPem } from "usrcp-core/crypto";
+import { rotateIdentity } from "usrcp-core/rotate-identity";
 import {
   addTerminalAdapter,
   removeTerminalAdapter,
@@ -64,8 +67,8 @@ import {
   summarizeSnapshot,
   verifySnapshot,
   DEFAULT_RETENTION,
-} from "./ledger/snapshot.js";
-import { getDefaultDbPath } from "./ledger/helpers.js";
+} from "usrcp-core/ledger/snapshot";
+import { getDefaultDbPath } from "usrcp-core/ledger/helpers";
 
 function hasFlag(name: string): boolean {
   return process.argv.some((a) => a === `--${name}`);
@@ -125,7 +128,7 @@ function printBanner(): void {
   console.error(`
   ╦ ╦╔═╗╦═╗╔═╗╔═╗
   ║ ║╚═╗╠╦╝║  ╠═╝
-  ╚═╝╚═╝╩╚═╚═╝╩   v0.1.8
+  ╚═╝╚═╝╩╚═╚═╝╩   v0.2.0
 
   User Context Protocol — Local Ledger
   `);

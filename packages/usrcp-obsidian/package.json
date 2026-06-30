@@ -1,6 +1,6 @@
 {
   "name": "usrcp-obsidian",
-  "version": "0.1.8",
+  "version": "0.2.0",
   "description": "Obsidian capture adapter for USRCP — watches a local vault and appends note edits to the ledger",
   "main": "dist/index.js",
   "files": [
@@ -11,13 +11,13 @@
     "usrcp-obsidian": "dist/index.js"
   },
   "scripts": {
-    "postinstall": "node -e \"const fs=require(\\\"fs\\\"); for (const p of [\\\"node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-local/node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-stream/node_modules/better-sqlite3/build\\\"]) fs.rmSync(p,{recursive:true,force:true})\" && npm rebuild better-sqlite3",
-    "prebuild": "cd ../usrcp-local && npm run build",
+    "postinstall": "node -e \"const fs=require(\\\"fs\\\"); for (const p of [\\\"node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-core/node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-stream/node_modules/better-sqlite3/build\\\"]) fs.rmSync(p,{recursive:true,force:true})\" && npm rebuild better-sqlite3",
+    "prebuild": "cd ../usrcp-core && npm run build",
     "build": "tsc",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
     "lint": "tsc --noEmit",
-    "pretest": "cd ../usrcp-local && npm run build",
+    "pretest": "cd ../usrcp-core && npm run build",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -35,7 +35,7 @@
   },
   "dependencies": {
     "chokidar": "^4.0.3",
-    "usrcp-local": "file:../usrcp-local"
+    "usrcp-core": "file:../usrcp-core"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",

@@ -106,6 +106,7 @@ jobs:
       # builds resolve their tsc.
       - name: Install deps
         run: |
+          (cd packages/usrcp-core && npm ci)
           (cd packages/usrcp-local && npm ci)
           (cd packages/usrcp-adapter-kit && npm ci)
           (cd packages/usrcp-stream && npm ci)
@@ -161,6 +162,9 @@ jobs:
         working-directory: packages/usrcp-local
         run: |
           node -e "const Database = require('better-sqlite3'); const db = new Database(':memory:'); db.prepare('SELECT 1 as x').get(); console.log('✓ better-sqlite3', require('better-sqlite3/package.json').version, 'loads on Node', process.version)"
+      - name: Install usrcp-core deps (usrcp-local's prebuild compiles it)
+        working-directory: packages/usrcp-core
+        run: npm ci
       - name: Build
         working-directory: packages/usrcp-local
         run: npm run build

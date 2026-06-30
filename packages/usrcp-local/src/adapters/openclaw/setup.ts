@@ -20,7 +20,7 @@
 
 import { execSync } from "node:child_process";
 import { resolveUsrcpBin } from "../terminal/shared.js";
-import { isPassphraseMode } from "../../encryption.js";
+import { isPassphraseMode } from "usrcp-core/encryption";
 
 export interface OpenclawSetupDeps {
   resolveUsrcpBin?: () => string;

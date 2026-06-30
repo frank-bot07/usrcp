@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createServer } from "../server.js";
-import { initializeIdentity } from "../crypto.js";
+import { initializeIdentity } from "usrcp-core/crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 let server: McpServer;
@@ -74,7 +74,7 @@ describe("usrcp_get_state", () => {
         "active_projects",
       ],
     });
-    expect(result.usrcp_version).toBe("0.1.8");
+    expect(result.usrcp_version).toBe("0.2.0");
     expect(result.user_id).toMatch(/^usrcp:\/\/local\//);
     expect(result.resolved_at).toBeTruthy();
     expect(result.state.core_identity).toBeDefined();
@@ -102,7 +102,7 @@ describe("usrcp_append_event", () => {
       outcome: "success",
       platform: "claude_code",
     });
-    expect(result.usrcp_version).toBe("0.1.8");
+    expect(result.usrcp_version).toBe("0.2.0");
     expect(result.status).toBe("accepted");
     expect(result.event_id).toBeTruthy();
     expect(result.ledger_sequence).toBe(1);
@@ -213,7 +213,7 @@ describe("usrcp_manage_project", () => {
 describe("usrcp_status", () => {
   it("returns ledger stats", async () => {
     const result = await callTool("usrcp_status", {});
-    expect(result.usrcp_version).toBe("0.1.8");
+    expect(result.usrcp_version).toBe("0.2.0");
     expect(result.user_id).toMatch(/^usrcp:\/\/local\//);
     expect(result.ledger).toBe("local (SQLite)");
     expect(result.stats.total_events).toBe(0);

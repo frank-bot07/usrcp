@@ -1,6 +1,6 @@
 {
   "name": "usrcp-claude-code",
-  "version": "0.1.8",
+  "version": "0.2.0",
   "description": "USRCP capture adapter for Claude Code CLI - tails ~/.claude/projects/<dir>/*.jsonl session transcripts into usrcp-stream",
   "main": "dist/index.js",
   "files": [
@@ -11,13 +11,13 @@
     "usrcp-claude-code": "dist/index.js"
   },
   "scripts": {
-    "postinstall": "node -e \"const fs=require(\\\"fs\\\"); for (const p of [\\\"node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-local/node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-stream/node_modules/better-sqlite3/build\\\"]) fs.rmSync(p,{recursive:true,force:true})\" && npm rebuild better-sqlite3",
-    "prebuild": "(cd ../usrcp-local && npm run build) && (cd ../usrcp-stream && npm run build)",
+    "postinstall": "node -e \"const fs=require(\\\"fs\\\"); for (const p of [\\\"node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-core/node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-stream/node_modules/better-sqlite3/build\\\"]) fs.rmSync(p,{recursive:true,force:true})\" && npm rebuild better-sqlite3",
+    "prebuild": "(cd ../usrcp-core && npm run build) && (cd ../usrcp-stream && npm run build)",
     "build": "tsc",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
     "lint": "tsc --noEmit",
-    "pretest": "(cd ../usrcp-local && npm run build) && (cd ../usrcp-stream && npm run build)",
+    "pretest": "(cd ../usrcp-core && npm run build) && (cd ../usrcp-stream && npm run build)",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -34,7 +34,7 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
-    "usrcp-local": "file:../usrcp-local",
+    "usrcp-core": "file:../usrcp-core",
     "usrcp-stream": "file:../usrcp-stream"
   },
   "devDependencies": {

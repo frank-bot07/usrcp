@@ -1,10 +1,10 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { Ledger } from "usrcp-local/ledger";
+import type { Ledger } from "usrcp-core/ledger";
 import {
   type ServeOptions,
   resolveScopes,
   registerToolsWithScopes,
-} from "usrcp-local/scope-enforcement";
+} from "usrcp-core/scope-enforcement";
 import { openStreamDb, closeStreamDb, type StreamHandle } from "./db/index.js";
 import { loadVectorExtension } from "./vector/index.js";
 import { makeStitcher } from "./stitch/thread.js";
@@ -104,7 +104,7 @@ function projectSyncStatus(payload: any): any {
 
 /**
  * Stream's scope-enforcement options. After PR #64 these are an exact
- * alias for `ServeOptions` from `usrcp-local/scope-enforcement` -
+ * alias for `ServeOptions` from `usrcp-core/scope-enforcement` -
  * both packages route through the same shared wrapper. Kept as a
  * separate name so external consumers that imported
  * `StreamServeOptions` don't break.

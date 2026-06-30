@@ -7,7 +7,7 @@ import {
   isEncrypted,
   deriveDomainEncryptionKey,
   safeWriteFile,
-} from "usrcp-local/encryption";
+} from "usrcp-core/encryption";
 import { OllamaEmbedder } from "./embeddings/ollama.js";
 import { OpenAIEmbedder } from "./embeddings/openai.js";
 import { VoyageEmbedder } from "./embeddings/voyage.js";

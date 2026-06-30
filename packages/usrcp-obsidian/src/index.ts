@@ -27,7 +27,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { execSync } from "node:child_process";
-import { Ledger } from "usrcp-local/ledger";
+import { Ledger } from "usrcp-core/ledger";
 import { loadConfig } from "./config.js";
 import { parseNote } from "./parse.js";
 import { captureNote } from "./capture.js";

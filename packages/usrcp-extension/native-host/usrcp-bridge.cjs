@@ -44,13 +44,18 @@ const fs = require("node:fs");
 let ledger = null;
 
 function loadLedger() {
+  // The ledger moved from usrcp-local to usrcp-core (the framework-agnostic
+  // protocol core). Resolve usrcp-core's ledger barrel: installed under the
+  // extension, hoisted alongside it, nested under usrcp-local, or the sibling
+  // package dir in the monorepo.
   const candidates = [
-    path.join(__dirname, "..", "node_modules", "usrcp-local", "dist", "ledger", "index.js"),
-    path.join(__dirname, "..", "..", "usrcp-local", "dist", "ledger", "index.js"),
+    path.join(__dirname, "..", "node_modules", "usrcp-core", "dist", "ledger", "index.js"),
+    path.join(__dirname, "..", "node_modules", "usrcp-local", "node_modules", "usrcp-core", "dist", "ledger", "index.js"),
+    path.join(__dirname, "..", "..", "usrcp-core", "dist", "ledger", "index.js"),
   ];
   const ledgerPath = candidates.find((candidate) => fs.existsSync(candidate));
   if (!ledgerPath) {
-    throw new Error("Could not locate usrcp-local ledger module. Reinstall usrcp-extension or build usrcp-local.");
+    throw new Error("Could not locate the usrcp-core ledger module. Reinstall usrcp-extension or build usrcp-core.");
   }
   return require(ledgerPath).Ledger;
 }

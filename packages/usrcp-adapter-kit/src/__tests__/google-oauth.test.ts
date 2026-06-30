@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import * as http from "node:http";
-import { parseRedirect, runLocalhostOauthFlow } from "../adapters/google-oauth/index.js";
+import { parseRedirect, runLocalhostOauthFlow } from "../google-oauth.js";
 
 /**
  * Drive the localhost OAuth flow end-to-end without involving Google.

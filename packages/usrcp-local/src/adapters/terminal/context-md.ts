@@ -14,13 +14,13 @@
 import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { Ledger } from "../../ledger/index.js";
+import { Ledger } from "usrcp-core/ledger";
 import {
   isPassphraseMode,
   migrateLegacyLayout,
   listUserSlugs,
   setUserSlug,
-} from "../../encryption.js";
+} from "usrcp-core/encryption";
 
 const DEFAULT_LAST_N = 50;
 

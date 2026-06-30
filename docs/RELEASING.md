@@ -72,7 +72,7 @@ section below is the eventual token-free upgrade.
 **Via CI (preferred):** push a version tag.
 
 ```bash
-git tag v0.1.8 && git push origin v0.1.8
+git tag v0.2.0 && git push origin v0.2.0
 ```
 
 `.github/workflows/publish.yml` runs the dry-run pack, then publishes. It can

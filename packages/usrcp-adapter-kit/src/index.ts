@@ -2,9 +2,9 @@
  * usrcp-adapter-kit — shared building blocks for USRCP capture adapters.
  *
  * Today this is the encrypted-at-rest config store every adapter used to
- * copy-paste. It is the single deep-importer of `usrcp-local`'s internals
- * (the encryption primitives); adapters depend on this kit instead of
- * reaching into `usrcp-local/dist/*` themselves.
+ * copy-paste (built on `usrcp-core`'s encryption primitives), plus the shared
+ * localhost OAuth flow used by the Google adapters (`usrcp-adapter-kit/google-oauth`).
+ * Adapters depend on this kit instead of reaching into protocol internals.
  */
 export {
   createAdapterConfig,

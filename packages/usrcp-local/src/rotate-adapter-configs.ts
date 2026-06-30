@@ -28,7 +28,7 @@ import {
   encrypt,
   safeWriteFile,
   zeroBuffer,
-} from "./encryption.js";
+} from "usrcp-core/encryption";
 import {
   type AdapterManifest,
   BUILTIN_ADAPTERS,

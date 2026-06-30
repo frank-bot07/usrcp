@@ -12,7 +12,7 @@
  */
 
 import { resolveUsrcpBin } from "../terminal/shared.js";
-import { isPassphraseMode } from "../../encryption.js";
+import { isPassphraseMode } from "usrcp-core/encryption";
 
 interface Prompts {
   input(opts: { message: string; default?: string }): Promise<string>;

@@ -527,7 +527,7 @@ describe("asymmetric scopes (PR #61 round-1 fix)", () => {
 // Codex round-2 review on PR #61 caught this.
 // ---------------------------------------------------------------------------
 
-import { setUserSlug } from "usrcp-local/encryption";
+import { setUserSlug } from "usrcp-core/encryption";
 import { createStreamServer } from "../server.js";
 
 describe("createStreamServer forwards asymmetric scopes (PR #61 round-2 fix)", () => {

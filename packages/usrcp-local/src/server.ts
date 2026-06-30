@@ -1,14 +1,17 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { Ledger, RotationRateLimitedError, RotationDamagedRowsError } from "./ledger/index.js";
-import { getIdentity } from "./crypto.js";
-import { VersionConflictError } from "./types.js";
-import type { CoreIdentity, GlobalPreferences } from "./types.js";
+// Side effect: register the adapter-rotation recovery hook on usrcp-core's
+// ledger before the server opens a Ledger.
+import "./register-adapter-rotation-hook.js";
+import { Ledger, RotationRateLimitedError, RotationDamagedRowsError } from "usrcp-core/ledger";
+import { getIdentity } from "usrcp-core/crypto";
+import { VersionConflictError } from "usrcp-core/types";
+import type { CoreIdentity, GlobalPreferences } from "usrcp-core/types";
 import {
   reencryptAdapterConfigs,
   type AdapterReencryptResult,
 } from "./rotate-adapter-configs.js";
-import { getUserDir } from "./encryption.js";
+import { getUserDir } from "usrcp-core/encryption";
 
 // --- Security constants ---
 const MAX_STRING_SHORT = 100; // identifiers, domains, keys
@@ -47,7 +50,7 @@ export {
   type ScopedToolDef,
   resolveScopes,
   registerToolsWithScopes,
-} from "./scope-enforcement.js";
+} from "usrcp-core/scope-enforcement";
 
 import {
   type ServeOptions,
@@ -56,7 +59,7 @@ import {
   projectStateResult,
   projectSearchResult,
   buildScopedStatusPayload,
-} from "./scope-enforcement.js";
+} from "usrcp-core/scope-enforcement";
 
 // Local alias - everything in this file used to call it ToolDef.
 type ToolDef = ScopedToolDef;
@@ -117,7 +120,7 @@ export function createServer(
 
   const server = new McpServer({
     name: "usrcp-local",
-    version: "0.1.8",
+    version: "0.2.0",
   });
 
   // Tool definitions — declarative table. registerToolsWithScopes filters
@@ -212,7 +215,7 @@ export function createServer(
         }
 
         return {
-          usrcp_version: "0.1.8",
+          usrcp_version: "0.2.0",
           user_id: formatUserId(identity?.user_id),
           resolved_at: new Date().toISOString(),
           state,
@@ -307,7 +310,7 @@ export function createServer(
               type: "text" as const,
               text: JSON.stringify(
                 {
-                  usrcp_version: "0.1.8",
+                  usrcp_version: "0.2.0",
                   status: result.duplicate ? "duplicate" : "accepted",
                   ...result,
                 },
@@ -966,7 +969,7 @@ export function createServer(
       // the wrapper swaps in the scoped envelope when read-scoped.
       readProjection: (_full, rs) =>
         buildScopedStatusPayload({
-          usrcp_version: "0.1.8",
+          usrcp_version: "0.2.0",
           user_id: formatUserId(identity?.user_id),
           stats: ledger.getStatsForScopes(rs),
           active_projects: ledger
@@ -980,7 +983,7 @@ export function createServer(
         const projects = ledger.getProjects();
 
         return {
-          usrcp_version: "0.1.8",
+          usrcp_version: "0.2.0",
           user_id: formatUserId(identity?.user_id),
           ledger: "local (SQLite)",
           stats,

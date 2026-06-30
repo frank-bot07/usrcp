@@ -8,7 +8,7 @@ import * as net from "node:net";
 import * as crypto from "node:crypto";
 import {
   setUserSlug,
-} from "../encryption.js";
+} from "usrcp-core/encryption";
 import {
   ensureTlsCert,
   ensureAuthToken,

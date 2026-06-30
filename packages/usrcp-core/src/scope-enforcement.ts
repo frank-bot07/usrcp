@@ -29,8 +29,23 @@
  * the wrapper actually uses.
  */
 
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { z } from "zod";
+
+/**
+ * Minimal structural type for the MCP server surface this module uses.
+ * Keeps usrcp-core free of a hard `@modelcontextprotocol/sdk` dependency —
+ * the real `McpServer` passed by usrcp-local / usrcp-stream satisfies this
+ * structurally. Mirrors the `.tool(name, description, inputShape, handler)`
+ * overload that `registerToolsWithScopes` calls below.
+ */
+export interface ToolRegistrar {
+  tool(
+    name: string,
+    description: string,
+    inputShape: any,
+    handler: (...args: any[]) => any,
+  ): unknown;
+}
 
 export interface ServeOptions {
   /**
@@ -472,7 +487,7 @@ function defaultOnAuditFailure(err: unknown, ctx: AuditFailureContext): void {
  * audit failures from cratering stream tools.
  */
 export function registerToolsWithScopes(
-  server: McpServer,
+  server: ToolRegistrar,
   defs: ScopedToolDef[],
   opts: ServeOptions,
   ledger: AuditSink | null,

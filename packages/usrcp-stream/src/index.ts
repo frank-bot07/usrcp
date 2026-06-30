@@ -4,8 +4,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import {
   initializeMasterKey,
   getUserDir,
-} from "usrcp-local/encryption";
-import { Ledger } from "usrcp-local/ledger";
+} from "usrcp-core/encryption";
+import { Ledger } from "usrcp-core/ledger";
 import { createStreamServer } from "./server.js";
 import { openStreamDb, closeStreamDb } from "./db/index.js";
 import { loadVectorExtension } from "./vector/index.js";

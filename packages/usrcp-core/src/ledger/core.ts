@@ -24,8 +24,38 @@ import {
   deserializePendingKeyFiles,
 } from "../encryption.js";
 import { ensurePrivateKeyEncrypted, getIdentity as getIdent, initializeIdentity as initIdent } from "../crypto.js";
-import { resumeAdapterRotationIfPending } from "../rotate-adapter-configs.js";
 import { getDefaultDbPath, generateULID } from "./helpers.js";
+
+/**
+ * Adapter-rotation recovery hook. The low-level ledger must not depend on the
+ * adapter system (registry, per-adapter config encryption) — that lives in the
+ * server/CLI layer (`usrcp-local`). Instead, the ledger exposes this seam and
+ * the adapter-aware layer registers `resumeAdapterRotationIfPending` into it.
+ *
+ * Behavior parity: when no hook is registered (e.g. core's own tests, or a
+ * pure-protocol consumer with no adapters) the recovery step is a no-op, exactly
+ * as it was when no rotation checkpoint existed. `usrcp-local` registers the hook
+ * as a side effect of its `ledger` barrel, so every adapter-aware consumer keeps
+ * recovery-on-open identical to the pre-split behavior.
+ */
+export interface AdapterRotationResumeResult {
+  rotated: unknown[];
+  absent: unknown[];
+  failed: unknown[];
+}
+export type AdapterRotationResumeHook = (opts: {
+  userDir: string;
+  currentMasterKey: Buffer;
+}) => AdapterRotationResumeResult | null;
+
+let adapterRotationResumeHook: AdapterRotationResumeHook | null = null;
+
+/** Register (or clear, with `null`) the adapter-rotation recovery hook. */
+export function setAdapterRotationResumeHook(
+  hook: AdapterRotationResumeHook | null,
+): void {
+  adapterRotationResumeHook = hook;
+}
 
 export class Ledger {
   /** @internal */ db: Database.Database;
@@ -146,10 +176,10 @@ export class Ledger {
     // those configs would be permanently unreadable: the old salt is
     // gone, so the old master key is no longer derivable from passphrase.
     try {
-      const resumed = resumeAdapterRotationIfPending({
+      const resumed = adapterRotationResumeHook?.({
         userDir: getUserDir(),
         currentMasterKey: this.masterKey,
-      });
+      }) ?? null;
       if (resumed) {
         this.logAudit(
           "adapter_rotation_recovery",

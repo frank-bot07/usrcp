@@ -5,7 +5,7 @@ import * as crypto from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { getUserDir, safeWriteFile } from "./encryption.js";
+import { getUserDir, safeWriteFile } from "usrcp-core/encryption";
 
 // Max request body size (64 KiB). MCP messages are JSON; large payloads
 // are a red flag and would bloat memory.
