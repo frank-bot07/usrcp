@@ -16,7 +16,7 @@ ledger stays ciphertext.** It's the thing `strategy/INTEGRATIONS.md` flags as
 
 ```bash
 # Pre-flight: prove the claim holds before recording anything.
-(cd packages/usrcp-local && npm run build)
+(cd packages/usrcp-core && npm run build) && (cd packages/usrcp-local && npm run build)
 node scripts/cross-client-proof.mjs      # expect: "cross-editor claim VERIFIED end-to-end"
 ```
 

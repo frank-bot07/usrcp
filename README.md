@@ -116,8 +116,9 @@ brew install frank-bot07/usrcp/usrcp
 
 ```bash
 git clone https://github.com/frank-bot07/usrcp.git
-cd usrcp/packages/usrcp-local
-npm install && npm run build && npm link
+# Build the protocol core first — usrcp-local's build compiles it.
+cd usrcp/packages/usrcp-core && npm install && npm run build
+cd ../usrcp-local && npm install && npm run build && npm link
 ```
 
 ### First run

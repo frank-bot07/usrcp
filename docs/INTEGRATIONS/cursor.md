@@ -14,8 +14,8 @@ If you need the capture adapters (Discord, Slack, iMessage, etc.), use the sourc
 
 ```bash
 git clone https://github.com/frank-bot07/usrcp.git
-cd usrcp/packages/usrcp-local
-npm install && npm run build && npm link
+cd usrcp/packages/usrcp-core && npm install && npm run build
+cd ../usrcp-local && npm install && npm run build && npm link
 ```
 
 ## 2. Initialize for Cursor
