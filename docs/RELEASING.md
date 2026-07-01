@@ -1,8 +1,11 @@
-# Releasing USRCP to npm
+# Releasing USRCP
 
-This documents the npm publish rail. It covers the TypeScript/Node packages
-only — the Homebrew core formula, the VS Code extension, and the Python
-`usrcp-hermes` package ship through their own channels.
+This covers the two rails that matter for a normal release: the **npm publish
+rail** (the TypeScript/Node packages) and the **Homebrew rail** (the `usrcp`
+CLI), documented in the [Homebrew section](#homebrew-the-usrcp-cli-tap) below.
+The Homebrew rail is downstream of npm and now self-syncs — on a normal release
+you do nothing for it. The VS Code extension and the Python `usrcp-hermes`
+package ship through their own channels.
 
 ## What gets published
 
@@ -11,6 +14,7 @@ dependency-ordered publish. Today that is:
 
 | Tier | Packages |
 |------|----------|
+| 0 | `usrcp-core` (the framework-agnostic protocol core; everything below depends on it) |
 | 1 | `usrcp-local` |
 | 2 | `usrcp-adapter-kit`, `usrcp-stream` |
 | 3 | `usrcp-obsidian`, `usrcp-linear`, `usrcp-github`, `usrcp-gmail`, `usrcp-google-calendar`, `usrcp-discord`, `usrcp-telegram`, `usrcp-slack`, `usrcp-imessage`, `usrcp-claude-code`, `usrcp-extension` |
@@ -20,10 +24,11 @@ dependency-ordered publish. Today that is:
 
 ## How the file: → versioned dep bridge works
 
-In the repo, adapters depend on core via `file:../usrcp-local` etc. so each
-package stays independently installable/buildable (the per-package CI matrix and
-the Homebrew formula both rely on this — there is no workspace root). Those
-`file:` specs can't be published.
+In the repo, packages depend on each other via `file:../usrcp-core` etc. so each
+stays independently installable/buildable (the per-package CI matrix relies on
+this — there is no workspace root). Those `file:` specs can't be published.
+(The Homebrew formula does **not** rely on these — it installs the published npm
+tarball; see the [Homebrew section](#homebrew-the-usrcp-cli-tap).)
 
 The release script bridges the two **only at release time**:
 
@@ -34,8 +39,9 @@ The release script bridges the two **only at release time**:
 5. Restores the rewritten `package.json` files via `git checkout` — always,
    even on failure — so the working tree never keeps the rewritten specs.
 
-Because the rewrite is confined to the release script, day-to-day dev, the CI
-test matrix, and the brew build are untouched.
+Because the rewrite is confined to the release script, day-to-day dev and the CI
+test matrix are untouched. (Homebrew is unaffected either way — it installs the
+already-published npm tarball, not a source build of this repo.)
 
 ## Dry run (safe, no auth, no network)
 
@@ -117,6 +123,53 @@ covers it) and a **public** repo (provenance requires it — this repo is public
 > Verify it on the first tagged release after configuring a package (the run
 > log shows `Provenance statement published` and the npm page shows the
 > provenance badge).
+
+## Homebrew (the `usrcp` CLI tap)
+
+The `usrcp` command-line tool also ships via Homebrew: `brew install
+frank-bot07/usrcp/usrcp`. This rail is **separate from and downstream of npm** —
+it lives in its own repo and, on a normal release, **updates itself**.
+
+- **Tap repo:** `frank-bot07/homebrew-usrcp` (not this repo). Formula:
+  `Formula/usrcp.rb`.
+- **The formula installs the published npm tarball**, not a source build of this
+  repo: `url` is `https://registry.npmjs.org/usrcp-local/-/usrcp-local-X.Y.Z.tgz`
+  and `sha256` is of that tarball. It resolves `usrcp-core` etc. from the
+  registry, `depends_on "node"`, and rebuilds `better-sqlite3` (Homebrew's
+  `std_npm_args` runs `--ignore-scripts`, so the package postinstall is skipped).
+  This decouples brew from the monorepo's internal layout — refactors behind the
+  public npm contract (e.g. the `usrcp-core` split) can't break the brew install.
+
+- **Bumps are automated** by `.github/workflows/auto-bump.yml` in the tap — a
+  daily poller (+ `workflow_dispatch`). Each run: if npm's latest `usrcp-local`
+  is newer than the formula **and** has aged past the cooldown (below), it bumps
+  `url`+`sha256`, **proves it with a real macOS `brew install` + `brew test`
+  in-job**, opens a PR, and **auto-merges on green**. So a normal release needs
+  **no manual brew step** — brew catches up on its own within ~a day.
+
+- **The 1-day cooldown — the one non-obvious constraint.** Homebrew's `npm
+  install` passes `--min-release-age=1`: it refuses any dependency published in
+  the last ~24h (supply-chain protection). So a freshly published version is
+  **not brew-installable until ~24h later** — its just-published `usrcp-core` is
+  excluded. Brew therefore trails an npm release by ~1 day, by design. Don't try
+  to `brew install`/verify a release you just published; the auto-bump waits it
+  out (`MIN_AGE_HOURS=25`). **Do not bypass the cooldown** — it's a security
+  feature (editing Homebrew's `release_cooldown.rb` is not a supported step).
+
+- **Manual verify / fallback.** `.github/workflows/brew-test.yml` (tap,
+  `workflow_dispatch`) runs `brew install` + `brew test` on `macos-latest`
+  against any branch:
+  ```bash
+  gh workflow run brew-test.yml --repo frank-bot07/homebrew-usrcp --ref <branch>
+  ```
+  If you ever need to hand-edit the formula, recompute the sha with
+  `curl -sL <npm tarball url> | shasum -a 256`. If an auto-bump run ever fails at
+  the *merge* step (e.g. a branch-protection change), the bump + verification
+  already succeeded — just merge the open PR once.
+
+- **Don't use a claude.ai cloud routine to verify brew.** Those run on Linux
+  (no Homebrew) and have no `gh` auth. macOS brew verification only works via the
+  GitHub Actions workflows above.
 
 ## Versioning
 
