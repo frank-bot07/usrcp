@@ -1,6 +1,6 @@
 {
   "name": "usrcp-claude-code",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "USRCP capture adapter for Claude Code CLI - tails ~/.claude/projects/<dir>/*.jsonl session transcripts into usrcp-stream",
   "main": "dist/index.js",
   "files": [
