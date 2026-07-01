@@ -81,8 +81,8 @@ From the repo root:
 
 ```bash
 cd packages/usrcp-discord
-npm install            # installs discord.js, @anthropic-ai/sdk, links usrcp-local
-npm run build          # compiles both packages (prebuild script does usrcp-local too)
+npm install            # installs discord.js, @anthropic-ai/sdk, links usrcp-core
+npm run build          # compiles both packages (prebuild script does usrcp-core too)
 
 # Start the bot. If your local USRCP ledger is passphrase-protected,
 # pass USRCP_PASSPHRASE in the env. Otherwise it runs in dev mode.

@@ -64,7 +64,7 @@ In Slack: click your own avatar → **View profile** → **...** menu → **Copy
 ```bash
 cd packages/usrcp-slack
 npm install
-npm run build       # compiles usrcp-local too (prebuild script)
+npm run build       # compiles usrcp-core too (prebuild script)
 
 # Start the bot — no public HTTPS endpoint needed (Socket Mode).
 # If your USRCP ledger is passphrase-protected, pass USRCP_PASSPHRASE.

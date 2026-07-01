@@ -2,7 +2,7 @@
 
 Shared building blocks for [USRCP](https://github.com/frank-bot07/usrcp) capture adapters.
 
-Today this is the **encrypted-at-rest config store** that every USRCP capture adapter (Linear, GitHub, Gmail, Google Calendar, Slack, Telegram, Discord, iMessage) builds on. It is the single deep-importer of `usrcp-local`'s encryption primitives — adapters depend on this kit rather than reaching into `usrcp-local` internals.
+Today this is the **encrypted-at-rest config store** that every USRCP capture adapter (Linear, GitHub, Gmail, Google Calendar, Slack, Telegram, Discord, iMessage) builds on. It is the single deep-importer of `usrcp-core`'s encryption primitives — adapters depend on this kit rather than reaching into `usrcp-core` internals. This kit also provides the shared localhost Google OAuth flow at `usrcp-adapter-kit/google-oauth` (used by the gmail + google-calendar adapters).
 
 This is internal infrastructure for the USRCP adapter ecosystem; you generally install it transitively by installing an adapter, not directly.
 

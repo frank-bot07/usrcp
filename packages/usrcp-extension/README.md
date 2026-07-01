@@ -28,7 +28,7 @@ service-worker.js
 
 native-host/usrcp-bridge.cjs   (Node.js, stdio framing)
   reads/writes Chrome NM 4-byte LE length-prefixed JSON frames
-  imports usrcp-local directly, calls Ledger.appendEvent / Ledger.searchTimeline
+  imports usrcp-core directly, calls Ledger.appendEvent / Ledger.searchTimeline
   no MCP server in the middle for v0
 ```
 

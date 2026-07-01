@@ -5,6 +5,10 @@ Local MCP server for USRCP. Runs as a daemon on your machine and exposes
 encrypted persistent memory: identity, preferences, domain context,
 timeline events, project workspaces, and per-domain facts.
 
+The encrypted ledger, crypto, device pairing, and identity-rotation
+protocol now live in `usrcp-core`; usrcp-local is the MCP server + CLI
+that drives it.
+
 The on-disk ledger is a single SQLite file (`~/.usrcp/ledger.db`)
 encrypted with libsodium secretbox under a master key derived from
 `~/.usrcp/master-key`. Every value column is encrypted; only opaque
@@ -56,6 +60,9 @@ ciphertext-only - the hosted ledger stores opaque blobs and can never
 decrypt.
 
 ## Multi-device pairing
+
+The `usrcp pair` CLI commands below live in usrcp-local; the underlying
+pairing protocol and crypto are implemented in `usrcp-core`.
 
 Share your identity to a new device without copying `keys/` by hand:
 
@@ -112,6 +119,9 @@ retired v1 design (where the code WAS the scrypt input and the cloud
 was trusted for the TTL) is preserved in `tasks/11-multi-device-pairing.md`.
 
 ## Identity rotation
+
+The `usrcp rotate-identity` command lives in usrcp-local; the underlying
+rotation protocol and crypto are implemented in `usrcp-core`.
 
 If your device is lost, stolen, or you suspect your passphrase or
 private key was exposed, rotate the Ed25519 identity:
