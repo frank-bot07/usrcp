@@ -1,5 +1,9 @@
 # Follow-up: per-concern `Ledger` split
 
+> **Note (v0.2.0):** the ledger has since moved out of `usrcp-local` into the new
+> `usrcp-core` package — these files now live at `packages/usrcp-core/src/ledger/`.
+> This doc is archival; the paths below reference the original location.
+
 **Branch:** `refactor/ledger-per-concern-split`
 **Base:** `refactor/split-ledger` (commit `4fee107`)
 **Status:** Executed — implemented in `packages/usrcp-local/src/ledger/` (`core.ts`, `audit.ts`, `keys.ts`, `identity.ts`, `timeline.ts`, `events.ts`, `facts.ts`) using Pattern A below. Kept for the design rationale.
