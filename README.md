@@ -360,7 +360,8 @@ usrcp/
 │   └── INTEGRATIONS/                 # MCP client integration guides
 ├── strategy/                         # GTM, pitch, positioning
 ├── packages/
-│   ├── usrcp-local/                  # Local MCP server + encrypted ledger
+│   ├── usrcp-core/                   # Framework-agnostic protocol core (ledger, crypto, encryption, pairing, rotation, scope)
+│   ├── usrcp-local/                  # Local MCP server + CLI
 │   ├── usrcp-cloud/                  # Hosted ledger for ciphertext-only sync
 │   ├── usrcp-discord/                # Discord capture+reader adapter
 │   ├── usrcp-extension/              # Chrome extension (claude.ai capture)
@@ -373,26 +374,41 @@ usrcp/
 └── sdk/                              # Legacy prototype (Jan-Feb 2026); not the reference impl
 ```
 
-The legacy `sdk/` was a pre-protocol exploration — see [`sdk/README.md`](sdk/README.md) for the historical context. New work should target the `usrcp-local` ledger directly.
+The legacy `sdk/` was a pre-protocol exploration — see [`sdk/README.md`](sdk/README.md) for the historical context. New work should target the `usrcp-core` ledger directly.
 
 ## Tests
 
+Current snapshot (per-package `npm test`):
+
 | Package | Tests |
 |---------|-------|
-| `usrcp-local` | 338 |
+| `usrcp-local` | 321 |
+| `usrcp-core` | 230 |
+| `usrcp-stream` | 125 |
+| `usrcp-github` | 90 |
 | `usrcp-obsidian` | 65 |
-| `usrcp-imessage` | 39 |
-| `usrcp-linear` | 38 |
+| `usrcp-imessage` | 54 |
+| `usrcp-telegram` | 53 |
+| `usrcp-linear` | 52 |
+| `usrcp-slack` | 52 |
+| `usrcp-extension` | 46 |
+| `usrcp-discord` | 45 |
+| `usrcp-gmail` | 41 |
+| `usrcp-google-calendar` | 33 |
+| `usrcp-adapter-kit` | 32 |
 | `usrcp-cloud` | 30 |
-| `usrcp-extension` | 24 |
-| `usrcp-telegram` | 22 |
-| `usrcp-slack` | 20 |
-| `usrcp-discord` | 14 |
-| **Total** | **590** |
+| `usrcp-claude-code` | 28 |
+| **Total** | **~1297** |
 
 Plus a Python suite in `usrcp-hermes` (`pytest`).
 
-Run a package's suite with `npm test` from inside its directory. Each adapter's `pretest` hook rebuilds `usrcp-local` first so cross-package types stay in sync. Coverage spans: ledger CRUD, crypto roundtrips, tamper detection, domain isolation, audit log, ULID, pruning, multi-user isolation, optimistic concurrency, schemaless facts, scope enforcement, sync push/pull, Ed25519 signed-request auth, and per-adapter capture/idempotency/ciphertext-at-rest checks.
+Run a package's suite with `npm test` from inside its directory. Cross-package
+`prebuild`/`pretest` hooks build `usrcp-core` (and other siblings) first so types
+stay in sync. Coverage spans: ledger CRUD, crypto roundtrips, tamper detection,
+domain isolation, audit log, ULID, pruning, multi-user isolation, optimistic
+concurrency, schemaless facts, scope enforcement (all in `usrcp-core`); sync
+push/pull, Ed25519 signed-request auth (`usrcp-local`/`usrcp-cloud`); and
+per-adapter capture/idempotency/ciphertext-at-rest checks.
 
 ## Business Model
 

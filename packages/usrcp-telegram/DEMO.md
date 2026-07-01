@@ -89,8 +89,8 @@ Your DM chat ID equals your user ID (positive number).
 
 ```bash
 cd packages/usrcp-telegram
-npm install            # installs grammy, @anthropic-ai/sdk, links usrcp-local
-npm run build          # compiles both packages (prebuild script does usrcp-local too)
+npm install            # installs grammy, @anthropic-ai/sdk, links usrcp-core
+npm run build          # compiles both packages (prebuild script does usrcp-core too)
 
 # Start the bot (long polling). If your local USRCP ledger is passphrase-
 # protected, pass USRCP_PASSPHRASE in the env.

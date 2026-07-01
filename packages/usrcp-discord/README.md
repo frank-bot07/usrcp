@@ -36,7 +36,7 @@ See [`DEMO.md`](./DEMO.md) for first-run credential setup (Discord bot
 token + Anthropic API key), the live cross-channel proof script, and
 troubleshooting.
 
-## What it depends on from `usrcp-local`
+## What it depends on from `usrcp-core`
 
 Three schema additions, all encrypted at rest:
 

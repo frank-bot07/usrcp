@@ -45,7 +45,7 @@ When `usrcp-local` is also installed, running `usrcp serve` will automatically p
 
 ## Threat model
 
-usrcp-stream reuses the cryptographic primitives in `usrcp-local/src/encryption.ts` unchanged: AES-256-GCM with HKDF-derived per-table keys, master key via scrypt(N=131072, r=8, p=2) from the user's passphrase. The stream database (`${USRCP_HOME}/users/<slug>/stream.db`) is column-encrypted at rest.
+usrcp-stream reuses the cryptographic primitives in `usrcp-core/src/encryption.ts` unchanged: AES-256-GCM with HKDF-derived per-table keys, master key via scrypt(N=131072, r=8, p=2) from the user's passphrase. The stream database (`${USRCP_HOME}/users/<slug>/stream.db`) is column-encrypted at rest.
 
 ### What is encrypted on disk
 
@@ -59,9 +59,9 @@ usrcp-stream reuses the cryptographic primitives in `usrcp-local/src/encryption.
 - Embedding vectors (`embeddings.vec`) and thread topic centroids (`threads.topic_centroid`). These are raw float32 BLOBs. sqlite-vec indexes them at the column level and re-encrypting per cosine lookup would defeat the index. An attacker with read access to the database file could embed their own probe strings against the same model and reverse-search the index for similarity hits. Use full-disk encryption (FileVault, dm-crypt) as a second layer if this matters in your threat model.
 - Surface names (`events.surface`, `surface_state.surface`), event timestamps, content kinds, and side (inbound/outbound/system). These are metadata used in WHERE clauses and were judged not worth encrypting given they are already exposed via MCP tool calls.
 
-### Keyspace separation from usrcp-local
+### Keyspace separation from usrcp-core
 
-`usrcp-local`'s domains use HKDF salt `usrcp-domain-<domain>`. `usrcp-stream` calls `deriveDomainEncryptionKey(masterKey, "stream-<table>")` which composes to salt `usrcp-domain-stream-<table>`. No collision is possible between any ledger domain and any stream table key.
+`usrcp-core`'s domains use HKDF salt `usrcp-domain-<domain>`. `usrcp-stream` calls `deriveDomainEncryptionKey(masterKey, "stream-<table>")` which composes to salt `usrcp-domain-stream-<table>`. No collision is possible between any ledger domain and any stream table key.
 
 ### Vendor embedding providers
 
@@ -150,6 +150,6 @@ Overrides go in `stream-config.toml` and are merged at runtime.
 
 ## What stream is not
 
-Stream is not a chat backup. It is an in-memory-of-the-agent context layer. The decryption keys live in the process that runs `serve`; there is no central server, and v0.1 ships local-only.
+Stream is not a chat backup. It is an in-memory-of-the-agent context layer. The decryption keys live in the process that runs `serve`; there is no central server, and v0.2 ships local-only.
 
 Stream is not a substitute for `usrcp-local`'s blind-index search. They are complementary: structured state for "what is the user's timezone" lives in the ledger; conversational recall for "what did the user say about the retry bug last week" lives in stream.
