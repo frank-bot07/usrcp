@@ -178,6 +178,34 @@ assumes a coordinated release). Bump every publishable `package.json` to the new
 version before tagging. (A future improvement: a `version` subcommand in the
 release script to bump them together.)
 
+### Version-bump footprint (bump ALL of these, or CI goes red)
+
+The version lives in several hand-maintained spots, not just `package.json`.
+Miss one and `npm ci` fails or a test asserts the wrong version:
+
+- **Every publishable `package.json`** + the `usrcp` umbrella
+  (`release/extra-names/usrcp/package.json`, incl. its `usrcp-local` dep range).
+- **Regenerate every `package-lock.json`** after bumping
+  (`npm install --package-lock-only --ignore-scripts` per package) — CI uses
+  `npm ci`, which fails hard on a version/lock mismatch.
+- **Hardcoded version strings** (not derived from `package.json` — a drift-prone
+  smell worth fixing someday):
+  - `packages/usrcp-local/src/server.ts` — the `McpServer` `version` and the
+    `usrcp_version` JSON field (**multiple call sites**).
+  - `packages/usrcp-local/src/index.ts` — the CLI banner (`v0.X.Y`).
+  - `packages/usrcp-local/src/__tests__/server.test.ts` — the `usrcp_version`
+    assertions.
+  - `packages/usrcp-extension/manifest.json` — a test asserts
+    `manifest.version === package.json version`.
+  - `packages/usrcp-vscode/src/mcp-client.ts`, `packages/usrcp-hermes/pyproject.toml`
+    (+ its tests) — bump if releasing those channels.
+- **Do NOT bump** historical `v0.1.x` references in comments/test names (e.g. in
+  `scope-enforcement.ts`) — they document when behavior was introduced.
+- **Adding a new package?** Wire it into `PUBLISH_ORDER`, the consumer's
+  `prebuild`, and **every** CI install loop (`test.yml` node-macos +
+  install-smoke; `publish.yml` both jobs) — a new package missing from an install
+  loop fails the build with "Cannot find module".
+
 ## First publish checklist
 
 - [ ] Add the `NPM_TOKEN` repo secret (granular token, All packages / read+write).
