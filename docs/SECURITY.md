@@ -289,7 +289,7 @@ For Pro/Enterprise tiers where the threat model includes local attackers with ro
 
 ### What the relay does NOT see
 
-- **Content of any kind**: `channel_ref_enc`, `author_ref_enc`, `content_enc`, `entity_refs_enc` on `stream_events`; `summary_enc`, `intent_enc`, `outcome_enc`, `detail_enc`, `artifacts_enc`, `tags_enc`, `session_id_enc`, `parent_event_id_enc` on `timeline_events`; every user-state column on `core_identity` / `global_preferences` / `domain_context` / `active_projects` / `schemaless_facts`; `pairing_bundles.encrypted_bundle`.
+- **Content of any kind**: `channel_ref_enc`, `author_ref_enc`, `content_enc`, `entity_refs_enc` on `stream_events`; `summary_enc`, `intent_enc`, `outcome_enc`, `detail_enc`, `artifacts_enc`, `tags_enc`, `session_id_enc`, `parent_event_id_enc` on `timeline_events`; the encrypted user-state columns on `core_identity` / `global_preferences` / `domain_context` / `active_projects` / `schemaless_facts`; `pairing_bundles.encrypted_bundle`. **Exception:** `active_projects.project_id` is a plaintext key, not encrypted — see the plaintext table below and §1's caveat.
 - **Domain names**: the relay stores HMAC-SHA256 pseudonyms (e.g. `d_1ac6397ab4d2`), never the real `coding` / `personal` / `health` strings.
 - **The pairing OOB secret**: the 16-byte secret that travels device-to-device (paste / AirDrop / QR) is never POSTed; the bundle decryption key is `HKDF-SHA256(IKM=secret, salt=code)` derived client-side on both ends.
 
@@ -307,6 +307,10 @@ For Pro/Enterprise tiers where the threat model includes local attackers with ro
 | `revoked_keys.public_key` ↔ `rotated_to` | `revoked_keys` | Full identity-rotation graph (every old key the user has held, linked to current) |
 | `pairing_bundles.code`, `owner_public_key`, `created_at` | `pairing_bundles` | When the user paired devices; owner identity (DB-dump only, not internet attacker — see schema comment on the v2 pairing flow) |
 | `seen_nonces.user_public_key`, `seen_at` | `seen_nonces` | Request rate per user |
+| `project_id` | `active_projects` | **Caller-chosen project handle in cleartext** — if an agent used a descriptive id (`acme-acquisition`, `layoffs-q3`), it is readable and joined to the user's public key. Content leak, not just metadata. (Being closed — see §1 caveat.) |
+| `dims` | `stream_embeddings` | Embedding vector dimension (e.g. `768`) — fingerprints the embedding-model family, even though the vector itself (`vec_enc`) is encrypted |
+| `created_at_ms` | `stream_embeddings` | Additional per-embedding timing channel |
+| `ingested_at` | `stream_events` | Server-side ingest timing (relay-clock activity channel beyond client timestamps) |
 
 ### What a single DB dump enables
 
