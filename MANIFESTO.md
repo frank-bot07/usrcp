@@ -25,7 +25,7 @@ A passport works because no airline owns it. The key works the same way: it is i
 Any implementation claiming to be a USRKey **must** guarantee all five. There are no partial keys.
 
 1. **You hold the only key.**
-   Context is encrypted under a secret only the user controls. No provider, relay, host, or implementer can read it — not by policy, but by construction. "We promise not to look" does not satisfy this invariant. "We cannot look" does.
+   Your context's *content* is encrypted under a secret only the user controls. No provider, relay, host, or implementer can read that content — not by policy, but by construction. "We promise not to look" does not satisfy this invariant; "we cannot look" does. This invariant is about content, not metadata: sync and relay operate on ciphertext, but an operator may still see *traffic shape* — platform names, timing, volumes — which an implementation must disclose in writing (see the metadata prohibition below and the first implementation's [security model](docs/SECURITY.md#9-cloud-sync-relay--what-the-operator-sees)). Claiming "zero-knowledge" without that carve-out is the overclaim this document forbids.
 
 2. **Consent is per-tool and scoped.**
    Each tool sees exactly what you grant — domain by domain, reads and writes separately — and nothing else. Every access is logged in a tamper-evident trail the user can audit. A tool that can read your health context because you granted it your coding context is a broken key.

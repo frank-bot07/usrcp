@@ -598,7 +598,7 @@ export function createServer(
           .string()
           .max(MAX_STRING_SHORT)
           .describe(
-            "Unique project identifier (e.g., 'usrcp', 'blog-redesign')"
+            "Opaque, stable handle used as the upsert key — stored in the CLEAR at rest (unlike name/summary, which are encrypted). Do NOT put sensitive or descriptive info here; prefer a random/opaque id. The human-readable title goes in `name`."
           ),
         name: z
           .string()
