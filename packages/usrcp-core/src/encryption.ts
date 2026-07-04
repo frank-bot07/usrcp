@@ -625,20 +625,43 @@ export function deriveBlindIndexKey(
   );
 }
 
+// Dedicated lookup key for the project-id HMAC. Deliberately NOT
+// deriveBlindIndexKey(master, "<sentinel domain>"): the domain blind keys are
+// salted `usrcp-blind-{domain}`, so a sentinel would sit in the same namespace
+// as a real domain's key (and a domain literally named the sentinel would
+// collide). This salt (`usrcp-project-lookup`) is domain-free by construction,
+// so a project's storage key never depends on — and can never collide with —
+// any domain. Same HKDF info as the blind index (`usrcp-blind-index-v1`).
+export function deriveProjectLookupKey(masterKey: Buffer): Buffer {
+  return Buffer.from(
+    crypto.hkdfSync(
+      "sha256",
+      masterKey,
+      Buffer.from("usrcp-project-lookup"),
+      Buffer.from("usrcp-blind-index-v1"),
+      32
+    )
+  );
+}
+
 // Deterministic, opaque storage key for a caller-chosen project id. The raw
 // project_id is a slug the caller picks (e.g. "acme-migration") that used to be
-// stored — and synced to the relay — in cleartext. We store HMAC(blindKey, id)
-// as the active_projects primary/upsert key instead (stable: same id → same key,
+// stored — and synced to the relay — in cleartext. We store
+// HMAC(projectLookupKey, id) as the active_projects primary/upsert key instead
+// (stable: same id → same key,
 // so upsert still matches), and keep the original id encrypted in
 // project_ref_enc so reads return what the caller passed. Nothing user-authored
 // stays plaintext. Lives here (not on the ledger) so the write path and the
 // legacy-row migration derive the identical key without an import cycle.
 export function hashProjectId(masterKey: Buffer, projectId: string): string {
-  const blindKey = deriveBlindIndexKey(masterKey, "__usrcp_projects__");
+  const lookupKey = deriveProjectLookupKey(masterKey);
   try {
-    return crypto.createHmac("sha256", blindKey).update(projectId).digest("hex");
+    return crypto
+      .createHmac("sha256", lookupKey)
+      .update(projectId)
+      .digest("hex");
   } finally {
-    zeroBuffer(blindKey);
+    zeroBuffer(lookupKey);
   }
 }
 
