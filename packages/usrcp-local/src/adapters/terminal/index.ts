@@ -435,6 +435,27 @@ export function printPassphraseModeWarning(
 }
 
 /**
+ * Loud, unconditional warning for dev mode. Dev mode writes the master key to
+ * `master.key` (0o600) in the clear — anyone who can read that file can decrypt
+ * the entire ledger. That is fine for local testing and unacceptable for real
+ * data, so we say so every time rather than burying it in a one-line "Mode: dev"
+ * summary. `stream` lets callers route it to stderr (server startup) vs stdout
+ * (init summary); defaults to console.error so it never pollutes stdout data.
+ */
+export function printDevModeWarning(
+  deps: { log?: (msg: string) => void } = {},
+): void {
+  const log = deps.log ?? console.error;
+  log("");
+  log("  ⚠️  DEV MODE — NOT ENCRYPTED AT REST");
+  log("      The master key is stored unencrypted on disk (master.key). Anyone");
+  log("      who can read that file can decrypt your entire ledger. Use dev mode");
+  log("      for local testing only — never for real personal data.");
+  log("      Switch to passphrase mode:  usrcp init --passphrase");
+  log("");
+}
+
+/**
  * Parse a comma-separated --targets= value into validated TargetName[].
  * Returns null (with error printed) on invalid input.
  */

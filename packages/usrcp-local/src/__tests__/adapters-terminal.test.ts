@@ -815,3 +815,17 @@ describe("printPassphraseModeWarning", () => {
     expect(out).toContain("README → Passphrase mode and terminal agents");
   });
 });
+
+describe("printDevModeWarning", () => {
+  it("always prints the unencrypted-at-rest warning (it is unconditional)", async () => {
+    const { printDevModeWarning } = await import("../adapters/terminal/index.js");
+    const lines: string[] = [];
+    printDevModeWarning({ log: (l) => lines.push(l) });
+    const out = lines.join("\n");
+    expect(out).toContain("DEV MODE");
+    expect(out).toContain("NOT ENCRYPTED AT REST");
+    // Names the concrete on-disk risk and the escape hatch, not just a vibe.
+    expect(out).toContain("master.key");
+    expect(out).toContain("usrcp init --passphrase");
+  });
+});

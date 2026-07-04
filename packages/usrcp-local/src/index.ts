@@ -51,6 +51,7 @@ import {
   detectInstalledTargets,
   parseTargets,
   printPassphraseModeWarning,
+  printDevModeWarning,
   ALL_TARGETS,
   type TargetName,
 } from "./adapters/terminal/index.js";
@@ -389,6 +390,8 @@ async function cmdInit(): Promise<void> {
 
   Claude Code will auto-start it via MCP config.
   `);
+
+  if (!passphrase) printDevModeWarning();
 }
 
 /**
@@ -849,6 +852,7 @@ async function cmdServe(): Promise<void> {
     process.on("SIGINT", handleShutdown);
     await server.connect(stdio);
     console.error(`[usrcp] MCP server running on stdio (${passphraseRequired ? "passphrase mode" : "dev mode"})${scopeBanner}`);
+    if (!passphraseRequired) printDevModeWarning();
     return;
   }
 
@@ -874,6 +878,7 @@ async function cmdServe(): Promise<void> {
   console.error(`[usrcp] Bearer token: ${handle.token.slice(0, 8)}... (see ~/.usrcp/users/*/auth.token)`);
   console.error(`[usrcp] TLS cert:     ~/.usrcp/users/*/tls/cert.pem (self-signed, localhost only)`);
   console.error(`[usrcp] Mode:         ${passphraseRequired ? "passphrase" : "dev"}${scopeBanner}`);
+  if (!passphraseRequired) printDevModeWarning();
 }
 
 async function cmdSync(subcommand: string | undefined): Promise<void> {
