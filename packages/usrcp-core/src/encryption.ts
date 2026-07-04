@@ -625,6 +625,23 @@ export function deriveBlindIndexKey(
   );
 }
 
+// Deterministic, opaque storage key for a caller-chosen project id. The raw
+// project_id is a slug the caller picks (e.g. "acme-migration") that used to be
+// stored — and synced to the relay — in cleartext. We store HMAC(blindKey, id)
+// as the active_projects primary/upsert key instead (stable: same id → same key,
+// so upsert still matches), and keep the original id encrypted in
+// project_ref_enc so reads return what the caller passed. Nothing user-authored
+// stays plaintext. Lives here (not on the ledger) so the write path and the
+// legacy-row migration derive the identical key without an import cycle.
+export function hashProjectId(masterKey: Buffer, projectId: string): string {
+  const blindKey = deriveBlindIndexKey(masterKey, "__usrcp_projects__");
+  try {
+    return crypto.createHmac("sha256", blindKey).update(projectId).digest("hex");
+  } finally {
+    zeroBuffer(blindKey);
+  }
+}
+
 export function encrypt(plaintext: string, key: Buffer): string {
   const iv = crypto.randomBytes(IV_LENGTH);
   const cipher = crypto.createCipheriv(ALGORITHM, key, iv);

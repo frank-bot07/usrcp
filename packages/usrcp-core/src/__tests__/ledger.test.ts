@@ -358,6 +358,57 @@ describe("Projects", () => {
     expect(active).toHaveLength(1);
     expect(active[0].name).toBe("Active");
   });
+
+  it("stores project_id as an opaque HMAC at rest but round-trips the caller's id", () => {
+    const CANARY = "acme-divorce-case-CANARYzzq";
+    ledger.upsertProject({
+      project_id: CANARY,
+      name: "Acme",
+      domain: "legal",
+      status: "active",
+      last_touched: new Date().toISOString(),
+      summary: "s",
+    });
+
+    // Caller gets exactly the id they passed back.
+    expect(ledger.getProjects()[0].project_id).toBe(CANARY);
+
+    // But nothing user-authored is stored in cleartext.
+    const raw = (ledger as any).db
+      .prepare("SELECT * FROM active_projects")
+      .get() as any;
+    expect(raw.project_id).not.toBe(CANARY);
+    expect(raw.project_id).toMatch(/^[a-f0-9]{64}$/); // HMAC-SHA256 hex
+    expect(raw.project_ref_enc).toBeTruthy();
+    expect(JSON.stringify(raw)).not.toContain(CANARY);
+  });
+
+  it("migrates a legacy plaintext project_id on open", () => {
+    const CANARY = "legacy-plaintext-CANARYzzq";
+    ledger.upsertProject({
+      project_id: CANARY,
+      name: "L",
+      domain: "coding",
+      status: "active",
+      last_touched: new Date().toISOString(),
+      summary: "x",
+    });
+    // Revert to a pre-migration row: plaintext id, no project_ref_enc.
+    (ledger as any).db
+      .prepare("UPDATE active_projects SET project_id = ?, project_ref_enc = NULL")
+      .run(CANARY);
+    ledger.close();
+
+    // Reopen → migrateData() re-keys the legacy row.
+    ledger = new Ledger(dbPath);
+    const raw = (ledger as any).db
+      .prepare("SELECT * FROM active_projects")
+      .get() as any;
+    expect(raw.project_id).not.toBe(CANARY);
+    expect(raw.project_id).toMatch(/^[a-f0-9]{64}$/);
+    expect(raw.project_ref_enc).toBeTruthy();
+    expect(ledger.getProjects()[0].project_id).toBe(CANARY);
+  });
 });
 
 describe("Domain Context", () => {
