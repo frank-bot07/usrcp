@@ -598,7 +598,7 @@ export function createServer(
           .string()
           .max(MAX_STRING_SHORT)
           .describe(
-            "Opaque, stable handle used as the upsert key — stored in the CLEAR at rest (unlike name/summary, which are encrypted). Do NOT put sensitive or descriptive info here; prefer a random/opaque id. The human-readable title goes in `name`."
+            "Stable handle for the project (the upsert key). Stored as an opaque HMAC — the id itself is never persisted or synced in the clear — so any string is safe. The human-readable title goes in `name`."
           ),
         name: z
           .string()
