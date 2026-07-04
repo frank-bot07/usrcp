@@ -6,7 +6,7 @@
 
 ## TL;DR for the impatient
 
-- **Everything sensitive is encrypted at rest with AES-256-GCM.** The only plaintext columns are structural identifiers and timestamps.
+- **Every human-readable field is encrypted at rest with AES-256-GCM.** Plaintext columns are structural: opaque identifiers, timestamps, HMAC lookup tokens, and domain pseudonyms. **One caveat:** `active_projects.project_id` is a caller-chosen handle stored in the clear (it's the upsert key) — an agent that uses a descriptive id (`acme-acquisition`) leaks it, so callers should use opaque ids and put the human title in `name` (encrypted). See §1.
 - **Your passphrase is the only thing that unlocks it.** It never leaves your machine. We can't recover it; nobody else can read your ledger.
 - **The cloud sync relay (optional) is content zero-knowledge but not metadata zero-knowledge.** Content, channel/author/entity refs, and user-state values are all opaque to the server. But platform names (`surface`), timestamps, public keys, and pseudonym counts are stored as plaintext for indexing and auth — a malicious relay operator can fingerprint each user's platform list, activity hours, and domain count without decrypting anything. Full surface in [§9](#9-cloud-sync-relay--what-the-operator-sees).
 - **Every agent operation is logged.** The audit trail is HMAC-chained — tampering breaks the chain and is detectable on replay.
@@ -18,18 +18,24 @@ The deep dive below covers the algorithms (scrypt, HKDF-SHA256, blind indexing),
 
 ## 1. Encryption at Rest
 
-Every human-readable field in the database is encrypted with AES-256-GCM before storage. The only plaintext columns are structural: `event_id` (opaque ULID), `timestamp`, `ledger_sequence`, and domain pseudonyms.
+Every human-readable field in the database is encrypted with AES-256-GCM before storage. The plaintext columns are structural: `event_id` (opaque ULID), timestamps, `ledger_sequence`, domain pseudonyms, HMAC lookup tokens (`ns_key_hash`, blind-index `token`), and `active_projects.project_id` (see the caveat below).
 
 ### What's encrypted
 
-| Table | Encrypted columns |
-|-------|------------------|
-| `timeline_events` | summary, intent, outcome, platform, detail, artifacts, tags, session_id, parent_event_id |
-| `core_identity` | display_name, roles, expertise_domains, communication_style |
-| `global_preferences` | timezone, custom |
-| `domain_context` | context |
-| `audit_log` | agent_id, operation, scopes_accessed, event_ids, detail |
-| `domain_map` | encrypted_name |
+| Table | Encrypted columns | Plaintext columns |
+|-------|------------------|-------------------|
+| `timeline_events` | summary, intent, outcome, platform, detail, artifacts, tags, session_id, parent_event_id | event_id (ULID), timestamp, ledger_sequence, domain (pseudonym) |
+| `core_identity` | display_name, roles, expertise_domains, communication_style | — |
+| `global_preferences` | timezone, custom | — |
+| `domain_context` | context | domain (pseudonym), updated_at |
+| `active_projects` | name, domain, status, summary | **project_id (caller handle — see caveat)**, last_touched |
+| `schemaless_facts` | namespace, key, value | fact_id (ULID), domain (pseudonym), ns_key_hash (deterministic HMAC lookup), created_at, updated_at |
+| `audit_log` | agent_id, operation, scopes_accessed, event_ids, detail | timestamp, response_size_bytes |
+| `domain_map` | encrypted_name | pseudonym |
+
+> **`project_id` caveat.** `active_projects.project_id` is stored plaintext because it's the upsert conflict key. It is meant to be an *opaque* handle (the human title lives in the encrypted `name`), but nothing enforces opacity — a caller that passes a descriptive id (`acme-acquisition`, `patient-jones`) leaks it at rest. Callers should use random/opaque ids. A future revision will store a deterministic HMAC of the id as the key and encrypt the original, closing this gap; until then it is a documented limitation, not a claim.
+
+Deterministic HMAC columns (`ns_key_hash`, blind-index `token`, domain pseudonyms) enable lookup without decryption but leak equality/frequency/co-occurrence under key compromise — same tradeoff as §3.
 
 ### Domain pseudonyms
 
@@ -283,7 +289,7 @@ For Pro/Enterprise tiers where the threat model includes local attackers with ro
 
 ### What the relay does NOT see
 
-- **Content of any kind**: `channel_ref_enc`, `author_ref_enc`, `content_enc`, `entity_refs_enc` on `stream_events`; `summary_enc`, `intent_enc`, `outcome_enc`, `detail_enc`, `artifacts_enc`, `tags_enc`, `session_id_enc`, `parent_event_id_enc` on `timeline_events`; every user-state column on `core_identity` / `global_preferences` / `domain_context` / `active_projects` / `schemaless_facts`; `pairing_bundles.encrypted_bundle`.
+- **Content of any kind**: `channel_ref_enc`, `author_ref_enc`, `content_enc`, `entity_refs_enc` on `stream_events`; `summary_enc`, `intent_enc`, `outcome_enc`, `detail_enc`, `artifacts_enc`, `tags_enc`, `session_id_enc`, `parent_event_id_enc` on `timeline_events`; the encrypted user-state columns on `core_identity` / `global_preferences` / `domain_context` / `active_projects` / `schemaless_facts`; `pairing_bundles.encrypted_bundle`. **Exception:** `active_projects.project_id` is a plaintext key, not encrypted — see the plaintext table below and §1's caveat.
 - **Domain names**: the relay stores HMAC-SHA256 pseudonyms (e.g. `d_1ac6397ab4d2`), never the real `coding` / `personal` / `health` strings.
 - **The pairing OOB secret**: the 16-byte secret that travels device-to-device (paste / AirDrop / QR) is never POSTed; the bundle decryption key is `HKDF-SHA256(IKM=secret, salt=code)` derived client-side on both ends.
 
@@ -301,6 +307,10 @@ For Pro/Enterprise tiers where the threat model includes local attackers with ro
 | `revoked_keys.public_key` ↔ `rotated_to` | `revoked_keys` | Full identity-rotation graph (every old key the user has held, linked to current) |
 | `pairing_bundles.code`, `owner_public_key`, `created_at` | `pairing_bundles` | When the user paired devices; owner identity (DB-dump only, not internet attacker — see schema comment on the v2 pairing flow) |
 | `seen_nonces.user_public_key`, `seen_at` | `seen_nonces` | Request rate per user |
+| `project_id` | `active_projects` | **Caller-chosen project handle in cleartext** — if an agent used a descriptive id (`acme-acquisition`, `layoffs-q3`), it is readable and joined to the user's public key. Content leak, not just metadata. (Being closed — see §1 caveat.) |
+| `dims` | `stream_embeddings` | Embedding vector dimension (e.g. `768`) — fingerprints the embedding-model family, even though the vector itself (`vec_enc`) is encrypted |
+| `created_at_ms` | `stream_embeddings` | Additional per-embedding timing channel |
+| `ingested_at` | `stream_events` | Server-side ingest timing (relay-clock activity channel beyond client timestamps) |
 
 ### What a single DB dump enables
 
