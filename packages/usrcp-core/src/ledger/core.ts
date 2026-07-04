@@ -12,6 +12,7 @@ import {
   deriveDomainEncryptionKey,
   deriveGlobalEncryptionKey,
   deriveBlindIndexKey,
+  hashProjectId,
   encrypt,
   decrypt,
   isEncrypted,
@@ -574,6 +575,15 @@ export class Ledger {
       // Column already exists
     }
 
+    // v0.2.2 migration: opaque project_id. Adds project_ref_enc; the row
+    // re-key of existing plaintext ids happens in migrateData() (needs the
+    // master key).
+    try {
+      this.db.exec("ALTER TABLE active_projects ADD COLUMN project_ref_enc TEXT");
+    } catch {
+      // Column already exists
+    }
+
     // PR #72 migration: add pending_files_json to rotation_state so
     // recovery can replay the FULL target key-file set (master.salt,
     // master.verify, mode, key.version, etc.) rather than only
@@ -658,6 +668,28 @@ export class Ledger {
       .get() as any;
     if (blindCount.c === 0 && eventCount.c > 0) {
       this.rebuildBlindIndex();
+    }
+
+    // v0.2.2: opaque project_id. Legacy rows stored the caller's id in
+    // cleartext (project_ref_enc IS NULL). Re-key each to HMAC(id) and stash
+    // the original id encrypted in project_ref_enc. Idempotent — migrated rows
+    // have a non-null project_ref_enc and are skipped on the next open.
+    const legacyProjects = this.db
+      .prepare("SELECT project_id FROM active_projects WHERE project_ref_enc IS NULL")
+      .all() as { project_id: string }[];
+    if (legacyProjects.length > 0) {
+      const upd = this.db.prepare(
+        "UPDATE active_projects SET project_id = ?, project_ref_enc = ? WHERE project_id = ?"
+      );
+      this.db.transaction(() => {
+        for (const row of legacyProjects) {
+          upd.run(
+            hashProjectId(this.masterKey, row.project_id),
+            this.encryptGlobal(row.project_id),
+            row.project_id
+          );
+        }
+      })();
     }
   }
 

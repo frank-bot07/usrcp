@@ -1,4 +1,5 @@
 import { Ledger } from "./core.js";
+import { hashProjectId } from "../encryption.js";
 import type {
   CoreIdentity,
   GlobalPreferences,
@@ -183,7 +184,11 @@ Ledger.prototype.getProjects = function (
     tampered ||= summaryRes.tampered;
 
     const result: ActiveProject & {tampered?: boolean} = {
-      project_id: row.project_id,
+      // Return the caller's original id (decrypted from project_ref_enc);
+      // fall back to the stored key for legacy rows that predate the column.
+      project_id: row.project_ref_enc
+        ? this.decryptGlobalSafe(row.project_ref_enc, row.project_id)
+        : row.project_id,
       name: nameRes.value,
       domain: domainRes.value,
       status: statusRes.value as ActiveProject["status"],
@@ -206,11 +211,17 @@ Ledger.prototype.upsertProject = function (
   this: Ledger,
   project: ActiveProject
 ): void {
+  // Stored/synced key is the HMAC of the caller's id (opaque, stable for
+  // upsert). The original id is encrypted in project_ref_enc so reads return
+  // it. last_touched (a timestamp) is plaintext; all content —
+  // name/domain/status/summary — is encrypted.
+  const key = hashProjectId(this.masterKey, project.project_id);
   this.db
     .prepare(
-      `INSERT INTO active_projects (project_id, name, domain, status, last_touched, summary)
-      VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO active_projects (project_id, project_ref_enc, name, domain, status, last_touched, summary)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(project_id) DO UPDATE SET
+        project_ref_enc = excluded.project_ref_enc,
         name = excluded.name,
         domain = excluded.domain,
         status = excluded.status,
@@ -218,20 +229,15 @@ Ledger.prototype.upsertProject = function (
         summary = excluded.summary`
     )
     .run(
-      // project_id is stored PLAINTEXT: it's the ON CONFLICT key, and GCM
-      // encryption uses a random IV per write, so the same id would produce
-      // a different ciphertext each time and never match for upsert. It's
-      // the opaque slug the caller chooses, not user content. last_touched
-      // (a timestamp) is likewise plaintext. All actual content —
-      // name/domain/status/summary — is encrypted.
-      project.project_id,
+      key,
+      this.encryptGlobal(project.project_id),
       this.encryptGlobal(project.name),
       this.encryptGlobal(project.domain),
       this.encryptGlobal(project.status),
       project.last_touched || new Date().toISOString(),
       this.encryptGlobal(project.summary)
     );
-  this.logAudit("upsert_project", undefined, [project.project_id]);
+  this.logAudit("upsert_project", undefined, [key]);
 };
 
 Ledger.prototype.getDomainContext = function (
