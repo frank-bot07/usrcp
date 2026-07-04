@@ -42,7 +42,7 @@ usrcp init
 | **Storage model**            | Structured schema + encrypted schemaless facts | Opaque vector blobs                   |
 | **Search**                   | Exact keyword via HMAC blind index             | Semantic similarity via embeddings    |
 | **Representative query**     | "What is the user's timezone and framework?"   | "What did the user feel last week?"   |
-| **Does the server see plaintext?** | Content: never. (Project ids sync in cleartext today — see [§9](docs/SECURITY.md#9-cloud-sync-relay--what-the-operator-sees).) | Yes — at embed time. |
+| **Does the server see plaintext?** | No — content is never sent in the clear; identifiers are opaque ([relay metadata caveats](docs/SECURITY.md#9-cloud-sync-relay--what-the-operator-sees)). | Yes — at embed time. |
 | **Cross-device sync**        | Content zero-knowledge (relay holds opaque payload ciphertext) — platform names, timing, pseudonym counts visible to relay; see [`docs/SECURITY.md` §9](docs/SECURITY.md#9-cloud-sync-relay--what-the-operator-sees) | Provider-trusted                |
 | **Use case**                 | Cross-platform persistent state for agents     | Conversational recall over history    |
 | **Audit log**                | Cryptographically signed, encrypted            | Provider-managed                      |
@@ -298,10 +298,10 @@ the SQLite file sees:
 | `audit_log.*` | `enc:base64ciphertext...` |
 
 The same rule holds in the other tables: in `active_projects`, the content
-fields (`name`, `domain`, `status`, `summary`) are `enc:` ciphertext, while
-`project_id` (the opaque slug you choose — it's the upsert key, so it can't be a
-random-IV ciphertext) and `last_touched` stay plaintext. No field that holds
-user content is ever stored in the clear.
+fields (`name`, `domain`, `status`, `summary`) are `enc:` ciphertext; the
+`project_id` you choose is stored as an HMAC (with the original encrypted in
+`project_ref_enc`), and only `last_touched` (a timestamp) stays plaintext. No
+field that holds user content is ever stored in the clear.
 
 In passphrase mode, no key file exists on disk. The key is derived via scrypt on startup and zeroed on shutdown.
 
@@ -309,7 +309,7 @@ Each adapter's test suite includes a **ciphertext-at-rest** check: it captures r
 
 ## Security Architecture
 
-- **AES-256-GCM** encryption at rest for all content fields (the `active_projects.project_id` handle is a plaintext key — [details](docs/SECURITY.md#1-encryption-at-rest))
+- **AES-256-GCM** encryption at rest for all content fields
 - **Domain-scoped keys** via HKDF-SHA256 — coding key cannot decrypt health data
 - **scrypt** passphrase derivation (N=131072, r=8, p=2) — key never on disk
 - **HMAC domain pseudonyms** — domain names are opaque identifiers
