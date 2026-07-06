@@ -174,7 +174,13 @@ export function getDecryptedPrivateKeyPem(masterKey: Buffer): string {
   }
   const content = fs.readFileSync(privPath, "utf-8");
   if (!isEncrypted(content)) {
-    // Legacy plaintext (pre-v0.1.3) — encrypt on next write via ensurePrivateKeyEncrypted
+    // Legacy plaintext (pre-v0.1.3): self-heal on read — encrypt it to disk
+    // now rather than deferring to a write that may never happen.
+    try {
+      ensurePrivateKeyEncrypted(masterKey);
+    } catch {
+      // best-effort; still return the plaintext the caller asked for
+    }
     return content;
   }
   const globalKey = deriveGlobalEncryptionKey(masterKey);

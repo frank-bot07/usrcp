@@ -14,7 +14,7 @@ import * as crypto from "node:crypto";
 import { Ledger } from "usrcp-core/ledger";
 import { getIdentity, getDecryptedPrivateKeyPem } from "usrcp-core/crypto";
 import { readConfig, updateConfig } from "./config.js";
-import { initializeMasterKey, isPassphraseMode } from "usrcp-core/encryption";
+import { initializeMasterKey, isPassphraseMode, zeroBuffer } from "usrcp-core/encryption";
 
 export interface SyncStatus {
   cloud_endpoint: string | null;
@@ -164,6 +164,7 @@ export async function syncPush(opts: SyncOpts = {}): Promise<SyncPushResult> {
     return { pushed: toPush.length, cursor: newLocalSeq };
   } finally {
     ledger.close();
+    zeroBuffer(masterKey);
   }
 }
 
@@ -211,6 +212,7 @@ export async function syncPull(opts: SyncOpts = {}): Promise<SyncPullResult> {
     return { pulled: remoteEvents.length, cursor: remoteCursor, applied };
   } finally {
     ledger.close();
+    zeroBuffer(masterKey);
   }
 }
 

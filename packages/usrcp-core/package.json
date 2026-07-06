@@ -45,6 +45,7 @@
     "zod": "4.3.6"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@types/better-sqlite3": "7.6.13",
     "@types/node": "22.19.17",
     "typescript": "5.9.3",

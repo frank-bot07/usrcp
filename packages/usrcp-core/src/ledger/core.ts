@@ -13,6 +13,7 @@ import {
   deriveGlobalEncryptionKey,
   deriveBlindIndexKey,
   hashProjectId,
+  hashIdempotencyKey,
   encrypt,
   decrypt,
   isEncrypted,
@@ -568,6 +569,21 @@ export class Ledger {
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_events_idempotency ON timeline_events(idempotency_key) WHERE idempotency_key IS NOT NULL"
     );
 
+    // v0.2.3 migration: opaque idempotency_key. The caller-supplied dedup key
+    // was the last unencrypted caller-authored column — stored verbatim here
+    // AND pushed to the sync relay in cleartext. Store HMAC(key) in
+    // idempotency_hash instead (same leak class the project_id HMAC closed).
+    // The re-key of existing rows + erasure of the plaintext happens in
+    // migrateData() (needs the master key).
+    try {
+      this.db.exec("ALTER TABLE timeline_events ADD COLUMN idempotency_hash TEXT");
+    } catch {
+      // Column already exists
+    }
+    this.db.exec(
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_events_idempotency_hash ON timeline_events(idempotency_hash) WHERE idempotency_hash IS NOT NULL"
+    );
+
     // v0.1.3 migration: add integrity_tag to audit_log
     try {
       this.db.exec("ALTER TABLE audit_log ADD COLUMN integrity_tag TEXT");
@@ -687,6 +703,29 @@ export class Ledger {
             hashProjectId(this.masterKey, row.project_id),
             this.encryptGlobal(row.project_id),
             row.project_id
+          );
+        }
+      })();
+    }
+
+    // v0.2.3: opaque idempotency_key. Legacy rows stored the caller's dedup
+    // key in cleartext. Re-key each to HMAC in idempotency_hash and ERASE the
+    // plaintext. Idempotent — migrated rows have idempotency_key NULL, so the
+    // WHERE clause skips them on the next open.
+    const legacyIdem = this.db
+      .prepare(
+        "SELECT event_id, idempotency_key FROM timeline_events WHERE idempotency_key IS NOT NULL"
+      )
+      .all() as { event_id: string; idempotency_key: string }[];
+    if (legacyIdem.length > 0) {
+      const updIdem = this.db.prepare(
+        "UPDATE timeline_events SET idempotency_hash = ?, idempotency_key = NULL WHERE event_id = ?"
+      );
+      this.db.transaction(() => {
+        for (const row of legacyIdem) {
+          updIdem.run(
+            hashIdempotencyKey(this.masterKey, row.idempotency_key),
+            row.event_id
           );
         }
       })();

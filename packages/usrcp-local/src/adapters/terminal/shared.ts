@@ -7,6 +7,7 @@ import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { execSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 
 /** Returns the backup dir path — evaluated at call time so tests can override HOME. */
 export function getBackupDir(): string {
@@ -62,8 +63,10 @@ export async function atomicWrite(
     await fs.writeFile(join(backupDir, `${targetName}.${stamp}.${ext}`), existingRaw);
   }
 
-  const tmp = `${configPath}.tmp`;
-  await fs.writeFile(tmp, content, { mode: 0o600 });
+  // Random tmp name + exclusive create ("wx" fails if the path already exists)
+  // so a pre-planted predictable tmp file can't redirect or race the write.
+  const tmp = `${configPath}.tmp_${randomBytes(8).toString("hex")}`;
+  await fs.writeFile(tmp, content, { mode: 0o600, flag: "wx" });
   await fs.rename(tmp, configPath);
 }
 

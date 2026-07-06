@@ -323,19 +323,13 @@ export function deriveAndVerifyMasterKey(
   return masterKey;
 }
 
-// Fixed personalization salt for the legacy (v1) pairing KDF where the
-// 8-digit code was BOTH the lookup key sent to the server AND the scrypt
-// input. v2 (deriveFromPairingSecret below) replaces this design so the
-// cloud no longer holds the decryption material; v1 is retained only for
-// schema_v=1 bundle compatibility during the rollout window.
-export const FIXED_PAIRING_SALT: Buffer = Buffer.from(
-  "usrcp-pairing-v1-fixed-salt-32by", // 32 bytes ASCII
-  "utf8"
-);
-
-export function deriveFromPairingCode(code: string): Buffer {
-  return deriveFromPassphrase(code, FIXED_PAIRING_SALT);
-}
+// (removed) The legacy v1 pairing KDF — deriveFromPairingCode() with a fixed
+// compiled-in salt — used the 8-digit code as BOTH the server lookup key and
+// the scrypt input, so a single precomputed table of all 10^8 codes cracked
+// any bundle forever. It was dead code (no caller in-repo; the live path is v2
+// deriveFromPairingSecret, which derives from a 128-bit out-of-band secret and
+// never sends decryption material to the server). Deleted rather than gated so
+// it cannot be reintroduced by a stray import.
 
 // v2 KDF: the 16-byte `secret` is the actual encryption material and
 // never reaches the server; `code` is the 8-digit lookup key sent to
@@ -659,6 +653,41 @@ export function hashProjectId(masterKey: Buffer, projectId: string): string {
     return crypto
       .createHmac("sha256", lookupKey)
       .update(projectId)
+      .digest("hex");
+  } finally {
+    zeroBuffer(lookupKey);
+  }
+}
+
+// Dedicated lookup key for the idempotency-key HMAC — same rationale as
+// deriveProjectLookupKey: a caller-supplied dedup key must not sit in the
+// database (or sync to the relay) in cleartext. Domain-free by construction.
+export function deriveIdempotencyLookupKey(masterKey: Buffer): Buffer {
+  return Buffer.from(
+    crypto.hkdfSync(
+      "sha256",
+      masterKey,
+      Buffer.from("usrcp-idempotency-lookup"),
+      Buffer.from("usrcp-blind-index-v1"),
+      32
+    )
+  );
+}
+
+// Opaque, stable storage/dedup token for a caller-chosen idempotency key.
+// Same key → same hash, so the UNIQUE-index dedup still works; the original
+// caller string never touches disk or the sync relay. The value is only ever
+// compared for equality, never decrypted, so unlike project_id we don't keep
+// the original at all.
+export function hashIdempotencyKey(
+  masterKey: Buffer,
+  idempotencyKey: string
+): string {
+  const lookupKey = deriveIdempotencyLookupKey(masterKey);
+  try {
+    return crypto
+      .createHmac("sha256", lookupKey)
+      .update(idempotencyKey)
       .digest("hex");
   } finally {
     zeroBuffer(lookupKey);

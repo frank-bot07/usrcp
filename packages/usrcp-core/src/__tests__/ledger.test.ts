@@ -240,6 +240,81 @@ describe("Idempotency", () => {
     );
     expect(ledger.getTimeline()).toHaveLength(2);
   });
+
+  it("stores the idempotency key as an opaque HMAC at rest, never in cleartext", () => {
+    const CANARY = "acme-divorce-thread-42-CANARYzzq";
+    ledger.appendEvent(
+      { domain: "legal", summary: "e1", intent: "i1", outcome: "success" },
+      "p1",
+      CANARY
+    );
+
+    const raw = (ledger as any).db
+      .prepare(
+        "SELECT idempotency_key, idempotency_hash FROM timeline_events LIMIT 1"
+      )
+      .get() as any;
+    // The plaintext key column is never populated on the new write path...
+    expect(raw.idempotency_key).toBeNull();
+    // ...and the dedup token is an HMAC-SHA256 hex digest, not the caller string.
+    expect(raw.idempotency_hash).toMatch(/^[a-f0-9]{64}$/);
+    // The caller's key appears nowhere in the raw ledger dump.
+    const dump = (ledger as any).db
+      .prepare("SELECT * FROM timeline_events")
+      .all() as any[];
+    expect(JSON.stringify(dump)).not.toContain(CANARY);
+  });
+
+  it("still dedups on the original key even though only the hash is stored", () => {
+    const CANARY = "dedup-token-CANARYzzq";
+    const r1 = ledger.appendEvent(
+      { domain: "coding", summary: "e1", intent: "i1", outcome: "success" },
+      "p1",
+      CANARY
+    );
+    const r2 = ledger.appendEvent(
+      { domain: "coding", summary: "e2", intent: "i2", outcome: "success" },
+      "p1",
+      CANARY
+    );
+    expect(r2.event_id).toBe(r1.event_id);
+    expect(r2.duplicate).toBe(true);
+  });
+
+  it("migrates a legacy plaintext idempotency_key on open and erases it", () => {
+    const CANARY = "legacy-idem-CANARYzzq";
+    const r1 = ledger.appendEvent(
+      { domain: "coding", summary: "e1", intent: "i1", outcome: "success" },
+      "p1",
+      CANARY
+    );
+    // Revert to a pre-v0.2.3 row: plaintext key, no hash.
+    (ledger as any).db
+      .prepare(
+        "UPDATE timeline_events SET idempotency_key = ?, idempotency_hash = NULL WHERE event_id = ?"
+      )
+      .run(CANARY, r1.event_id);
+    ledger.close();
+
+    // Reopen → migrateData() re-keys the legacy row and nulls the plaintext.
+    ledger = new Ledger(dbPath);
+    const raw = (ledger as any).db
+      .prepare(
+        "SELECT idempotency_key, idempotency_hash FROM timeline_events WHERE event_id = ?"
+      )
+      .get(r1.event_id) as any;
+    expect(raw.idempotency_key).toBeNull();
+    expect(raw.idempotency_hash).toMatch(/^[a-f0-9]{64}$/);
+
+    // Dedup still works against the original key after migration.
+    const r2 = ledger.appendEvent(
+      { domain: "coding", summary: "e2", intent: "i2", outcome: "success" },
+      "p1",
+      CANARY
+    );
+    expect(r2.event_id).toBe(r1.event_id);
+    expect(r2.duplicate).toBe(true);
+  });
 });
 
 describe("Search", () => {
