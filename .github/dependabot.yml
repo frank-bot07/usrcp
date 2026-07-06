@@ -1,0 +1,25 @@
+version: 2
+updates:
+  # npm dependencies across every package in the monorepo. `directories`
+  # (glob) covers each package's own package.json/lock without one entry
+  # per package. Grouped so a week's bumps land as a few PRs, not dozens.
+  - package-ecosystem: "npm"
+    directories:
+      - "/packages/*"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      dev-and-runtime:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # GitHub Actions used by the workflows (checkout, setup-node, etc.).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5

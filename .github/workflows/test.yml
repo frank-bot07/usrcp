@@ -21,6 +21,7 @@ jobs:
       matrix:
         node-version: ['22', '24', '26']
         package:
+          - usrcp-core
           - usrcp-adapter-kit
           - usrcp-claude-code
           - usrcp-cloud
@@ -42,6 +43,7 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
           cache-dependency-path: |
+            packages/usrcp-core/package-lock.json
             packages/usrcp-adapter-kit/package-lock.json
             packages/usrcp-claude-code/package-lock.json
             packages/usrcp-cloud/package-lock.json
@@ -252,6 +254,27 @@ jobs:
             process.exit(1);
           });
           NODE
+
+  # Supply-chain gate: fail the build on a high/critical advisory in the two
+  # packages with the largest dependency surface (usrcp-local pulls in
+  # better-sqlite3 + the MCP SDK; usrcp-core is the crypto tier-0). --audit-level=high
+  # ignores moderate/low noise so only advisories worth acting on break CI.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+      - name: npm audit (high + critical only)
+        run: |
+          for pkg in usrcp-core usrcp-local; do
+            echo "::group::npm audit $pkg"
+            (cd "packages/$pkg" && npm audit --audit-level=high)
+            echo "::endgroup::"
+          done
 
   python:
     runs-on: ubuntu-latest

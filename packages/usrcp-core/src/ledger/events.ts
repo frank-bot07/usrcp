@@ -1,6 +1,7 @@
 import { Ledger } from "./core.js";
 import type { AppendEventInput } from "../types.js";
 import { generateULID, safeJsonParse } from "./helpers.js";
+import { hashIdempotencyKey } from "../encryption.js";
 
 declare module "./core.js" {
   interface Ledger {
@@ -103,12 +104,19 @@ Ledger.prototype.appendEvent = function (
 ): { event_id: string; timestamp: string; ledger_sequence: number; duplicate?: boolean } {
   validateEventInput(event, platform, idempotencyKey);
 
-  if (idempotencyKey) {
+  // The caller's dedup key never touches disk in cleartext — store/compare its
+  // HMAC (idempotency_hash). Same key → same hash, so dedup is unchanged; the
+  // original is not kept anywhere (it's only ever equality-compared).
+  const idempotencyHash = idempotencyKey
+    ? hashIdempotencyKey(this.masterKey, idempotencyKey)
+    : null;
+
+  if (idempotencyHash) {
     const existing = this.db
       .prepare(
-        "SELECT event_id, timestamp, ledger_sequence FROM timeline_events WHERE idempotency_key = ?"
+        "SELECT event_id, timestamp, ledger_sequence FROM timeline_events WHERE idempotency_hash = ?"
       )
-      .get(idempotencyKey) as any;
+      .get(idempotencyHash) as any;
     if (existing) {
       return {
         event_id: existing.event_id,
@@ -172,7 +180,7 @@ Ledger.prototype.appendEvent = function (
   this.db
     .prepare(
       `INSERT INTO timeline_events
-        (event_id, timestamp, platform, domain, summary, intent, outcome, detail, artifacts, tags, session_id, parent_event_id, ledger_sequence, idempotency_key, channel_id, thread_id, external_user_id, channel_hash)
+        (event_id, timestamp, platform, domain, summary, intent, outcome, detail, artifacts, tags, session_id, parent_event_id, ledger_sequence, idempotency_hash, channel_id, thread_id, external_user_id, channel_hash)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
@@ -189,7 +197,7 @@ Ledger.prototype.appendEvent = function (
       sessionIdEncrypted,
       parentIdEncrypted,
       ledger_sequence,
-      idempotencyKey || null,
+      idempotencyHash,
       channelIdEncrypted,
       threadIdEncrypted,
       externalUserIdEncrypted,
@@ -335,9 +343,12 @@ Ledger.prototype.listEncryptedEventsAbove = function (
 ): any[] {
   return this.db
     .prepare(
+      // idempotency_hash is already an opaque HMAC (or a cloud:/local: token);
+      // alias it to the wire field name so sync + the relay carry the hash, not
+      // the caller's cleartext key. No sync/cloud change needed.
       `SELECT event_id, ledger_sequence, timestamp, domain, platform,
               summary, intent, outcome, detail, artifacts, tags,
-              session_id, parent_event_id, idempotency_key
+              session_id, parent_event_id, idempotency_hash AS idempotency_key
        FROM timeline_events
        WHERE ledger_sequence > ?
        ORDER BY ledger_sequence ASC
@@ -392,7 +403,7 @@ Ledger.prototype.applyPulledEvents = function (
     `INSERT INTO timeline_events
       (event_id, timestamp, platform, domain, summary, intent, outcome,
        detail, artifacts, tags, session_id, parent_event_id,
-       ledger_sequence, idempotency_key)
+       ledger_sequence, idempotency_hash)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const insertToken = this.db.prepare(

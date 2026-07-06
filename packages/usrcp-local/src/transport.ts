@@ -161,6 +161,21 @@ export async function startHttpTransport(
   const port = opts.port ?? 0;
 
   const requestHandler = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    // DNS-rebinding defense: this server binds loopback only, but a malicious
+    // page can point a hostname at 127.0.0.1 and reach it from the browser.
+    // Reject anything not addressed to loopback by Host header. Empty Host
+    // (HTTP/1.0) falls through to the bearer gate.
+    const rawHost = (req.headers["host"] ?? "").toLowerCase();
+    const hostOnly = rawHost.startsWith("[")
+      ? rawHost.slice(0, rawHost.indexOf("]") + 1) // IPv6 [::1]
+      : rawHost.split(":")[0];
+    if (rawHost && !["127.0.0.1", "localhost", "[::1]"].includes(hostOnly)) {
+      res.statusCode = 403;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ error: "forbidden_host" }));
+      return;
+    }
+
     // Bearer auth check — before anything else
     const authHeader = req.headers["authorization"];
     const provided = typeof authHeader === "string" && authHeader.startsWith("Bearer ")
@@ -195,10 +210,12 @@ export async function startHttpTransport(
       const body = await readBody(req);
       await mcpTransport.handleRequest(req, res, body);
     } catch (err: any) {
+      // Log the detail server-side; never leak err.message to the client.
+      console.error("[usrcp] request handler error:", err);
       if (!res.headersSent) {
         res.statusCode = 500;
         res.setHeader("content-type", "application/json");
-        res.end(JSON.stringify({ error: "internal", message: err?.message ?? "unknown" }));
+        res.end(JSON.stringify({ error: "internal" }));
       } else {
         try { res.end(); } catch { /* ignore */ }
       }
@@ -209,9 +226,10 @@ export async function startHttpTransport(
     { cert: tls.cert, key: tls.key },
     (req, res) => {
       requestHandler(req, res).catch((err) => {
+        console.error("[usrcp] request handler error:", err);
         if (!res.headersSent) {
           res.statusCode = 500;
-          res.end(JSON.stringify({ error: "internal", message: err?.message ?? "unknown" }));
+          res.end(JSON.stringify({ error: "internal" }));
         }
       });
     }

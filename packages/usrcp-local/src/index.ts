@@ -19,6 +19,7 @@ import {
   getUsrcpBaseDir,
   listUserSlugs,
   migrateLegacyLayout,
+  safeWriteFile,
 } from "usrcp-core/encryption";
 import {
   detectKeychain,
@@ -505,7 +506,14 @@ function registerMcpServer(
   }
 
   config.mcpServers[entryName] = desired;
-  fs.writeFileSync(mcpConfigPath, JSON.stringify(config, null, 2));
+  // Atomic + symlink-rejecting write. These are third-party config files
+  // (Claude/Cursor/Cline) and can carry a bearer token in http mode, so this
+  // is the one config write that must not tear or follow a planted symlink.
+  safeWriteFile(
+    mcpConfigPath,
+    Buffer.from(JSON.stringify(config, null, 2)),
+    0o600
+  );
   console.error(
     existing
       ? `  MCP:       Updated "${entryName}" (${opts.transport}) in ${mcpConfigPath}`
@@ -845,7 +853,11 @@ async function cmdServe(): Promise<void> {
     const stdio = new StdioServerTransport();
     const handleShutdown = () => {
       console.error("[usrcp] Shutting down...");
-      shutdown();
+      try {
+        shutdown();
+      } catch (e) {
+        console.error("[usrcp] shutdown error:", e);
+      }
       process.exit(0);
     };
     process.on("SIGTERM", handleShutdown);

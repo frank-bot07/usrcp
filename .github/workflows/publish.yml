@@ -34,11 +34,47 @@ on:
         default: false
 
 jobs:
+  # Test gate — a tag must NOT publish a broken-but-compiles commit. The
+  # dry-run pack below only builds + packs; it never runs a single test. This
+  # job runs the core protocol suites (usrcp-core crypto/ledger/rotation,
+  # usrcp-local server, usrcp-stream) first, and every publish job depends on
+  # it. Mirrors test.yml's install loop so sibling builds resolve.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+      - name: Install deps in all cross-platform packages
+        run: |
+          for pkg in packages/*/; do
+            name=$(basename "$pkg")
+            if [ "$name" = "usrcp-imessage" ] || [ "$name" = "usrcp-hermes" ]; then
+              continue
+            fi
+            if [ -f "$pkg/package.json" ]; then
+              echo "::group::npm ci in $pkg"
+              (cd "$pkg" && npm ci)
+              echo "::endgroup::"
+            fi
+          done
+      - name: Test core protocol suites
+        run: |
+          for pkg in usrcp-core usrcp-local usrcp-stream; do
+            echo "::group::test $pkg"
+            (cd "packages/$pkg" && npm test)
+            echo "::endgroup::"
+          done
+
   # The 13 cross-platform packages publish from Linux. usrcp-imessage is
   # darwin-only (`"os": ["darwin"]`) — it can't even `npm ci` on Linux
   # (EBADPLATFORM), so it's excluded here and published from the macOS job
   # below (mirrors the split in test.yml).
   publish:
+    needs: test
     runs-on: ubuntu-latest
     # id-token: write lets npm mint the OIDC token for Trusted Publishing
     # and provenance. contents: read is the least-privilege default for
