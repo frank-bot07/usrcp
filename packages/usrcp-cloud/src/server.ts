@@ -365,49 +365,89 @@ export function createApp(opts: ServerOptions): FastifyInstance {
     }
 
     // Schemaless facts — per-row LWW with optional expected_version.
-    // Uniqueness is (user, domain, ns_key_hash). We branch on existence
-    // rather than use ON CONFLICT because we need the pre-update version
-    // for the conflict check, and composite ON CONFLICT targets behave
-    // inconsistently across Postgres and in-memory test adapters.
-    for (const f of body.facts ?? []) {
-      const cur = await db.query<{ fact_id: string; version: number }>(
-        "SELECT fact_id, version FROM schemaless_facts WHERE user_public_key = $1 AND domain_pseudonym = $2 AND ns_key_hash = $3",
-        [auth.userPublicKey, f.domain_pseudonym, f.ns_key_hash]
-      );
-      const existing = cur.rows[0];
-      const currentVersion = Number(existing?.version ?? 0);
-      if (replyVersionConflictIfMismatch(reply, "schemaless_facts", currentVersion, f.expected_version, `${f.domain_pseudonym}/${f.ns_key_hash}`)) return;
-      if (existing) {
-        await db.query(
+    // We batch the queries to avoid N+1 query patterns while retaining the exact logic.
+    if (body.facts && body.facts.length > 0) {
+      // 1. Fetch existing facts in chunks to avoid N+1 SELECTs and param limits.
+      const CHUNK_SIZE = 50;
+      const curRows = [];
+      for (let i = 0; i < body.facts.length; i += CHUNK_SIZE) {
+        const chunk = body.facts.slice(i, i + CHUNK_SIZE);
+        const orClauses = chunk.map((_, idx) => `(domain_pseudonym = $${idx * 2 + 2} AND ns_key_hash = $${idx * 2 + 3})`).join(' OR ');
+        const params = [auth.userPublicKey];
+        for (const f of chunk) {
+          params.push(f.domain_pseudonym, f.ns_key_hash);
+        }
+
+        const chunkRes = await db.query<{ fact_id: string; domain_pseudonym: string; ns_key_hash: string; version: number }>(
+          `SELECT fact_id, domain_pseudonym, ns_key_hash, version FROM schemaless_facts WHERE user_public_key = $1 AND (${orClauses})`,
+          params
+        );
+        curRows.push(...chunkRes.rows);
+      }
+
+      const existingMap = new Map();
+      for (const row of curRows) {
+        existingMap.set(row.domain_pseudonym + '/' + row.ns_key_hash, row);
+      }
+
+      // 2. Pre-verify all versions. If any conflicts, abort the whole request.
+      for (const f of body.facts) {
+        const existing = existingMap.get(f.domain_pseudonym + '/' + f.ns_key_hash);
+        const currentVersion = Number(existing?.version ?? 0);
+        if (replyVersionConflictIfMismatch(reply, "schemaless_facts", currentVersion, f.expected_version, `${f.domain_pseudonym}/${f.ns_key_hash}`)) return;
+      }
+
+      // 3. Batch INSERTs and run UPDATEs concurrently
+      const updates = [];
+      const inserts = [];
+      for (const f of body.facts) {
+        const existing = existingMap.get(f.domain_pseudonym + '/' + f.ns_key_hash);
+        if (existing) {
+          updates.push({ f, existing });
+        } else {
+          inserts.push(f);
+        }
+      }
+
+      // Execute INSERTs (bulk) and UPDATEs (concurrently) without waiting inside the loop.
+      const queryPromises = [];
+
+      // Execute all updates concurrently in the database instead of sequentially
+      for (const u of updates) {
+         queryPromises.push(db.query(
           `UPDATE schemaless_facts
              SET namespace_enc = $1, key_enc = $2, value_enc = $3,
                  version = $4, updated_at = now()
            WHERE user_public_key = $5 AND fact_id = $6`,
           [
-            f.namespace_enc,
-            f.key_enc,
-            f.value_enc,
-            currentVersion + 1,
+            u.f.namespace_enc,
+            u.f.key_enc,
+            u.f.value_enc,
+            Number(u.existing.version ?? 0) + 1,
             auth.userPublicKey,
-            existing.fact_id,
+            u.existing.fact_id,
           ]
-        );
-      } else {
-        await db.query(
-          `INSERT INTO schemaless_facts
-             (user_public_key, fact_id, domain_pseudonym, ns_key_hash,
-              namespace_enc, key_enc, value_enc, version)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, 1)`,
-          [
-            auth.userPublicKey,
-            f.fact_id,
-            f.domain_pseudonym,
-            f.ns_key_hash,
-            f.namespace_enc,
-            f.key_enc,
-            f.value_enc,
-          ]
-        );
+         ));
+      }
+
+      // PostgreSQL handles multiple values naturally which is extremely efficient.
+      // We chunk bulk inserts to a safe limit, assuming 50 rows per chunk.
+      if (inserts.length > 0) {
+         const CHUNK_SIZE = 50;
+         const cols = 7;
+         for (let i = 0; i < inserts.length; i += CHUNK_SIZE) {
+            const chunk = inserts.slice(i, i + CHUNK_SIZE);
+            const insertValues = chunk.map((_, idx) => `($${idx * cols + 1}, $${idx * cols + 2}, $${idx * cols + 3}, $${idx * cols + 4}, $${idx * cols + 5}, $${idx * cols + 6}, $${idx * cols + 7}, 1)`).join(', ');
+            const insertParams = [];
+            for (const f of chunk) {
+               insertParams.push(auth.userPublicKey, f.fact_id, f.domain_pseudonym, f.ns_key_hash, f.namespace_enc, f.key_enc, f.value_enc);
+            }
+            queryPromises.push(db.query(`INSERT INTO schemaless_facts (user_public_key, fact_id, domain_pseudonym, ns_key_hash, namespace_enc, key_enc, value_enc, version) VALUES ${insertValues}`, insertParams));
+         }
+      }
+
+      if (queryPromises.length > 0) {
+        await Promise.all(queryPromises);
       }
     }
 
