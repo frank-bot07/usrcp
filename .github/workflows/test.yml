@@ -62,7 +62,7 @@ jobs:
       # (e.g. esbuild's @esbuild/openharmony-arm64) get filtered out
       # rather than failing with EBADPLATFORM on linux-x64.
       - name: Upgrade npm
-        run: npm install -g npm@latest
+        run: npm install -g npm@11.5.1
       # Several packages run `npm run build` against sibling packages in
       # their pretest hook (most adapters need usrcp-local; usrcp-local
       # needs usrcp-discord and usrcp-telegram). Install deps in every
@@ -102,7 +102,7 @@ jobs:
             packages/usrcp-local/package-lock.json
             packages/usrcp-stream/package-lock.json
       - name: Upgrade npm
-        run: npm install -g npm@latest
+        run: npm install -g npm@11.5.1
       # usrcp-imessage's pretest builds usrcp-adapter-kit (which builds
       # usrcp-local) AND usrcp-stream. Install all four so those sibling
       # builds resolve their tsc.
@@ -147,7 +147,7 @@ jobs:
           cache: 'npm'
           cache-dependency-path: packages/usrcp-local/package-lock.json
       - name: Upgrade npm
-        run: npm install -g npm@latest
+        run: npm install -g npm@11.5.1
       - name: npm ci (triggers postinstall rebuild)
         working-directory: packages/usrcp-local
         run: npm ci
@@ -267,7 +267,7 @@ jobs:
         with:
           node-version: '22'
       - name: Upgrade npm
-        run: npm install -g npm@latest
+        run: npm install -g npm@11.5.1
       - name: npm audit (high + critical only)
         run: |
           for pkg in usrcp-core usrcp-local; do

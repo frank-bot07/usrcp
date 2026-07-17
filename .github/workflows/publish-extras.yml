@@ -39,7 +39,7 @@ jobs:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
       - name: Upgrade npm
-        run: npm install -g npm@latest
+        run: npm install -g npm@11.5.1
       - name: Publish extra-name packages (resumable)
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

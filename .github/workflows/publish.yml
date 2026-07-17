@@ -47,7 +47,7 @@ jobs:
         with:
           node-version: '22'
       - name: Upgrade npm
-        run: npm install -g npm@latest
+        run: npm install -g npm@11.5.1
       - name: Install deps in all cross-platform packages
         run: |
           for pkg in packages/*/; do
@@ -88,10 +88,14 @@ jobs:
         with:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
-      # Trusted Publishing + provenance require npm >= 11.5.1; npm@latest
-      # satisfies that and is already needed for the EBADPLATFORM fix.
+      # Pinned to 11.5.1 (not @latest): satisfies Trusted Publishing (>=11.5.1)
+      # and the EBADPLATFORM fix (11+), while avoiding npm's newer allowScripts
+      # default, which blocks better-sqlite3's native build + our postinstall
+      # rebuild → no .node binary → every ledger test fails. Unpinned @latest is
+      # a non-reproducible CI input; it broke the build silently between two
+      # releases. Revisit only to adopt allowScripts deliberately.
       - name: Upgrade npm
-        run: npm install -g npm@latest
+        run: npm install -g npm@11.5.1
 
       # Each publishable package is built from its own dir; the release
       # script calls `npm run build` per package (prebuild handles the
@@ -145,7 +149,7 @@ jobs:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
       - name: Upgrade npm
-        run: npm install -g npm@latest
+        run: npm install -g npm@11.5.1
       # imessage's prebuild builds usrcp-adapter-kit + usrcp-stream, which build
       # usrcp-core; install the whole chain so each has its toolchain.
       - name: Install deps (imessage + sibling build chain)
