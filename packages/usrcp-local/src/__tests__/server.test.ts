@@ -74,7 +74,7 @@ describe("usrcp_get_state", () => {
         "active_projects",
       ],
     });
-    expect(result.usrcp_version).toBe("0.2.2");
+    expect(result.usrcp_version).toBe("0.2.3");
     expect(result.user_id).toMatch(/^usrcp:\/\/local\//);
     expect(result.resolved_at).toBeTruthy();
     expect(result.state.core_identity).toBeDefined();
@@ -102,7 +102,7 @@ describe("usrcp_append_event", () => {
       outcome: "success",
       platform: "claude_code",
     });
-    expect(result.usrcp_version).toBe("0.2.2");
+    expect(result.usrcp_version).toBe("0.2.3");
     expect(result.status).toBe("accepted");
     expect(result.event_id).toBeTruthy();
     expect(result.ledger_sequence).toBe(1);
@@ -213,7 +213,7 @@ describe("usrcp_manage_project", () => {
 describe("usrcp_status", () => {
   it("returns ledger stats", async () => {
     const result = await callTool("usrcp_status", {});
-    expect(result.usrcp_version).toBe("0.2.2");
+    expect(result.usrcp_version).toBe("0.2.3");
     expect(result.user_id).toMatch(/^usrcp:\/\/local\//);
     expect(result.ledger).toBe("local (SQLite)");
     expect(result.stats.total_events).toBe(0);

@@ -1,6 +1,6 @@
 {
   "name": "usrcp-stream",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Cross-surface conversation layer for USRCP - encrypted local capture, embeddings, thread stitching, active-surface presence",
   "main": "dist/index.js",
   "files": [
