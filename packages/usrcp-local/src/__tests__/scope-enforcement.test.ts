@@ -316,7 +316,7 @@ describe("audit attribution", () => {
       // agent_id column. If the wrapper-audit call were a no-op (or a stub
       // that returned early), no row would exist here regardless of what
       // the higher-level decoded view returned.
-      const db = (ledger as any).db as import("better-sqlite3").Database;
+      const db = (ledger as any).db as import("usrcp-core/ledger/sqlite").Database;
       const rawRows = db
         .prepare(
           `SELECT id, agent_id, operation, integrity_tag

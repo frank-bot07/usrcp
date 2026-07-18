@@ -17,7 +17,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import Database from "better-sqlite3";
+import Database from "usrcp-core/ledger/sqlite";
 import { Ledger } from "usrcp-core/ledger";
 import { setUserSlug } from "usrcp-core/encryption";
 import { captureNote } from "../capture.js";

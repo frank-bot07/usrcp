@@ -172,7 +172,7 @@ describe("syncPull", () => {
       { domain: "coding", summary: "real-event", intent: "test", outcome: "success" },
       "test"
     );
-    const db = (ledger as any).db as import("better-sqlite3").Database;
+    const db = (ledger as any).db as import("usrcp-core/ledger/sqlite").Database;
     const row = db
       .prepare(
         `SELECT event_id, timestamp, platform, domain, summary, intent,
@@ -244,7 +244,7 @@ describe("syncPull", () => {
       { domain: "coding", summary: "searchable-pull-event", intent: "find me", outcome: "success" },
       "test"
     );
-    const rawDb = (ledger as any).db as import("better-sqlite3").Database;
+    const rawDb = (ledger as any).db as import("usrcp-core/ledger/sqlite").Database;
     const row = rawDb
       .prepare(
         `SELECT event_id, timestamp, platform, domain, summary, intent,

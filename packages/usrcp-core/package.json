@@ -21,7 +21,6 @@
     "dist/**/*.d.ts"
   ],
   "scripts": {
-    "postinstall": "node -e \"const fs=require('fs'); for (const p of ['node_modules/better-sqlite3/build']) fs.rmSync(p,{recursive:true,force:true})\" && npm rebuild better-sqlite3",
     "build": "tsc",
     "dev": "tsc --watch",
     "lint": "tsc --noEmit",
@@ -38,15 +37,13 @@
   "author": "Chad Garner",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.5.0"
   },
   "dependencies": {
-    "better-sqlite3": "12.10.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
-    "@types/better-sqlite3": "7.6.13",
     "@types/node": "26.1.1",
     "typescript": "5.9.3",
     "vitest": "4.1.4"

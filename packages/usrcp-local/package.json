@@ -17,7 +17,6 @@
     "usrcp": "dist/index.js"
   },
   "scripts": {
-    "postinstall": "node -e \"const fs=require(\\\"fs\\\"); for (const p of [\\\"node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-local/node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-stream/node_modules/better-sqlite3/build\\\"]) fs.rmSync(p,{recursive:true,force:true})\" && npm rebuild better-sqlite3",
     "prebuild": "cd ../usrcp-core && npm run build",
     "build": "tsc",
     "dev": "tsc --watch",
@@ -38,7 +37,7 @@
   "author": "Chad Garner",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.5.0"
   },
   "dependencies": {
     "usrcp-core": "file:../usrcp-core",
@@ -46,14 +45,12 @@
     "@iarna/toml": "^2.2.5",
     "@inquirer/prompts": "^8.4.2",
     "@modelcontextprotocol/sdk": "1.29.0",
-    "better-sqlite3": "12.10.0",
     "qrcode-terminal": "^0.12.0",
     "selfsigned": "^5.5.0",
     "yaml": "^2.8.3",
     "zod": "4.4.3"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "7.6.13",
     "@types/node": "26.1.1",
     "@types/qrcode-terminal": "^0.12.2",
     "typescript": "5.9.3",

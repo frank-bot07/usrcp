@@ -127,20 +127,18 @@ jobs:
         working-directory: packages/usrcp-imessage
         run: npm test
 
-  # End-to-end install smoke. This is the test that would have caught
-  # the v0.1.1 better-sqlite3 / Node 26 silent-broken-install bug at
-  # PR time instead of after release. It simulates what a fresh-install
-  # user does:
-  #   1. `npm ci` (which triggers postinstall → npm rebuild better-sqlite3)
-  #   2. `npm run build`
-  #   3. `npm link` (puts `usrcp` on PATH)
-  #   4. `usrcp --help` — banner renders, binary loads
-  #   5. `usrcp init --dev` — full ledger init exercising better-sqlite3
-  #      end-to-end
-  #   6. `usrcp serve --stdio` answers an MCP initialize + tools/list
-  #      exchange from the linked binary
-  # If any step fails (e.g. better-sqlite3 won't load on this Node),
-  # the smoke job fails. No silent broken installs reach a tag.
+  # End-to-end install smoke. usrcp-local is now BUILDLESS (node:sqlite, no
+  # native better-sqlite3), so this job guards the property that matters since
+  # that migration: `npm install` works on ANY npm — including npm 12+, whose
+  # allowScripts default blocks native build scripts (the bug that crashed a
+  # new user's first `usrcp init` with "Could not locate the bindings file").
+  # It runs under npm@latest (the blocking version) and asserts:
+  #   1. `npm ci` produces NO native binary (buildless)
+  #   2. build + `npm link` (puts `usrcp` on PATH)
+  #   3. `usrcp --help` — banner renders
+  #   4. `usrcp init --dev` — full ledger init on node:sqlite end-to-end
+  #   5. `usrcp serve --stdio` answers an MCP initialize + tools/list exchange
+  # If a native dependency ever creeps back into the main install, step 1 fails.
   install-smoke:
     name: install-smoke (${{ matrix.os }}, node ${{ matrix.node-version }})
     runs-on: ${{ matrix.os }}
@@ -156,27 +154,32 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
           cache-dependency-path: packages/usrcp-local/package-lock.json
+      # Deliberately npm@latest (not the pinned 11.5.1): the whole point of the
+      # node:sqlite migration is that the main install no longer needs build
+      # scripts, so it must work on the allowScripts-default npm.
       - name: Upgrade npm
-        run: npm install -g npm@11.5.1
-      - name: npm ci (triggers postinstall rebuild)
-        working-directory: packages/usrcp-local
-        run: npm ci
-      - name: Verify bindings file present
-        working-directory: packages/usrcp-local
-        run: |
-          if [ ! -f node_modules/better-sqlite3/build/Release/better_sqlite3.node ]; then
-            echo "::error::better_sqlite3.node missing — postinstall rebuild did not produce a binary"
-            ls -la node_modules/better-sqlite3/build/ || true
-            exit 1
-          fi
-          echo "✓ bindings file present"
-      - name: Verify better-sqlite3 loads + opens an in-memory DB
-        working-directory: packages/usrcp-local
-        run: |
-          node -e "const Database = require('better-sqlite3'); const db = new Database(':memory:'); db.prepare('SELECT 1 as x').get(); console.log('✓ better-sqlite3', require('better-sqlite3/package.json').version, 'loads on Node', process.version)"
+        run: npm install -g npm@latest
       - name: Install usrcp-core deps (usrcp-local's prebuild compiles it)
         working-directory: packages/usrcp-core
         run: npm ci
+      - name: npm ci
+        working-directory: packages/usrcp-local
+        run: npm ci
+      - name: Verify production deps are buildless (no native module)
+        working-directory: packages/usrcp-local
+        run: |
+          # A user's `npm install -g usrcp` installs PRODUCTION deps only. Dev
+          # tooling (vitest/rolldown/fsevents) ships native .node files but is
+          # never in the user's install, so check the production tree only.
+          # better-sqlite3 is the native runtime dep the node:sqlite migration
+          # removed; if it returns to production deps, this install stops being
+          # buildless — fail.
+          if npm ls --omit=dev --all 2>/dev/null | grep -qi 'better-sqlite3'; then
+            echo "::error::better-sqlite3 is back in the production dependency tree — main install is no longer buildless"
+            npm ls --omit=dev --all 2>/dev/null | grep -i 'better-sqlite3' || true
+            exit 1
+          fi
+          echo "✓ buildless — no better-sqlite3 in the production dependency tree"
       - name: Build
         working-directory: packages/usrcp-local
         run: npm run build
