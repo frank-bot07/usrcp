@@ -111,16 +111,24 @@ export class Ledger {
       "SELECT pending_key, pending_version, pending_files_json FROM rotation_state WHERE id = 1"
     ).get() as any;
     let durableReplay = false;
-    if (rotationRow?.pending_key && rotationRow.pending_files_json) {
+    // Trigger on pending_files_json alone. Since M2, rotations no longer
+    // persist the raw key in pending_key, so a mid-rotation crash leaves
+    // only pending_files_json — the durable, non-secret recovery material.
+    if (rotationRow?.pending_files_json) {
       try {
         const pending = deserializePendingKeyFiles(rotationRow.pending_files_json);
         commitKeyRotation(pending);
         durableReplay = true;
       } catch (err) {
+        // Leave rotation_state intact (not cleared) so the next open
+        // retries the replay. In passphrase mode initializeMasterKey below
+        // will then throw "Invalid passphrase" (canonical files still
+        // derive the old key), surfacing the interrupted state rather than
+        // silently opening under a stale key.
         console.warn(
           `[usrcp] pre-init rotation replay failed: ${
             err instanceof Error ? err.message : String(err)
-          }. Falling back to legacy master.key-only recovery in the post-init block.`
+          }. Rotation checkpoint left in place; retry on next open.`
         );
       }
     }
@@ -133,23 +141,14 @@ export class Ledger {
     // Encrypt legacy plaintext private keys
     ensurePrivateKeyEncrypted(this.masterKey);
 
-    // Post-init rotation recovery: install pending_key as the
-    // in-memory masterKey (a no-op buffer-copy when durableReplay
-    // already wrote the new key-file set, since initializeMasterKey
-    // just derived the same value), then clear rotation_state. For
-    // legacy DBs with pending_key but no pending_files_json, write
-    // master.key as the dev-mode-only recovery (passphrase-mode
-    // legacy rows would have thrown above and never reached here).
-    if (rotationRow && rotationRow.pending_key) {
-      const oldKey = this.masterKey;
-      this.masterKey = Buffer.from(rotationRow.pending_key);
-      // Zero the old key buffer — prevent heap residue
-      zeroBuffer(oldKey);
-      if (!durableReplay) {
-        const keysDir = path.join(getUserDir(), "keys");
-        fs.mkdirSync(keysDir, { recursive: true });
-        safeWriteFile(path.join(keysDir, "master.key"), this.masterKey, 0o600);
-      }
+    // Post-init rotation recovery.
+    if (durableReplay) {
+      // Durable replay (above) wrote the new canonical key files BEFORE
+      // initializeMasterKey ran, so this.masterKey was just derived as the
+      // correct NEW key — from the new passphrase + replayed
+      // master.salt/verify, or the replayed dev master.key. Nothing more to
+      // install; the raw key was never persisted (M2). Clear the checkpoint
+      // and rebuild the blind index under the new key.
       this.db.prepare(
         "UPDATE rotation_state SET pending_key = NULL, pending_version = NULL, pending_files_json = NULL WHERE id = 1"
       ).run();
@@ -157,10 +156,36 @@ export class Ledger {
         "key_rotation_recovery",
         ["system"],
         undefined,
-        durableReplay ? "mode=durable-replay" : "mode=legacy-master-key-only"
+        "mode=durable-replay"
+      );
+      this.rebuildBlindIndex();
+    } else if (rotationRow?.pending_key) {
+      // Legacy fallback: a pre-PR#72 crash left a raw pending_key with no
+      // pending_files_json (so durableReplay never fired). Since M2, new
+      // rotations never write pending_key, so this only ever runs for an old
+      // DB. Install the recovered key and persist it as master.key —
+      // dev-mode-only in practice, since a passphrase-mode legacy row would
+      // have thrown "Invalid passphrase" in initializeMasterKey above.
+      const oldKey = this.masterKey;
+      this.masterKey = Buffer.from(rotationRow.pending_key);
+      // Zero the old key buffer — prevent heap residue
+      zeroBuffer(oldKey);
+      const keysDir = path.join(getUserDir(), "keys");
+      fs.mkdirSync(keysDir, { recursive: true });
+      safeWriteFile(path.join(keysDir, "master.key"), this.masterKey, 0o600);
+      this.db.prepare(
+        "UPDATE rotation_state SET pending_key = NULL, pending_version = NULL, pending_files_json = NULL WHERE id = 1"
+      ).run();
+      this.logAudit(
+        "key_rotation_recovery",
+        ["system"],
+        undefined,
+        "mode=legacy-master-key-only"
       );
       this.rebuildBlindIndex();
     }
+    // else: no checkpoint, or a pending_files_json replay failed above (the
+    // row is left intact so the next open retries) — nothing to clear here.
 
     // Data migrations that need this.masterKey (e.g. blind-index
     // rebuild for older DBs that have events but no blind_index

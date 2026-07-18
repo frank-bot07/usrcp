@@ -435,21 +435,33 @@ Ledger.prototype.rotateKey = function (
       throw new RotationDamagedRowsError(skipped);
     }
 
-    // Store new key AND the full pending key-file set in
-    // rotation_state in the same transaction as re-encryption. If crash:
-    // entire transaction rolls back, old key + old data intact. If
-    // crash AFTER the transaction commits but before
-    // commitKeyRotation writes the canonical files, the Ledger
-    // constructor's recovery path reads pending_files_json and
-    // replays the full file set durably (Codex round-1 P1 on PR #72).
+    // Store the full pending key-file set in rotation_state in the same
+    // transaction as re-encryption. If crash: entire transaction rolls
+    // back, old key + old data intact. If crash AFTER the transaction
+    // commits but before commitKeyRotation writes the canonical files,
+    // the Ledger constructor's recovery path reads pending_files_json and
+    // replays the full file set durably (Codex round-1 P1 on PR #72), then
+    // re-derives the master key via initializeMasterKey — so the raw key
+    // never has to be persisted.
+    //
+    // M2: pending_key is left NULL. It used to hold the raw new master key
+    // as a recovery source, but in passphrase mode that put the plaintext
+    // key at rest in the DB, breaking the "key exists only in memory"
+    // guarantee. It was redundant: pending_files_json holds the canonical
+    // recovery material (master.salt + master.verify in passphrase mode;
+    // the dev master.key in dev mode — same boundary as the on-disk file),
+    // and durable replay + initializeMasterKey reproduce the new key
+    // without it. The column stays only so a pre-PR#72 legacy row (raw
+    // pending_key, no pending_files_json) can still be recovered on open.
+    //
     // last_rotation_at is set in the same write so rate-limit state is
-    // atomic with the rotation itself; a SIGKILL between this commit
-    // and commitKeyRotation still leaves a recoverable rotation that
-    // will replay on next boot, and last_rotation_at correctly reflects
-    // when the rotation was initiated.
+    // atomic with the rotation itself; a SIGKILL between this commit and
+    // commitKeyRotation still leaves a recoverable rotation that will
+    // replay on next boot, and last_rotation_at correctly reflects when
+    // the rotation was initiated.
     this.db.prepare(
-      "UPDATE rotation_state SET pending_key = ?, pending_version = ?, pending_files_json = ?, last_rotation_at = datetime('now') WHERE id = 1"
-    ).run(newKey, version, serializePendingKeyFiles(pendingFiles));
+      "UPDATE rotation_state SET pending_key = NULL, pending_version = ?, pending_files_json = ?, last_rotation_at = datetime('now') WHERE id = 1"
+    ).run(version, serializePendingKeyFiles(pendingFiles));
   });
 
   // Phase 2: Execute re-encryption + store new key in single atomic transaction.
