@@ -84,25 +84,23 @@ Cursor users specifically: native `@memories` was removed in v2.1.x. USRCP is on
 
 ### Install
 
-**Homebrew (recommended)** — the `usrcp` CLI + encrypted ledger:
-
-```bash
-brew install frank-bot07/usrcp/usrcp
-usrcp init
-```
-
-Homebrew builds the native SQLite binding against your Node automatically, so this "just works" on macOS and Linux. This is the path we recommend for everyone.
-
-**npm** — works, with one caveat:
+**npm (recommended)** — the `usrcp` CLI + encrypted ledger:
 
 ```bash
 npm install -g usrcp        # the `usrcp` command + local ledger
-usrcp init
+# …or run without installing:
+npx usrcp init
 ```
 
-> ⚠️ **npm 12+ heads-up.** usrcp uses a native SQLite module (`better-sqlite3`). npm 12 blocks dependency build scripts by default (`allowScripts`), so a plain `npm install -g usrcp` leaves the native binary unbuilt and `usrcp init` fails with *"Could not locate the bindings file."* Until this settles in the npm ecosystem, **use Homebrew above** (recommended), or install with **npm ≤ 11**. `node` is required either way.
+No native build, no compiler, no postinstall — usrcp uses Node's built-in SQLite (`node:sqlite`), so `npm install` just works on any npm (including npm 12+, whose `allowScripts` default blocks native build scripts). Requires **Node ≥ 22.5** (Node 24+ recommended).
 
-The CLI ships with the inline adapters (`terminal`, `mcp-agent`, `openclaw`). Capture adapters install as their own packages, then you configure each with the setup wizard (same npm caveat applies):
+**Homebrew (macOS / Linux)** — alternative for the core CLI:
+
+```bash
+brew install frank-bot07/usrcp/usrcp
+```
+
+The CLI ships with the inline adapters (`terminal`, `mcp-agent`, `openclaw`). Capture adapters install as their own packages, then you configure each with the setup wizard:
 
 ```bash
 # structured-state adapters:
