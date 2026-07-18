@@ -468,8 +468,10 @@ Ledger.prototype.rotateKey = function (
   // If crash: transaction rolls back, old key + old data, nothing lost.
   transaction();
 
-  // Phase 3: Write key files to disk. If crash here, on next startup
-  // we detect pending_key in rotation_state and recover.
+  // Phase 3: Write key files to disk. If crash here, on next startup the
+  // Ledger constructor detects pending_files_json in rotation_state, replays
+  // the file set via commitKeyRotation, and re-derives the key through
+  // initializeMasterKey (M2 — no raw key is stored to recover from).
   commitKeyRotation(pendingFiles);
 
   // Phase 3.5: Caller hook for re-encrypting out-of-band data

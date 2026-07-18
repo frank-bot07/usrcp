@@ -671,9 +671,12 @@ describe("Key Rotation", () => {
       });
       expect(() => devLedger.rotateKey()).toThrow("disk failure");
 
-      // M2: no raw key at rest even in dev mode's crashed state. (Dev mode's
-      // key does live on disk as master.key by design, but it must not be
-      // duplicated into the DB as a plaintext BLOB.)
+      // M2 for dev mode: the raw key is not DUPLICATED into the DB as a
+      // pending_key BLOB. (Dev mode legitimately keeps the master key on disk
+      // as master.key, and pending_files_json carries that same master.key
+      // entry during a crash — same boundary as the on-disk file, not a new
+      // leak. The "key only in memory" guarantee is passphrase-mode-specific
+      // and asserted in the passphrase test below.)
       const crashed = (devLedger as any).db
         .prepare("SELECT pending_key, pending_files_json FROM rotation_state WHERE id = 1")
         .get() as any;
@@ -750,14 +753,20 @@ describe("Key Rotation", () => {
         .get() as any;
       expect(crashed.pending_key).toBe(null);
       expect(crashed.pending_files_json).toBeTruthy();
-      // The raw new key never appears in pending_files_json. In passphrase
-      // mode the file set is salt/verify/mode plus a master.key *deletion*
-      // marker (empty content, to ensure no dev key lingers on disk) — assert
-      // any master.key entry is empty, so no raw key bytes are persisted.
-      for (const e of JSON.parse(crashed.pending_files_json) as Array<{
+      // The raw new key never appears in pending_files_json. Parse the set and
+      // assert: (a) the expected NON-SECRET recovery files are present
+      // (master.salt, master.verify, mode) — proving real recovery material is
+      // checkpointed; (b) any master.key entry is an empty *deletion* marker
+      // (ensures no dev key lingers on disk), so no raw key bytes are stored.
+      const entries = JSON.parse(crashed.pending_files_json) as Array<{
         path: string;
         content_b64: string;
-      }>) {
+      }>;
+      const basenames = entries.map((e) => e.path.split("/").pop());
+      expect(basenames).toEqual(
+        expect.arrayContaining(["master.salt", "master.verify", "mode"])
+      );
+      for (const e of entries) {
         if (e.path.endsWith("master.key")) {
           expect(e.content_b64).toBe("");
         }
@@ -787,6 +796,10 @@ describe("Key Rotation", () => {
       } finally {
         recovered.close();
       }
+
+      // The rotation genuinely completed to the NEW key: reopening with the
+      // OLD passphrase must now fail against the recovered master.verify.
+      expect(() => new Ledger(isoDbPath, "alice-original-passphrase")).toThrow();
     } finally {
       process.env.HOME = origHome;
       try { fs.rmSync(isoHome, { recursive: true, force: true }); } catch {}
