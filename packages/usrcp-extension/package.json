@@ -40,7 +40,7 @@
   },
   "devDependencies": {
     "@types/chrome": "^0.1.40",
-    "@types/node": "22.19.17",
+    "@types/node": "26.1.1",
     "better-sqlite3": "12.10.0",
     "esbuild": "^0.24.0",
     "typescript": "5.9.3",

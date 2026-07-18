@@ -46,7 +46,7 @@
   },
   "devDependencies": {
     "@types/better-sqlite3": "7.6.13",
-    "@types/node": "22.19.17",
+    "@types/node": "26.1.1",
     "pg-mem": "^3.0.5",
     "typescript": "5.9.3",
     "usrcp-cloud": "file:../usrcp-cloud",
