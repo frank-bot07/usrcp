@@ -42,7 +42,7 @@
     "better-sqlite3": "12.10.0",
     "sqlite-vec": "^0.1.6",
     "usrcp-core": "file:../usrcp-core",
-    "zod": "4.3.6"
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/better-sqlite3": "7.6.13",
