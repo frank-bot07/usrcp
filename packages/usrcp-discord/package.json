@@ -40,7 +40,7 @@
     "usrcp-adapter-kit": "file:../usrcp-adapter-kit"
   },
   "devDependencies": {
-    "@types/node": "22.19.17",
+    "@types/node": "26.1.1",
     "better-sqlite3": "12.10.0",
     "typescript": "5.9.3",
     "vitest": "4.1.4"
