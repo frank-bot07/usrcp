@@ -1,6 +1,6 @@
 {
   "name": "usrcp",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "USRCP — User Context Protocol. Installs the local CLI + encrypted ledger (usrcp-local): structured, encrypted, cross-platform memory for AI agents.",
   "type": "module",
   "bin": {
@@ -10,7 +10,7 @@
     "bin/**"
   ],
   "dependencies": {
-    "usrcp-local": "^0.2.3"
+    "usrcp-local": "^0.2.4"
   },
   "keywords": [
     "usrcp",
