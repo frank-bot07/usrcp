@@ -1,6 +1,6 @@
 {
   "name": "usrcp-github",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "GitHub capture adapter for USRCP - polls the REST API for pull requests authored by the configured user and appends them to the local ledger",
   "main": "dist/index.js",
   "files": [
@@ -34,7 +34,7 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
-    "@octokit/rest": "^22.0.1",
+    "@octokit/rest": "^20.1.2",
     "usrcp-core": "file:../usrcp-core",
     "usrcp-adapter-kit": "file:../usrcp-adapter-kit"
   },

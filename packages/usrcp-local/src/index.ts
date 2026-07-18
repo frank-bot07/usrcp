@@ -130,7 +130,7 @@ function printBanner(): void {
   console.error(`
   ╦ ╦╔═╗╦═╗╔═╗╔═╗
   ║ ║╚═╗╠╦╝║  ╠═╝
-  ╚═╝╚═╝╩╚═╚═╝╩   v0.2.3
+  ╚═╝╚═╝╩╚═╚═╝╩   v0.2.4
 
   User Context Protocol — Local Ledger
   `);
