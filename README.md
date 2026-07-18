@@ -84,15 +84,25 @@ Cursor users specifically: native `@memories` was removed in v2.1.x. USRCP is on
 
 ### Install
 
-**npm (recommended)** — the `usrcp` CLI + encrypted ledger:
+**Homebrew (recommended)** — the `usrcp` CLI + encrypted ledger:
+
+```bash
+brew install frank-bot07/usrcp/usrcp
+usrcp init
+```
+
+Homebrew builds the native SQLite binding against your Node automatically, so this "just works" on macOS and Linux. This is the path we recommend for everyone.
+
+**npm** — works, with one caveat:
 
 ```bash
 npm install -g usrcp        # the `usrcp` command + local ledger
-# …or run without installing:
-npx usrcp init
+usrcp init
 ```
 
-This ships the core CLI with the inline adapters (`terminal`, `mcp-agent`, `openclaw`). Capture adapters install as their own packages, then you configure each with the setup wizard:
+> ⚠️ **npm 12+ heads-up.** usrcp uses a native SQLite module (`better-sqlite3`). npm 12 blocks dependency build scripts by default (`allowScripts`), so a plain `npm install -g usrcp` leaves the native binary unbuilt and `usrcp init` fails with *"Could not locate the bindings file."* Until this settles in the npm ecosystem, **use Homebrew above** (recommended), or install with **npm ≤ 11**. `node` is required either way.
+
+The CLI ships with the inline adapters (`terminal`, `mcp-agent`, `openclaw`). Capture adapters install as their own packages, then you configure each with the setup wizard (same npm caveat applies):
 
 ```bash
 # structured-state adapters:
@@ -105,12 +115,6 @@ usrcp setup --adapter=slack
 ```
 
 See the [Adapters](#capture-adapters) table for the full list (the Chrome extension and VS Code viewer ship separately — see their package READMEs).
-
-**Homebrew (macOS / Linux)** — alternative for the core CLI:
-
-```bash
-brew install frank-bot07/usrcp/usrcp
-```
 
 **From source** — for contributing or running unreleased changes:
 
