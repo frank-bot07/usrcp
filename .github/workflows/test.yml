@@ -80,6 +80,16 @@ jobs:
               echo "::endgroup::"
             fi
           done
+      # Build the package's OWN source. The adapters' `pretest` only builds
+      # sibling deps (usrcp-adapter-kit / usrcp-core), and their vitest suites
+      # don't import the built entrypoint — so a broken adapter entrypoint
+      # (e.g. an ESM-only major that a CJS adapter can't require) compiled
+      # clean-through CI while `npm run build` at release time failed. This
+      # step type-checks each package's own source so that class fails at PR
+      # time, not at the release pack.
+      - name: Build ${{ matrix.package }}
+        working-directory: packages/${{ matrix.package }}
+        run: npm run build
       - name: Test ${{ matrix.package }}
         working-directory: packages/${{ matrix.package }}
         run: npm test
