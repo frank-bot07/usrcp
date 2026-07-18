@@ -34,7 +34,7 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
-    "@googleapis/gmail": "^16.0.0",
+    "@googleapis/gmail": "^17.0.0",
     "google-auth-library": "^10.1.0",
     "usrcp-core": "file:../usrcp-core",
     "usrcp-adapter-kit": "file:../usrcp-adapter-kit"
