@@ -165,15 +165,21 @@ jobs:
       - name: npm ci
         working-directory: packages/usrcp-local
         run: npm ci
-      - name: Verify NO native binary (buildless install)
+      - name: Verify production deps are buildless (no native module)
         working-directory: packages/usrcp-local
         run: |
-          if find node_modules -name '*.node' | grep -q .; then
-            echo "::error::a native .node binary is present — the main install is no longer buildless"
-            find node_modules -name '*.node'
+          # A user's `npm install -g usrcp` installs PRODUCTION deps only. Dev
+          # tooling (vitest/rolldown/fsevents) ships native .node files but is
+          # never in the user's install, so check the production tree only.
+          # better-sqlite3 is the native runtime dep the node:sqlite migration
+          # removed; if it returns to production deps, this install stops being
+          # buildless — fail.
+          if npm ls --omit=dev --all 2>/dev/null | grep -qi 'better-sqlite3'; then
+            echo "::error::better-sqlite3 is back in the production dependency tree — main install is no longer buildless"
+            npm ls --omit=dev --all 2>/dev/null | grep -i 'better-sqlite3' || true
             exit 1
           fi
-          echo "✓ buildless — no native .node binaries in the install"
+          echo "✓ buildless — no better-sqlite3 in the production dependency tree"
       - name: Build
         working-directory: packages/usrcp-local
         run: npm run build
