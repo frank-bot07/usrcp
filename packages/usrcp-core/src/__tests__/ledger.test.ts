@@ -650,26 +650,59 @@ describe("Key Rotation", () => {
     zeroBuffer(oldMaster);
   });
 
-  it("recovers from file write failure during commit", () => {
-    ledger.updateIdentity({ display_name: "Recovery Test" });
+  it("recovers from file write failure during commit (dev mode, durable replay)", async () => {
+    // Isolated HOME: since M2, recovery re-derives the key from the on-disk
+    // key files (durable replay) rather than a raw key stored in the DB, so
+    // the DB and its key files must live in the same tree. The shared default
+    // HOME would let other tests' key-file writes contaminate this one.
+    const origHome = process.env.HOME;
+    const isoHome = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-dev-recover-"));
+    process.env.HOME = isoHome;
+    try {
+      const isoDbPath = path.join(isoHome, "ledger.db");
+      const devLedger = new Ledger(isoDbPath); // dev mode (no passphrase)
+      devLedger.updateIdentity({ display_name: "Recovery Test" });
 
-    // Phase 2 (the transaction) commits pending_key before Phase 3 writes
-    // key files. Forcing Phase 3's commitKeyRotation to fail leaves the
-    // rotation in the "interrupted" state that the recovery path handles.
-    vi.mocked(encryption.commitKeyRotation).mockImplementationOnce(() => {
-      throw new Error("disk failure");
-    });
+      // Phase 2 (the transaction) commits pending_files_json before Phase 3
+      // writes key files. Forcing Phase 3's commitKeyRotation to fail leaves
+      // the rotation in the "interrupted" state that recovery handles.
+      vi.mocked(encryption.commitKeyRotation).mockImplementationOnce(() => {
+        throw new Error("disk failure");
+      });
+      expect(() => devLedger.rotateKey()).toThrow("disk failure");
 
-    expect(() => ledger.rotateKey()).toThrow("disk failure");
+      // M2: no raw key at rest even in dev mode's crashed state. (Dev mode's
+      // key does live on disk as master.key by design, but it must not be
+      // duplicated into the DB as a plaintext BLOB.)
+      const crashed = (devLedger as any).db
+        .prepare("SELECT pending_key, pending_files_json FROM rotation_state WHERE id = 1")
+        .get() as any;
+      expect(crashed.pending_key).toBe(null);
+      expect(crashed.pending_files_json).toBeTruthy();
 
-    // Create new ledger instance — should detect pending_key and recover.
-    const recoveredLedger = new Ledger(dbPath);
-    const recoveredState = recoveredLedger.getIdentity();
-    expect(recoveredState.display_name).toBe("Recovery Test");
-    // Recovery clears pending_key.
-    const rotation = (recoveredLedger as any).db.prepare("SELECT pending_key FROM rotation_state").get() as any;
-    expect(rotation.pending_key).toBe(null);
-    recoveredLedger.close();
+      // Restore the real commitKeyRotation so recovery uses it.
+      const { commitKeyRotation: realCommit } =
+        await vi.importActual<typeof import("../encryption.js")>("../encryption.js");
+      vi.mocked(encryption.commitKeyRotation).mockImplementation(realCommit);
+      devLedger.close();
+
+      // Reopen — durable replay writes the new key files and re-derives the
+      // key; identity round-trips, checkpoint cleared.
+      const recovered = new Ledger(isoDbPath);
+      try {
+        expect(recovered.getIdentity().display_name).toBe("Recovery Test");
+        const rotation = (recovered as any).db
+          .prepare("SELECT pending_key, pending_files_json FROM rotation_state")
+          .get() as any;
+        expect(rotation.pending_key).toBe(null);
+        expect(rotation.pending_files_json).toBe(null);
+      } finally {
+        recovered.close();
+      }
+    } finally {
+      process.env.HOME = origHome;
+      try { fs.rmSync(isoHome, { recursive: true, force: true }); } catch {}
+    }
   });
 
   it("recovers a passphrase-mode rotation that crashed between DB commit and commitKeyRotation (Codex P1 on PR #72)", async () => {
@@ -705,6 +738,31 @@ describe("Key Rotation", () => {
       expect(() => isoLedger.rotateKey("bob-new-passphrase")).toThrow(
         /simulated disk failure mid-rotation/
       );
+
+      // M2 guarantee: in the CRASHED state (DB re-encrypted under the new
+      // key, key files not yet written), the raw new master key must NOT be
+      // at rest anywhere in the DB. pending_key is NULL; only the non-secret
+      // pending_files_json (master.salt + master.verify + mode marker)
+      // remains. This is the "key exists only in memory" promise that the
+      // old raw-pending_key checkpoint broke in passphrase mode.
+      const crashed = (isoLedger as any).db
+        .prepare("SELECT pending_key, pending_files_json FROM rotation_state WHERE id = 1")
+        .get() as any;
+      expect(crashed.pending_key).toBe(null);
+      expect(crashed.pending_files_json).toBeTruthy();
+      // The raw new key never appears in pending_files_json. In passphrase
+      // mode the file set is salt/verify/mode plus a master.key *deletion*
+      // marker (empty content, to ensure no dev key lingers on disk) — assert
+      // any master.key entry is empty, so no raw key bytes are persisted.
+      for (const e of JSON.parse(crashed.pending_files_json) as Array<{
+        path: string;
+        content_b64: string;
+      }>) {
+        if (e.path.endsWith("master.key")) {
+          expect(e.content_b64).toBe("");
+        }
+      }
+
       // Restore the real commitKeyRotation so recovery (which is what
       // we're testing) gets the unmocked implementation.
       const { commitKeyRotation: realCommit } =
