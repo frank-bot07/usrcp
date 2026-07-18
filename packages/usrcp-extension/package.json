@@ -39,10 +39,10 @@
     "usrcp-local": "file:../usrcp-local"
   },
   "devDependencies": {
-    "@types/chrome": "^0.1.40",
+    "@types/chrome": "^0.2.2",
     "@types/node": "22.19.17",
     "better-sqlite3": "12.10.0",
-    "esbuild": "^0.24.0",
+    "esbuild": "^0.28.1",
     "typescript": "5.9.3",
     "vitest": "4.1.4"
   },
