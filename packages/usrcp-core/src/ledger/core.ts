@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import Database from "./sqlite.js";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import * as crypto from "node:crypto";
@@ -60,7 +60,7 @@ export function setAdapterRotationResumeHook(
 }
 
 export class Ledger {
-  /** @internal */ db: Database.Database;
+  /** @internal */ db: Database;
   /** @internal */ closed = false;
   /** @internal */ masterKey: Buffer;
   /**

@@ -893,7 +893,7 @@ describe("Key Rotation", () => {
 
       // Step 2: open the DB directly and wipe blind_index, simulating
       // a legacy ledger that has events but no blind tokens.
-      const Database = (await import("better-sqlite3")).default;
+      const Database = (await import("../ledger/sqlite.js")).default;
       const raw = new Database(isoDbPath);
       raw.prepare("DELETE FROM blind_index").run();
       raw.close();

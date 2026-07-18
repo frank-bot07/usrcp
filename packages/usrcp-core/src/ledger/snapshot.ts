@@ -18,7 +18,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import Database from "better-sqlite3";
+import Database from "./sqlite.js";
 
 export interface SnapshotMeta {
   /** Absolute path to the snapshot file. */
@@ -267,7 +267,7 @@ export function summarizeSnapshot(snapshotPath: string): SnapshotSummary {
  */
 export function verifySnapshot(snapshotPath: string): string | null {
   if (!fs.existsSync(snapshotPath)) return `snapshot not found: ${snapshotPath}`;
-  let db: Database.Database;
+  let db: Database;
   try {
     db = new Database(snapshotPath, { readonly: true });
   } catch (e) {
@@ -354,7 +354,7 @@ export function shouldTakeLazySnapshot(
  */
 export function checkDbIntegrity(dbPath: string): string | null {
   if (!fs.existsSync(dbPath)) return null; // empty/uninitialized — handled elsewhere
-  let db: Database.Database;
+  let db: Database;
   try {
     db = new Database(dbPath, { readonly: true });
   } catch (e) {

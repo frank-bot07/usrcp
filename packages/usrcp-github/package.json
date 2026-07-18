@@ -11,7 +11,6 @@
     "usrcp-github": "dist/index.js"
   },
   "scripts": {
-    "postinstall": "node -e \"const fs=require(\\\"fs\\\"); for (const p of [\\\"node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-core/node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-stream/node_modules/better-sqlite3/build\\\"]) fs.rmSync(p,{recursive:true,force:true})\" && npm rebuild better-sqlite3",
     "prebuild": "cd ../usrcp-adapter-kit && npm run build",
     "build": "tsc",
     "dev": "tsc --watch",
@@ -31,7 +30,7 @@
   "author": "Chad Garner",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.5.0"
   },
   "dependencies": {
     "@octokit/rest": "^20.1.2",
@@ -39,9 +38,7 @@
     "usrcp-adapter-kit": "file:../usrcp-adapter-kit"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.0",
     "@types/node": "26.1.1",
-    "better-sqlite3": "12.10.0",
     "typescript": "5.9.3",
     "vitest": "4.1.4"
   },

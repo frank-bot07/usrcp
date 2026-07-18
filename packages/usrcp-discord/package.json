@@ -30,7 +30,7 @@
   "author": "Chad Garner",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.5.0"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
