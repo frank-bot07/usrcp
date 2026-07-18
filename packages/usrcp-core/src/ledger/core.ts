@@ -95,8 +95,8 @@ export class Ledger {
     // Pre-init rotation recovery (Codex round-1 P1 on PR #72): if a
     // previous rotateKey committed the DB transaction (rows
     // re-encrypted under the new master key; rotation_state.
-    // pending_key set) but died before commitKeyRotation wrote the
-    // new key-file set, the canonical master.salt / master.verify
+    // pending_files_json set) but died before commitKeyRotation wrote
+    // the new key-file set, the canonical master.salt / master.verify
     // still derive the OLD key. initializeMasterKey with the user's
     // NEW passphrase would throw "Invalid passphrase" against the
     // stale verify hash, locking the user out even though the
@@ -104,9 +104,11 @@ export class Ledger {
     //
     // Resolution: replay the pending key-file set BEFORE
     // initializeMasterKey runs, so initializeMasterKey reads the
-    // post-rotation canonical files and the user's NEW passphrase
-    // validates. The in-memory masterKey install + audit-log entry
-    // happen in the post-init block below.
+    // post-rotation canonical files and re-derives the correct new key
+    // from the user's NEW passphrase. The post-init durable-replay
+    // branch below then just clears the checkpoint + rebuilds the blind
+    // index — since M2 there is no raw key to install (only the legacy
+    // pre-#72 branch still installs a key from pending_key).
     const rotationRow = this.db.prepare(
       "SELECT pending_key, pending_version, pending_files_json FROM rotation_state WHERE id = 1"
     ).get() as any;
@@ -117,6 +119,13 @@ export class Ledger {
     if (rotationRow?.pending_files_json) {
       try {
         const pending = deserializePendingKeyFiles(rotationRow.pending_files_json);
+        // Guard against a corrupt / hand-edited "[]" checkpoint: an empty set
+        // replays nothing, so treating it as a successful recovery would clear
+        // the checkpoint while the DB is under the new key and the files under
+        // the old key. A real rotateKey always writes a non-empty set.
+        if (pending.length === 0) {
+          throw new Error("empty pending_files_json — not a valid rotation checkpoint");
+        }
         commitKeyRotation(pending);
         durableReplay = true;
       } catch (err) {

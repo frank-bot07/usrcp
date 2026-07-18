@@ -321,43 +321,54 @@ describe("Safe JSON parsing", () => {
 });
 
 describe("Advanced Key Rotation", () => {
-  it("recovers from disk-write failure during rotation commit", async () => {
-    // After the DB transaction commits (pending_key stored), Phase 3 writes
-    // the new key files to disk. If that write fails, the ledger must be
-    // recoverable on the next open by reading pending_key from rotation_state.
+  it("recovers from disk-write failure during rotation commit (durable replay, event survives)", async () => {
+    // After the DB transaction commits (pending_files_json stored; pending_key
+    // NULL since M2), Phase 3 writes the new key files to disk. If that write
+    // fails, the ledger recovers on next open: the constructor replays
+    // pending_files_json via commitKeyRotation and re-derives the key through
+    // initializeMasterKey. Isolated HOME so the DB and its key files stay
+    // consistent — recovery is now disk-derived, so a shared ~/.usrcp keys dir
+    // would cross-contaminate across tests.
     const { commitKeyRotation: realCommit } =
       await vi.importActual<typeof import("../encryption.js")>("../encryption.js");
+    const origHome = process.env.HOME;
+    const isoHome = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-adv-recover-"));
+    process.env.HOME = isoHome;
+    try {
+      const isoDbPath = path.join(isoHome, "ledger.db");
+      const l = new Ledger(isoDbPath); // dev mode
+      l.updateIdentity({ display_name: "DiskFailTest" });
+      l.appendEvent(
+        { domain: "test", summary: "event", intent: "test", outcome: "success" },
+        "test"
+      );
 
-    ledger.updateIdentity({ display_name: "DiskFailTest" });
-    ledger.appendEvent({
-      domain: "test",
-      summary: "event",
-      intent: "test",
-      outcome: "success",
-    }, "test");
+      const commitMock = vi.mocked(encryption.commitKeyRotation);
+      commitMock.mockImplementationOnce(() => {
+        throw new Error("simulated disk-write failure");
+      });
+      expect(() => l.rotateKey()).toThrow(/simulated disk-write failure/);
+      commitMock.mockImplementation(realCommit);
+      l.close();
 
-    const commitMock = vi.mocked(encryption.commitKeyRotation);
-    commitMock.mockImplementationOnce(() => {
-      throw new Error("simulated disk-write failure");
-    });
-
-    expect(() => ledger.rotateKey()).toThrow(/simulated disk-write failure/);
-
-    // Restore the real implementation so the recovery path can write keys.
-    commitMock.mockImplementation(realCommit);
-
-    // Reopen — constructor detects pending_key and completes the key write.
-    ledger.close();
-    const recovered = new Ledger(dbPath);
-    expect(recovered.getIdentity().display_name).toBe("DiskFailTest");
-    const rotation = ((recovered as any).db)
-      .prepare("SELECT pending_key FROM rotation_state")
-      .get() as any;
-    expect(rotation.pending_key).toBe(null);
-    recovered.close();
-    // Rebind `ledger` to the recovered instance so afterEach can close it
-    // cleanly (close is idempotent — the original was already closed).
-    ledger = new Ledger(dbPath);
+      // Reopen — durable replay recovers; identity AND the timeline event
+      // round-trip under the re-derived key.
+      const recovered = new Ledger(isoDbPath);
+      try {
+        expect(recovered.getIdentity().display_name).toBe("DiskFailTest");
+        expect(recovered.getTimeline().length).toBe(1);
+        const rotation = ((recovered as any).db)
+          .prepare("SELECT pending_key, pending_files_json FROM rotation_state")
+          .get() as any;
+        expect(rotation.pending_key).toBe(null);
+        expect(rotation.pending_files_json).toBe(null);
+      } finally {
+        recovered.close();
+      }
+    } finally {
+      process.env.HOME = origHome;
+      try { fs.rmSync(isoHome, { recursive: true, force: true }); } catch {}
+    }
   });
 
   it("skips tampered rows and completes rotation when force_skip_damaged is set", () => {
