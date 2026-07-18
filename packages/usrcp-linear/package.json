@@ -34,7 +34,7 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
-    "@linear/sdk": "^39.1.0",
+    "@linear/sdk": "^88.2.0",
     "usrcp-core": "file:../usrcp-core",
     "usrcp-adapter-kit": "file:../usrcp-adapter-kit"
   },
