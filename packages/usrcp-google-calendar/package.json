@@ -33,7 +33,7 @@
     "node": ">=22.5.0"
   },
   "dependencies": {
-    "@googleapis/calendar": "^9.8.0",
+    "@googleapis/calendar": "^15.0.0",
     "google-auth-library": "^9.15.1",
     "usrcp-core": "file:../usrcp-core",
     "usrcp-adapter-kit": "file:../usrcp-adapter-kit"
