@@ -34,7 +34,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
-    "@slack/bolt": "^4.7.1",
+    "@slack/bolt": "^5.0.0",
     "usrcp-core": "file:../usrcp-core",
     "usrcp-stream": "file:../usrcp-stream",
     "usrcp-adapter-kit": "file:../usrcp-adapter-kit"
