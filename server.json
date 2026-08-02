@@ -1,0 +1,37 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.frank-bot07/usrcp",
+  "title": "USRCP — User Context Protocol",
+  "description": "Encrypted local ledger of structured user state, shared across every MCP-aware AI tool.",
+  "websiteUrl": "https://usrcp.dev",
+  "repository": {
+    "url": "https://github.com/frank-bot07/usrcp",
+    "source": "github"
+  },
+  "version": "0.2.6",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "usrcp",
+      "version": "0.2.6",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "serve",
+          "valueHint": "command"
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "USRCP_PASSPHRASE",
+          "description": "Passphrase used to derive the ledger encryption key. Omit it if the passphrase is stored in the OS keychain via `usrcp keychain store`.",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}

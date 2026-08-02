@@ -1,0 +1,81 @@
+name: publish-mcp-registry
+
+# Publishes the USRCP server listing to the official MCP Registry
+# (registry.modelcontextprotocol.io) from `server.json` at the repo root.
+#
+# The registry only stores metadata — the artifact itself is the `usrcp`
+# npm package, published by publish-extras.yml. So this runs *after* a
+# release tag, when the matching npm version is already live. Publishing a
+# server.json whose package version is not on npm fails validation.
+#
+# Ownership is proven two ways, both required:
+#   1. `mcpName` in release/extra-names/usrcp/package.json must equal the
+#      `name` in server.json, and must be present in the *published* npm
+#      tarball. That means the mcpName field has to ship in a release —
+#      0.2.5 predates it, so 0.2.6 is the first publishable version.
+#   2. GitHub OIDC proves the io.github.frank-bot07/* namespace. No secret
+#      to manage; `id-token: write` below is what makes it work.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (defaults to server.json as committed)'
+        type: string
+        required: false
+
+jobs:
+  publish-mcp-registry:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        run: |
+          set -e
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(node -p "require('./server.json').version")"
+          fi
+          echo "Publishing USRCP $VERSION to the MCP Registry"
+          node -e '
+            const fs = require("fs");
+            const v = process.argv[1];
+            const s = JSON.parse(fs.readFileSync("server.json", "utf8"));
+            s.version = v;
+            s.packages = s.packages.map((p) => ({ ...p, version: v }));
+            fs.writeFileSync("server.json", JSON.stringify(s, null, 2) + "\n");
+          ' "$VERSION"
+
+      - name: Verify the npm package is live and carries mcpName
+        run: |
+          set -e
+          VERSION="$(node -p "require('./server.json').version")"
+          NAME="$(node -p "require('./server.json').name")"
+          PUBLISHED_MCP_NAME="$(npm view "usrcp@${VERSION}" mcpName 2>/dev/null || true)"
+          if [ -z "$PUBLISHED_MCP_NAME" ]; then
+            echo "::error::usrcp@${VERSION} is not on npm, or was published without an mcpName field. Publish the npm package first (publish-extras.yml)."
+            exit 1
+          fi
+          if [ "$PUBLISHED_MCP_NAME" != "$NAME" ]; then
+            echo "::error::published mcpName '${PUBLISHED_MCP_NAME}' does not match server.json name '${NAME}'"
+            exit 1
+          fi
+
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Authenticate to the MCP Registry
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish
+        run: ./mcp-publisher publish
