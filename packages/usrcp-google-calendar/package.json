@@ -34,7 +34,7 @@
   },
   "dependencies": {
     "@googleapis/calendar": "^15.0.0",
-    "google-auth-library": "10.5.0",
+    "google-auth-library": "11.0.0",
     "usrcp-adapter-kit": "file:../usrcp-adapter-kit",
     "usrcp-core": "file:../usrcp-core"
   },
