@@ -199,7 +199,7 @@ export function createServer(
       // at the input layer by the wrapper (scopeOf), before this runs.
       readProjection: projectStateResult,
       handler: async (params) => {
-        const state = ledger.getState(params.scopes);
+        const state = ledger.getState(params.scopes, opts.agentId ?? params.caller);
 
         if (
           params.scopes.includes("recent_timeline") &&
@@ -369,6 +369,11 @@ export function createServer(
             "Optional: version from a prior read. If the stored version differs, " +
               "the update is rejected with VERSION_CONFLICT. Use for read-modify-write flows."
           ),
+        caller: z
+          .string()
+          .max(MAX_STRING_SHORT)
+          .default("unknown")
+          .describe("Identifying name of the calling agent/platform"),
       },
       handler: async (params) => {
         const update: Partial<CoreIdentity> = {};
@@ -381,7 +386,7 @@ export function createServer(
           update.communication_style = params.communication_style;
 
         try {
-          ledger.updateIdentity(update, params.expected_version);
+          ledger.updateIdentity(update, params.expected_version, opts.agentId ?? params.caller);
         } catch (err) {
           if (err instanceof VersionConflictError) return versionConflictResponse(err);
           throw err;
@@ -441,6 +446,11 @@ export function createServer(
             "Optional: version from a prior read. If the stored version differs, " +
               "the update is rejected with VERSION_CONFLICT."
           ),
+        caller: z
+          .string()
+          .max(MAX_STRING_SHORT)
+          .default("unknown")
+          .describe("Identifying name of the calling agent/platform"),
       },
       handler: async (params) => {
         const update: Partial<GlobalPreferences> = {};
@@ -453,7 +463,7 @@ export function createServer(
           update.custom = params.custom as Record<string, unknown>;
 
         try {
-          ledger.updatePreferences(update, params.expected_version);
+          ledger.updatePreferences(update, params.expected_version, opts.agentId ?? params.caller);
         } catch (err) {
           if (err instanceof VersionConflictError) return versionConflictResponse(err);
           throw err;
@@ -502,13 +512,19 @@ export function createServer(
             "Optional: version from a prior read (0 = domain does not yet exist). " +
               "If the stored version differs, the update is rejected with VERSION_CONFLICT."
           ),
+        caller: z
+          .string()
+          .max(MAX_STRING_SHORT)
+          .default("unknown")
+          .describe("Identifying name of the calling agent/platform"),
       },
       handler: async (params) => {
         try {
           ledger.upsertDomainContext(
             params.domain,
             params.context as Record<string, unknown>,
-            params.expected_version
+            params.expected_version,
+            opts.agentId ?? params.caller
           );
         } catch (err) {
           if (err instanceof VersionConflictError) return versionConflictResponse(err);
@@ -616,12 +632,20 @@ export function createServer(
           .string()
           .max(MAX_STRING_LONG)
           .describe("Brief project description or current state"),
+        caller: z
+          .string()
+          .max(MAX_STRING_SHORT)
+          .default("unknown")
+          .describe("Identifying name of the calling agent/platform"),
       },
       handler: async (params) => {
-        ledger.upsertProject({
-          ...params,
-          last_touched: new Date().toISOString(),
-        });
+        ledger.upsertProject(
+          {
+            ...params,
+            last_touched: new Date().toISOString(),
+          },
+          opts.agentId ?? params.caller
+        );
 
         return {
           content: [
