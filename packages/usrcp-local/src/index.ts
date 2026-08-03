@@ -1396,7 +1396,22 @@ async function cmdKeychain(subcommand: string | undefined): Promise<void> {
   }
 }
 
-const command = process.argv[2];
+// Subcommands that resolve a passphrase or open the ledger before they could
+// ever reach help: `usrcp init --help` exited on "no passphrase provided and
+// stdin is not a TTY" rather than printing usage, which also made
+// --no-keychain undiscoverable from the tool itself. Routing them to the
+// usage banner fixes both. Commands with their own `<cmd> <op>` usage block
+// (adapter, config, sync, pair, keychain) already print it for an
+// unrecognised op, so they keep their more specific help.
+const HELP_BEFORE_UNLOCK = new Set([
+  "init", "serve", "status", "users", "setup", "snapshot", "restore", "rotate-identity",
+]);
+const requestedCommand = process.argv[2];
+const wantsHelp = hasFlag("help") || process.argv.includes("-h");
+const command =
+  wantsHelp && requestedCommand && HELP_BEFORE_UNLOCK.has(requestedCommand)
+    ? "--help"
+    : requestedCommand;
 
 switch (command) {
   case "init":
