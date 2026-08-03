@@ -199,20 +199,26 @@ export function createServer(
       // at the input layer by the wrapper (scopeOf), before this runs.
       readProjection: projectStateResult,
       handler: async (params) => {
-        const state = ledger.getState(params.scopes, opts.agentId ?? params.caller);
+        const caller = opts.agentId ?? params.caller;
 
-        if (
+        // Pass any timeline filter INTO getState so the recent_timeline read
+        // happens exactly once, attributed to the caller. Previously getState
+        // did a default last_n:50 read (logged as "system") and this handler
+        // then did a second filtered read -- two timeline reads, one of them
+        // misattributed (#175).
+        const timelineOptions =
           params.scopes.includes("recent_timeline") &&
           (params.timeline_last_n ||
             params.timeline_since ||
             params.timeline_domains)
-        ) {
-          state.recent_timeline = ledger.getTimeline({
-            last_n: params.timeline_last_n,
-            since: params.timeline_since,
-            domains: params.timeline_domains,
-          });
-        }
+            ? {
+                last_n: params.timeline_last_n,
+                since: params.timeline_since,
+                domains: params.timeline_domains,
+              }
+            : undefined;
+
+        const state = ledger.getState(params.scopes, caller, timelineOptions);
 
         return {
           usrcp_version: "0.2.5",
@@ -591,7 +597,7 @@ export function createServer(
         const results = ledger.searchTimeline(params.query, {
           limit: params.limit,
           domain: params.domain,
-        });
+        }, opts.agentId ?? params.caller);
 
         return {
           query: params.query,

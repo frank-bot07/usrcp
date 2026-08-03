@@ -62,6 +62,33 @@ describe("Audit log", () => {
     expect(timelineEntries[0].response_size_bytes).toBeGreaterThan(0);
   });
 
+  it("attributes get_timeline and search_timeline reads to the caller, not 'system' (#175)", () => {
+    ledger.appendEvent(
+      { domain: "coding", summary: "authentication fix", intent: "i", outcome: "success" },
+      "test"
+    );
+    ledger.getTimeline({ last_n: 10 }, "cursor");
+    ledger.searchTimeline("authentication", undefined, "codex");
+
+    const log = ledger.getAuditLog();
+    const gt = log.find((e: any) => e.operation === "get_timeline");
+    const st = log.find((e: any) => e.operation === "search_timeline");
+    // Pre-fix, both read paths dropped the caller and logged "system".
+    expect(gt?.agent_id).toBe("cursor");
+    expect(st?.agent_id).toBe("codex");
+  });
+
+  it("audits a search even when it matches nothing (#175)", () => {
+    // Pre-fix, the empty-result early returns bypassed logAudit entirely,
+    // contradicting the audit log's promise that every search is recorded.
+    ledger.searchTimeline("no-such-term-anywhere", undefined, "opencode");
+
+    const log = ledger.getAuditLog();
+    const searches = log.filter((e: any) => e.operation === "search_timeline");
+    expect(searches.length).toBe(1);
+    expect(searches[0].agent_id).toBe("opencode");
+  });
+
   it("logs update_domain_context operations", () => {
     ledger.upsertDomainContext("coding", { key: "value" });
 
