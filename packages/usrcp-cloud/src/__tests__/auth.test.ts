@@ -1,14 +1,19 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import * as crypto from "node:crypto";
 import { makeMemDb, makeKeyPair } from "./helpers.js";
 import { Db } from "../db.js";
 import {
   signRequest,
   verifyAndClaim,
   canonicalRequest,
+  canonicalKeyId,
   AuthError,
   TIMESTAMP_WINDOW_MS,
   pruneOldNonces,
 } from "../auth.js";
+
+// The DB identity is the canonical SPKI-DER id, not the PEM (#176).
+const canonId = (pem: string): string => canonicalKeyId(crypto.createPublicKey(pem));
 
 let db: Db;
 
@@ -61,7 +66,7 @@ describe("signRequest / verifyAndClaim", () => {
     const { privateKeyPem, publicKeyPem } = makeKeyPair();
     const signed = signRequest(privateKeyPem, "POST", "/v1/events", "{}");
     const res = await verifyAndClaim(db, headersFrom(publicKeyPem, signed), "POST", "/v1/events", "{}");
-    expect(res.userPublicKey).toBe(publicKeyPem);
+    expect(res.userPublicKey).toBe(canonId(publicKeyPem));
   });
 
   it("rejects when signature does not match body", async () => {
@@ -147,7 +152,7 @@ describe("signRequest / verifyAndClaim", () => {
     await verifyAndClaim(db, headersFrom(publicKeyPem, signed), "POST", "/v1/events", "{}");
     const users = await db.query<{ public_key: string }>("SELECT public_key FROM users");
     expect(users.rows.length).toBe(1);
-    expect(users.rows[0].public_key).toBe(publicKeyPem);
+    expect(users.rows[0].public_key).toBe(canonId(publicKeyPem));
   });
 });
 

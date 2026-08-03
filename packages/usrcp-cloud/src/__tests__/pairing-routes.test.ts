@@ -3,7 +3,11 @@ import type { FastifyInstance } from "fastify";
 import { makeMemDb, makeKeyPair } from "./helpers.js";
 import { Db } from "../db.js";
 import { createApp } from "../server.js";
-import { signRequest } from "../auth.js";
+import * as crypto from "node:crypto";
+import { signRequest, canonicalKeyId } from "../auth.js";
+
+// DB identity is the canonical SPKI-DER id, not the PEM (#176).
+const canonId = (pem: string): string => canonicalKeyId(crypto.createPublicKey(pem));
 import { prunePairingBundles } from "../pairing.js";
 
 let db: Db;
@@ -144,7 +148,7 @@ describe("POST /v1/pairing/init", () => {
       ["33330000"]
     );
     // Owner must now be bob (not alice).
-    const bobPubFromHeader = bob.publicKeyPem; // raw PEM as stored
+    const bobPubFromHeader = canonId(bob.publicKeyPem); // canonical id as stored
     expect(row.rows[0].owner_public_key).toBe(bobPubFromHeader);
     expect(row.rows[0].encrypted_bundle).toBe(bundle("BOB_FRESH"));
 

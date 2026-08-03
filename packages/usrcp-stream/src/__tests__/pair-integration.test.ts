@@ -95,6 +95,12 @@ function setupAliceIdentity(): { publicKey: string; privateKey: string; userId: 
   return { publicKey, privateKey, userId: identity.user_id };
 }
 
+
+// Canonical SPKI-DER identity id, matching usrcp-cloud auth.ts canonicalKeyId.
+// The cloud keys its DB rows off this (#176); responses still echo PEMs.
+const canonId = (pem: string): string =>
+  crypto.createPublicKey(pem).export({ type: "spki", format: "der" }).toString("base64");
+
 describe("multi-device pairing - end-to-end", () => {
   it("A pairInit -> B pairJoin yields a byte-identical identity on B", async () => {
     const alice = setupAliceIdentity();
@@ -191,7 +197,7 @@ describe("multi-device pairing - end-to-end", () => {
       "SELECT owner_public_key FROM pairing_bundles WHERE code = $1",
       [code]
     );
-    expect(owner.rows[0]?.owner_public_key).toBe(alice.publicKey);
+    expect(owner.rows[0]?.owner_public_key).toBe(canonId(alice.publicKey));
   });
 
   it("wrong-passphrase pairJoin leaves bob's keys/ dir untouched", async () => {
