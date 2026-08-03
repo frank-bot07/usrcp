@@ -67,8 +67,32 @@ export function getUserSlug(): string {
   return currentUserSlug;
 }
 
+/**
+ * The user's home directory, or a clear failure.
+ *
+ * `os.homedir()` returns "" when HOME is set but empty — which every path
+ * built from it then quietly turns into a *relative* path. A service or
+ * container started without HOME got a full encrypted ledger written into
+ * whatever directory the process happened to start in, with exit code 0 and
+ * no warning: a second ledger distinct from the user's real one, invisible
+ * to them, and if the cwd was a repo checkout, key material inside it.
+ *
+ * Refusing is the only safe answer — we cannot guess where the ledger was
+ * meant to live, and picking wrong writes secrets to the wrong place.
+ */
+export function requireHomeDir(): string {
+  const home = os.homedir();
+  if (!home || !path.isAbsolute(home)) {
+    throw new Error(
+      "HOME is unset or empty, so there is no home directory to resolve the " +
+      "USRCP ledger against. Set HOME to an absolute path before running usrcp."
+    );
+  }
+  return home;
+}
+
 export function getUsrcpBaseDir(): string {
-  return path.join(os.homedir(), ".usrcp");
+  return path.join(requireHomeDir(), ".usrcp");
 }
 
 export function getUserDir(): string {
