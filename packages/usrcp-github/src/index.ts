@@ -21,6 +21,8 @@
  */
 
 import { execSync } from "node:child_process";
+import { realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { Octokit } from "@octokit/rest";
 import { Ledger } from "usrcp-core/ledger";
 import {
@@ -676,9 +678,18 @@ async function main() {
 }
 
 // Only run main() when invoked as a CLI - allows tests to import
-// pollOnce without booting the daemon.
-const invokedAsCli =
-  typeof require !== "undefined" && require.main === module;
+// pollOnce without booting the daemon. ESM has no require.main; compare
+// this module's URL to the invoked script, resolving symlinks so the
+// npm bin shim still counts as "invoked directly".
+const invokedAsCli = (() => {
+  const argv1 = process.argv[1];
+  if (argv1 === undefined) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(argv1)).href;
+  } catch {
+    return false;
+  }
+})();
 if (invokedAsCli) {
   main().catch((err: unknown) => {
     console.error("[usrcp-github] fatal:", err instanceof Error ? err.message : err);

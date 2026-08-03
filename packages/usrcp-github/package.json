@@ -1,6 +1,7 @@
 {
   "name": "usrcp-github",
   "version": "0.2.5",
+  "type": "module",
   "description": "GitHub capture adapter for USRCP - polls the REST API for pull requests authored by the configured user and appends them to the local ledger",
   "main": "dist/index.js",
   "files": [
