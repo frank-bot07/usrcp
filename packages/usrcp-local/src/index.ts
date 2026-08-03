@@ -1417,7 +1417,12 @@ const command =
     ? "--help"
     : requestedCommand;
 
-switch (command) {
+// Import-safety: dispatch only when this file is executed as the CLI
+// entrypoint. Importing the module (a test, or another package) must not
+// start the MCP server or create a default ledger as a side effect. The argv
+// reads above are pure. Guard is a single statement over the switch so the
+// dispatch body keeps its indentation.
+if (require.main === module) switch (command) {
   case "init":
     cmdInit().catch((err) => {
       console.error("[usrcp] Fatal:", err instanceof Error ? err.message : "Unknown error");

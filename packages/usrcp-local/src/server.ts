@@ -1025,35 +1025,12 @@ export function createServer(
   // ride the same passphrase as the ledger; the user only ever derives
   // the master key once per process. Failures during stream registration
   // log and continue; the ledger keeps serving regardless.
-  let streamShutdown: (() => void) | null = null;
-  try {
-    // usrcp-stream is an optional peer, not a declared dependency. If
-    // the package isn't installed, MODULE_NOT_FOUND comes back and we
-    // silently skip. Any *other* error means stream IS present but
-    // failed to register, and we log it loudly so misconfigurations
-    // don't disappear.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-explicit-any
-    const streamMod = require("usrcp-stream/dist/register.js") as any;
-    if (streamMod && typeof streamMod.registerStreamTools === "function") {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { getUserDir } = require("./encryption.js");
-      const reg = streamMod.registerStreamTools(server, {
-        masterKey: ledger.getMasterKey(),
-        ledger,
-        userDir: getUserDir(),
-        serveOptions: opts,
-      });
-      streamShutdown = reg.shutdown;
-    }
-  } catch (err) {
-    const e = err as NodeJS.ErrnoException;
-    if (e?.code !== "MODULE_NOT_FOUND" && e?.code !== "ERR_MODULE_NOT_FOUND") {
-      console.error(
-        "[usrcp] usrcp-stream is installed but failed to register:",
-        e
-      );
-    }
-  }
+  const streamShutdown = loadStreamTools(server, {
+    masterKey: ledger.getMasterKey(),
+    ledger,
+    userDir: getUserDir(),
+    serveOptions: opts,
+  });
 
   const wrappedShutdown = () => {
     if (streamShutdown) {
@@ -1065,6 +1042,83 @@ export function createServer(
   };
 
   return { server, shutdown: wrappedShutdown, ledger };
+}
+
+/**
+ * Load the optional usrcp-stream peer and register its tools.
+ *
+ * usrcp-stream is an optional peer, not a declared dependency, so its absence
+ * is normal and must stay silent. The failure this guards against (#178): a
+ * single try/catch that treated ANY MODULE_NOT_FOUND as "not installed" would
+ * silently erase every stream tool whenever an *installed* usrcp-stream failed
+ * to load -- e.g. a missing transitive import, or a published package whose
+ * dist/register.js entry file is missing.
+ *
+ * The trap is that resolving the entry (`usrcp-stream/dist/register.js`) throws
+ * MODULE_NOT_FOUND BOTH when the package is absent AND when the package is
+ * present but its entry file is gone -- the two cases are indistinguishable at
+ * that boundary. So we prove package presence separately, at a boundary that
+ * does NOT depend on the entry file:
+ *   - Resolve `usrcp-stream/package.json`. A MODULE_NOT_FOUND here means the
+ *     package itself is not installed -> skip silently. This is the ONLY
+ *     silent path.
+ *   - Once the package is known present, load + register its entry. ANY failure
+ *     now (entry file missing, a nested MODULE_NOT_FOUND from stream's OWN
+ *     imports, a throw during registration) is a real error -> log loudly, but
+ *     keep the local server running for an optional peer.
+ *
+ * Returns the stream shutdown hook, or null when no stream tools were wired.
+ * @internal exported only for the #178 stream-loading regression test.
+ */
+export function loadStreamTools(
+  server: McpServer,
+  ctx: {
+    masterKey: Buffer;
+    ledger: Ledger;
+    userDir: string;
+    serveOptions: ServeOptions;
+  }
+): (() => void) | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    require.resolve("usrcp-stream/package.json");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "MODULE_NOT_FOUND") {
+      return null; // package not installed: the one and only silent skip
+    }
+    // The package dir exists but its manifest could not be resolved (e.g. a
+    // restrictive "exports" map). That is not clean absence, so fall through
+    // and let the entry load below surface any real failure rather than
+    // swallow it.
+  }
+
+  // usrcp-stream is present. From here, ANY failure to load or register its
+  // entry -- a missing dist/register.js, a nested MODULE_NOT_FOUND from its own
+  // deps, or a throw during registration -- is a real error: log it, but keep
+  // the local server alive for an optional peer.
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-explicit-any
+    const streamMod = require("usrcp-stream/dist/register.js") as any;
+    if (!streamMod || typeof streamMod.registerStreamTools !== "function") {
+      console.error(
+        "[usrcp] usrcp-stream is installed but does not export registerStreamTools(); stream tools skipped."
+      );
+      return null;
+    }
+    const reg = streamMod.registerStreamTools(server, {
+      masterKey: ctx.masterKey,
+      ledger: ctx.ledger,
+      userDir: ctx.userDir,
+      serveOptions: ctx.serveOptions,
+    });
+    return reg?.shutdown ?? null;
+  } catch (err) {
+    console.error(
+      "[usrcp] usrcp-stream is installed but failed to load or register; stream tools skipped:",
+      err
+    );
+    return null;
+  }
 }
 
 // Scope-enforcement wrapper has been lifted into ./scope-enforcement.ts
