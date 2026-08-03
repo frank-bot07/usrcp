@@ -237,5 +237,11 @@ function getAllRealDomains(ledger: Ledger): string[] {
   const rows = ledger.db
     .prepare("SELECT pseudonym, encrypted_name FROM domain_map")
     .all() as any[];
-  return rows.map((r: any) => ledger.decryptGlobal(r.encrypted_name)).filter(Boolean);
+  // Use the non-throwing safe decrypt (fallback "" → dropped by filter) so a
+  // single damaged/tampered domain_map row is skipped instead of crashing the
+  // entire unscoped search. Mirrors resolveDomain (core.ts), which is safe for
+  // the same reason on the per-row read path.
+  return rows
+    .map((r: any) => ledger.decryptGlobalSafe(r.encrypted_name, ""))
+    .filter(Boolean);
 }

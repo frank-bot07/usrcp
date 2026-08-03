@@ -299,17 +299,22 @@ Ledger.prototype.rotateKey = function (
       insertMap.run(bundle.newPseudo, encrypt(name, newGlobalKey));
     }
 
-    // Re-encrypt domain context with new pseudonyms
-    const contexts = this.db.prepare("SELECT domain, context FROM domain_context").all() as any[];
+    // Re-encrypt domain context with new pseudonyms. Carry `version` and
+    // `updated_at` through verbatim: this table is rebuilt with DELETE+INSERT
+    // (unlike the UPDATE-in-place used for the other versioned tables), so
+    // omitting them would let `version` fall back to the schema default (1)
+    // and clobber `updated_at` to now() — silently corrupting the
+    // optimistic-concurrency counter that upsertDomainContext/checkExpectedVersion rely on.
+    const contexts = this.db.prepare("SELECT domain, context, version, updated_at FROM domain_context").all() as any[];
     this.db.exec("DELETE FROM domain_context");
-    const insertCtx = this.db.prepare("INSERT INTO domain_context (domain, context, updated_at) VALUES (?, ?, datetime('now'))");
+    const insertCtx = this.db.prepare("INSERT INTO domain_context (domain, context, version, updated_at) VALUES (?, ?, ?, ?)");
     for (const c of contexts) {
       const realName = pseudoToReal.get(c.domain);
       if (!realName) continue;
       const bundle = domainKeyCache.get(realName)!;
       try {
         const plain = isEncrypted(c.context) ? decrypt(c.context, bundle.oldDomainKey) : c.context;
-        insertCtx.run(bundle.newPseudo, encrypt(plain, bundle.newDomainKey));
+        insertCtx.run(bundle.newPseudo, encrypt(plain, bundle.newDomainKey), c.version, c.updated_at);
       } catch (err) {
         // Tampered / corrupted context — leave the old row in place
         // under its old pseudo so it doesn't collide with the rewritten
@@ -317,7 +322,7 @@ Ledger.prototype.rotateKey = function (
         console.warn(
           `[usrcp] rotateKey: skipping damaged domain_context for ${c.domain}: ${(err as Error).message}`
         );
-        insertCtx.run(c.domain, c.context);
+        insertCtx.run(c.domain, c.context, c.version, c.updated_at);
         skipped++;
       }
     }

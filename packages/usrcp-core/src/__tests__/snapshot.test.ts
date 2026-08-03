@@ -290,6 +290,20 @@ describe("verifySnapshot + summarizeSnapshot", () => {
     expect(summary.domains).toBeGreaterThanOrEqual(1);
   });
 
+  it("reports the real fact count, not a hard-coded 0", () => {
+    // Regression for #173: summarizeSnapshot queried a table named `facts`
+    // that never existed (it is `schemaless_facts`), so the swallowed error
+    // always yielded totalFacts: 0 — misleading `restore --dry-run`.
+    const ledger = new Ledger(dbPath);
+    ledger.setFact("personal", "habits", "sleep", { hours: 8 });
+    ledger.setFact("coding", "prefs", "lang", "typescript");
+    const meta = takeSnapshot(dbPath, snapshotsDir);
+    ledger.close();
+
+    const summary = summarizeSnapshot(meta.path);
+    expect(summary.totalFacts).toBe(2);
+  });
+
   it("reports an error when the snapshot file is missing", () => {
     expect(verifySnapshot(path.join(snapshotsDir, "nope.db"))).toMatch(/not found/);
   });
