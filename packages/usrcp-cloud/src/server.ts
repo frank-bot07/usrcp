@@ -397,10 +397,24 @@ export function createApp(opts: ServerOptions): FastifyInstance {
         if (replyVersionConflictIfMismatch(reply, "schemaless_facts", currentVersion, f.expected_version, `${f.domain_pseudonym}/${f.ns_key_hash}`)) return;
       }
 
-      // 3. Batch INSERTs and run UPDATEs concurrently
+      // 3. Fold repeats of the same key, last write wins.
+      //
+      // The old sequential loop handled two entries for one key naturally:
+      // the first inserted, the second found the row and updated it. Batching
+      // classifies both against the same pre-write snapshot, so both would be
+      // inserts and collide on UNIQUE (user_public_key, domain_pseudonym,
+      // ns_key_hash). Nothing forbids the payload — `facts` has no in-batch
+      // uniqueness rule, and this is the sync endpoint, where a client
+      // flushing a session's writes is the expected shape.
+      const foldedFacts = new Map<string, typeof body.facts[number]>();
+      for (const f of body.facts) {
+        foldedFacts.set(f.domain_pseudonym + '/' + f.ns_key_hash, f);
+      }
+
+      // 4. Batch INSERTs and run UPDATEs concurrently
       const updates = [];
       const inserts = [];
-      for (const f of body.facts) {
+      for (const f of foldedFacts.values()) {
         const existing = existingMap.get(f.domain_pseudonym + '/' + f.ns_key_hash);
         if (existing) {
           updates.push({ f, existing });

@@ -281,6 +281,41 @@ describe("POST /v1/state", () => {
     expect(view.json().facts[0].value_enc).toBe("enc:v2");
     expect(Number(view.json().facts[0].version)).toBe(2);
   });
+
+  // Batching classifies every fact against one pre-write snapshot, so two
+  // entries for the same key both look new and collide on the uniqueness
+  // constraint. The sequential loop this replaced handled it by accident.
+  // `facts` has no in-batch uniqueness rule and this is the sync endpoint,
+  // so a client flushing a session's writes can legitimately send repeats.
+  it("accepts repeats of one key in a single payload, last write wins", async () => {
+    const { privateKeyPem, publicKeyPem } = makeKeyPair();
+    const hash = "1".repeat(64);
+    const res = await signedInject(privateKeyPem, publicKeyPem, "POST", "/v1/state", {
+      facts: [
+        {
+          fact_id: "f1",
+          domain_pseudonym: "d_personal",
+          ns_key_hash: hash,
+          namespace_enc: "enc:ns",
+          key_enc: "enc:k",
+          value_enc: "enc:v1",
+        },
+        {
+          fact_id: "f1",
+          domain_pseudonym: "d_personal",
+          ns_key_hash: hash,
+          namespace_enc: "enc:ns",
+          key_enc: "enc:k",
+          value_enc: "enc:v2",
+        },
+      ],
+    });
+    expect(res.statusCode).toBe(200);
+
+    const view = await signedInject(privateKeyPem, publicKeyPem, "GET", "/v1/state");
+    expect(view.json().facts).toHaveLength(1);
+    expect(view.json().facts[0].value_enc).toBe("enc:v2");
+  });
 });
 
 describe("domain_maps sync", () => {
