@@ -4,18 +4,28 @@
  */
 
 import { promises as fs } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { execSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { requireHomeDir } from "usrcp-core/encryption";
 
-/** Returns the backup dir path — evaluated at call time so tests can override HOME. */
-export function getBackupDir(): string {
-  return join(homedir(), ".usrcp", "backups");
+/**
+ * Home directory for terminal-adapter config writes, guarded (#174).
+ *
+ * Delegates to usrcp-core's requireHomeDir(), which throws when HOME is empty
+ * or not absolute (e.g. whitespace). Every terminal-adapter path is anchored on
+ * this, so under a broken HOME the adapter refuses instead of joining onto ""
+ * and writing a relative `.codex/`, `.cursor/`, `.usrcp/` etc. into the process
+ * CWD. Evaluated at call time so tests can override HOME.
+ */
+export function homeDir(): string {
+  return requireHomeDir();
 }
 
-/** @deprecated use getBackupDir() — kept for continue.ts dynamic import compat */
-export const BACKUP_DIR = join(homedir(), ".usrcp", "backups");
+/** Returns the backup dir path, evaluated at call time so tests can override HOME. */
+export function getBackupDir(): string {
+  return join(homeDir(), ".usrcp", "backups");
+}
 
 /**
  * Resolve the absolute path to the usrcp binary.

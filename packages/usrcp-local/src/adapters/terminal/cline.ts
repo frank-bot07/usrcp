@@ -11,15 +11,14 @@
  */
 
 import { promises as fs } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
-import { atomicWrite, readOrNull } from "./shared.js";
+import { atomicWrite, readOrNull, homeDir } from "./shared.js";
 
 const TARGET = "cline";
 const EXT = "json";
 
 function configPath(): string {
-  const home = homedir();
+  const home = homeDir();
   const rel = join("saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json");
 
   if (process.platform === "darwin") {

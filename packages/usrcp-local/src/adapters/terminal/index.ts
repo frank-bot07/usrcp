@@ -14,13 +14,12 @@
  */
 
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { execSync } from "node:child_process";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import { resolveUsrcpBin } from "./shared.js";
+import { resolveUsrcpBin, homeDir } from "./shared.js";
 import { isPassphraseMode as defaultIsPassphraseMode } from "usrcp-core/encryption";
 import * as claudeCode from "./claude-code.js";
 import * as cursor from "./cursor.js";
@@ -77,7 +76,7 @@ export interface AdapterResult {
  * file already existing. Either signal means the user has the tool.
  */
 export function detectInstalledTargets(): TargetName[] {
-  const home = homedir();
+  const home = homeDir();
 
   function hasBinary(bin: string): boolean {
     try {

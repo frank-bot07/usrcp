@@ -11,15 +11,14 @@
  */
 
 import { promises as fs } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
-import { atomicWrite, readOrNull } from "./shared.js";
+import { atomicWrite, readOrNull, homeDir } from "./shared.js";
 
 const TARGET = "opencode";
 const EXT = "json";
 
 function configDir(): string {
-  return join(homedir(), ".config", "opencode");
+  return join(homeDir(), ".config", "opencode");
 }
 
 function configPath(): string {
