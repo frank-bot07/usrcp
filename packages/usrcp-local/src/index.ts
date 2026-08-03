@@ -17,6 +17,7 @@ import {
   getUserSlug,
   getUserDir,
   getUsrcpBaseDir,
+  requireHomeDir,
   listUserSlugs,
   migrateLegacyLayout,
   safeWriteFile,
@@ -407,7 +408,10 @@ async function cmdInit(): Promise<void> {
 export type SupportedClient = "claude" | "cursor" | "continue" | "cline";
 
 export function getClientConfigPath(client: SupportedClient): string {
-  const home = os.homedir();
+  // Same reason as the ledger path: an empty HOME turns every join below into
+  // a relative path, and `usrcp init` was writing a Library/ tree into the
+  // working directory alongside the stray ledger.
+  const home = requireHomeDir();
   switch (client) {
     case "claude":
       switch (process.platform) {
