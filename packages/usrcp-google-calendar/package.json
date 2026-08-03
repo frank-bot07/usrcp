@@ -1,6 +1,6 @@
 {
   "name": "usrcp-google-calendar",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Google Calendar capture adapter for USRCP - polls the configured user's primary calendar for past events they attended and appends them to the local ledger",
   "main": "dist/index.js",
   "files": [
