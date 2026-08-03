@@ -372,6 +372,26 @@ describe("Search", () => {
     const results = ledger.searchTimeline("auth", { limit: 3 });
     expect(results).toHaveLength(3);
   });
+
+  it("survives a damaged domain_map row instead of crashing (#172)", () => {
+    // Deterministically corrupt the "writing" domain_map row so its global-key
+    // GCM decrypt fails, leaving "coding" (which holds the auth event) intact.
+    // Pre-fix, getAllRealDomains used the throwing decrypt and took the whole
+    // unscoped search down; getTimeline (safe path) already survived.
+    const db = (ledger as any).db;
+    const writingPseudo = (ledger as any).domainPseudonym("writing") as string;
+    const res = db.prepare("UPDATE domain_map SET encrypted_name = ? WHERE pseudonym = ?")
+      .run("enc:v1:not-real-ciphertext-tamper", writingPseudo);
+    expect(res.changes).toBe(1); // guard: the corruption actually landed
+
+    // getTimeline already tolerated this; searchTimeline must too now.
+    expect(() => ledger.getTimeline()).not.toThrow();
+    expect(() => ledger.searchTimeline("authentication")).not.toThrow();
+    // The intact "coding" domain still returns exactly its matching event.
+    const results = ledger.searchTimeline("authentication");
+    expect(results).toHaveLength(1);
+    expect(results[0].domain).toBe("coding");
+  });
 });
 
 describe("Projects", () => {
@@ -574,6 +594,23 @@ describe("Stats", () => {
 });
 
 describe("Key Rotation", () => {
+  it("preserves domain_context version across rotation (#171)", () => {
+    // Bump the version above the schema default so a reset is detectable.
+    ledger.upsertDomainContext("coding", { a: 1 }); // v1
+    ledger.upsertDomainContext("coding", { b: 2 }); // v2
+    ledger.upsertDomainContext("coding", { c: 3 }); // v3
+    expect(ledger.getDomainContextVersion("coding")).toBe(3);
+
+    ledger.rotateKey();
+
+    // Pre-fix, the DELETE+INSERT re-encrypt dropped `version` to the schema
+    // default (1), silently corrupting optimistic concurrency. It must survive.
+    expect(ledger.getDomainContextVersion("coding")).toBe(3);
+    // And an expected_version check keyed to the pre-rotation value still holds.
+    expect(() => ledger.upsertDomainContext("coding", { d: 4 }, 3)).not.toThrow();
+    expect(ledger.getDomainContextVersion("coding")).toBe(4);
+  });
+
   it("re-encrypts all data and preserves functionality", () => {
     // Setup diverse data
     ledger.updateIdentity({ display_name: "Test User", roles: ["developer"] });

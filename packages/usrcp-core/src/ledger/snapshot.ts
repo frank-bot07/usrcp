@@ -227,10 +227,10 @@ export function summarizeSnapshot(snapshotPath: string): SnapshotSummary {
     const events = db.prepare("SELECT COUNT(*) as c FROM timeline_events").get() as { c: number };
     let facts = 0;
     try {
-      const factRow = db.prepare("SELECT COUNT(*) as c FROM facts").get() as { c: number };
+      const factRow = db.prepare("SELECT COUNT(*) as c FROM schemaless_facts").get() as { c: number };
       facts = factRow?.c ?? 0;
     } catch {
-      // facts table may not exist on very old snapshots — treat as 0
+      // schemaless_facts may be absent on a very old snapshot — treat as 0.
     }
     const projects = db.prepare("SELECT COUNT(*) as c FROM active_projects").get() as { c: number };
     const domains = db
