@@ -13,15 +13,15 @@ import { safeJsonParse } from "./helpers.js";
 declare module "./core.js" {
   interface Ledger {
     getIdentity(): CoreIdentity & {tampered?: boolean; version: number};
-    updateIdentity(identity: Partial<CoreIdentity>, expectedVersion?: number): number;
+    updateIdentity(identity: Partial<CoreIdentity>, expectedVersion?: number, agentId?: string): number;
     getPreferences(): GlobalPreferences & {tampered?: boolean; version: number};
-    updatePreferences(prefs: Partial<GlobalPreferences>, expectedVersion?: number): number;
+    updatePreferences(prefs: Partial<GlobalPreferences>, expectedVersion?: number, agentId?: string): number;
     getProjects(status?: string): (ActiveProject & {tampered?: boolean})[];
-    upsertProject(project: ActiveProject): void;
+    upsertProject(project: ActiveProject, agentId?: string): void;
     getDomainContext(domains?: string[]): Record<string, Record<string, unknown>>;
     getDomainContextVersion(domain: string): number;
-    upsertDomainContext(domain: string, context: Record<string, unknown>, expectedVersion?: number): number;
-    getState(scopes: Scope[]): UserState;
+    upsertDomainContext(domain: string, context: Record<string, unknown>, expectedVersion?: number, agentId?: string): number;
+    getState(scopes: Scope[], agentId?: string): UserState;
     // Forward declaration for getTimeline used by getState
     getTimeline(options?: { last_n?: number; since?: string; domains?: string[] }): TimelineEvent[];
   }
@@ -62,7 +62,8 @@ Ledger.prototype.getIdentity = function (
 Ledger.prototype.updateIdentity = function (
   this: Ledger,
   identity: Partial<CoreIdentity>,
-  expectedVersion?: number
+  expectedVersion?: number,
+  agentId?: string
 ): number {
   const current = this.getIdentity();
   this.checkExpectedVersion("core_identity", current.version, expectedVersion);
@@ -86,7 +87,7 @@ Ledger.prototype.updateIdentity = function (
       this.encryptGlobal(merged.communication_style),
       newVersion
     );
-  this.logAudit("update_identity");
+  this.logAudit("update_identity", undefined, undefined, undefined, undefined, agentId);
   return newVersion;
 };
 
@@ -127,7 +128,8 @@ Ledger.prototype.getPreferences = function (
 Ledger.prototype.updatePreferences = function (
   this: Ledger,
   prefs: Partial<GlobalPreferences>,
-  expectedVersion?: number
+  expectedVersion?: number,
+  agentId?: string
 ): number {
   const current = this.getPreferences();
   this.checkExpectedVersion("global_preferences", current.version, expectedVersion);
@@ -156,7 +158,7 @@ Ledger.prototype.updatePreferences = function (
       this.encryptGlobal(JSON.stringify(merged.custom)),
       newVersion
     );
-  this.logAudit("update_preferences");
+  this.logAudit("update_preferences", undefined, undefined, undefined, undefined, agentId);
   return newVersion;
 };
 
@@ -209,7 +211,8 @@ Ledger.prototype.getProjects = function (
 
 Ledger.prototype.upsertProject = function (
   this: Ledger,
-  project: ActiveProject
+  project: ActiveProject,
+  agentId?: string
 ): void {
   // Stored/synced key is the HMAC of the caller's id (opaque, stable for
   // upsert). The original id is encrypted in project_ref_enc so reads return
@@ -237,7 +240,7 @@ Ledger.prototype.upsertProject = function (
       project.last_touched || new Date().toISOString(),
       this.encryptGlobal(project.summary)
     );
-  this.logAudit("upsert_project", undefined, [key]);
+  this.logAudit("upsert_project", undefined, [key], undefined, undefined, agentId);
 };
 
 Ledger.prototype.getDomainContext = function (
@@ -281,7 +284,8 @@ Ledger.prototype.upsertDomainContext = function (
   this: Ledger,
   domain: string,
   context: Record<string, unknown>,
-  expectedVersion?: number
+  expectedVersion?: number,
+  agentId?: string
 ): number {
   const pseudo = this.ensureDomainMapping(domain);
   const currentVersion = this.getDomainContextVersion(domain);
@@ -300,13 +304,14 @@ Ledger.prototype.upsertDomainContext = function (
         updated_at = excluded.updated_at`
     )
     .run(pseudo, encrypted, newVersion);
-  this.logAudit("update_domain_context", pseudo);
+  this.logAudit("update_domain_context", pseudo, undefined, undefined, undefined, agentId);
   return newVersion;
 };
 
 Ledger.prototype.getState = function (
   this: Ledger,
-  scopes: Scope[]
+  scopes: Scope[],
+  agentId?: string
 ): UserState {
   const state: UserState = {};
 
@@ -335,7 +340,8 @@ Ledger.prototype.getState = function (
     scopes,
     undefined,
     undefined,
-    JSON.stringify(state).length
+    JSON.stringify(state).length,
+    agentId
   );
   return state;
 };
