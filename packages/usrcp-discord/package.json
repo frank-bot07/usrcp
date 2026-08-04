@@ -1,6 +1,6 @@
 {
   "name": "usrcp-discord",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Discord capture+reader adapter for USRCP — vision-proof cross-channel memory",
   "main": "dist/index.js",
   "files": [
