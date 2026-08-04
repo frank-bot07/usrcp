@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
+import { requireHomeDir } from "usrcp-core/encryption";
 
 const CONFIG_FILE = "claude-code-config.json";
 
@@ -29,11 +29,14 @@ const DEFAULT_CONFIG: ClaudeCodeConfig = {
 };
 
 export function getConfigPath(): string {
-  return path.join(os.homedir(), ".usrcp", CONFIG_FILE);
+  // requireHomeDir(), not os.homedir(): under empty HOME os.homedir() is ""
+  // and this join becomes a relative ".usrcp/..." written into the CWD
+  // (#192, same class as #174/#183).
+  return path.join(requireHomeDir(), ".usrcp", CONFIG_FILE);
 }
 
 export function getClaudeProjectsDir(): string {
-  return path.join(os.homedir(), ".claude", "projects");
+  return path.join(requireHomeDir(), ".claude", "projects");
 }
 
 export function loadConfig(): ClaudeCodeConfig {

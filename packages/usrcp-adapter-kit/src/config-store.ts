@@ -1,10 +1,10 @@
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import {
   encrypt,
   decrypt,
   deriveGlobalEncryptionKey,
+  requireHomeDir,
   zeroBuffer,
 } from "usrcp-core/encryption";
 
@@ -146,7 +146,11 @@ export function createAdapterConfig<TConfig extends object>(
   const setupHint = `Run 'usrcp setup --adapter=${adapterName}' to`;
 
   function getConfigPath(): string {
-    return path.join(os.homedir(), ".usrcp", filename);
+    // requireHomeDir(), not os.homedir(): an empty HOME makes os.homedir()
+    // return "" so this join produces a RELATIVE ".usrcp/<filename>" that
+    // reads/writes an adapter's encrypted secrets into the process CWD
+    // instead of the home directory (#192, same class as #174/#183).
+    return path.join(requireHomeDir(), ".usrcp", filename);
   }
 
   function readPartialConfig(): Partial<TConfig> {

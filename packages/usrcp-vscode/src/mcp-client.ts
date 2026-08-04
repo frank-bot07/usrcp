@@ -9,8 +9,8 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { execSync } from "node:child_process";
+import { requireHomeDir } from "./home.js";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -44,10 +44,21 @@ export class BinaryNotFoundError extends Error {
   }
 }
 
-const FALLBACK_PATHS = [
+// A function candidate may return null to SKIP itself (e.g. the ~/.local
+// entry when HOME is empty): this is a read-only binary lookup among several
+// absolute candidates, so under a broken HOME we drop the home-relative
+// candidate and still try the absolute ones, rather than joining "" into a
+// CWD-relative ".local/bin/usrcp" (#192).
+const FALLBACK_PATHS: Array<string | (() => string | null)> = [
   "/opt/homebrew/bin/usrcp",
   "/usr/local/bin/usrcp",
-  () => join(homedir(), ".local", "bin", "usrcp"),
+  () => {
+    try {
+      return join(requireHomeDir(), ".local", "bin", "usrcp");
+    } catch {
+      return null;
+    }
+  },
 ];
 
 /**
@@ -76,6 +87,7 @@ export function resolveUsrcpBinary(configured?: string): string {
 
   for (const candidate of FALLBACK_PATHS) {
     const p = typeof candidate === "function" ? candidate() : candidate;
+    if (p === null) continue; // home-relative candidate skipped under empty HOME
     tried.push(p);
     if (existsSync(p)) return p;
   }
