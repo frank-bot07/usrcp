@@ -46,7 +46,7 @@ function initDevice(passphrase = PASSPHRASE): {
 }
 
 interface StubServerState {
-  rotated?: { old_public_key: string; new_public_key: string; rotation_attestation: string; postedBody: string };
+  rotated?: { old_public_key: string; new_public_key: string; rotation_attestation: string; new_key_attestation: string; postedBody: string };
   status: number;
   errorBody?: any;
 }
@@ -65,6 +65,7 @@ function stubFetch(state: StubServerState): typeof fetch {
         old_public_key: oldPub,
         new_public_key: parsed.new_public_key,
         rotation_attestation: parsed.rotation_attestation,
+        new_key_attestation: parsed.new_key_attestation,
         postedBody: body,
       };
       if (state.status === 200) {
@@ -135,6 +136,15 @@ describe("rotateIdentity (happy path)", () => {
     const canon = Buffer.from(`${ROTATE_DOMAIN}\n${r.new_public_key}`, "utf8");
     const oldKey = crypto.createPublicKey(oldPub);
     expect(crypto.verify(null, canon, oldKey, att)).toBe(true);
+
+    // And a proof of possession that verifies under the NEW key over the OLD
+    // key's PEM (#177); the client must prove it holds the new private half.
+    const pop = Buffer.from(state.rotated!.new_key_attestation, "base64url");
+    const popCanon = Buffer.from(`usrcp-rotate-v1-pop\n${oldPub}`, "utf8");
+    const newKey = crypto.createPublicKey(r.new_public_key);
+    expect(crypto.verify(null, popCanon, newKey, pop)).toBe(true);
+    // The PoP must NOT verify under the old key (distinct signer + domain).
+    expect(crypto.verify(null, popCanon, oldKey, pop)).toBe(false);
 
     zeroBuffer(masterKey);
   });

@@ -91,8 +91,10 @@ export function registerStreamRoutes(app: FastifyInstance, db: Db): void {
     const auth = await tryAuth(req, reply, db, "");
     if (!auth) return;
     const since = numberQuery(req.query as Record<string, unknown>, "since") ?? 0;
+    // Floor at 1 for the same reason as GET /v1/state: limit=0 returned an
+    // empty page whose has_more/cursor combination spins a paging client.
     const limit = Math.min(
-      numberQuery(req.query as Record<string, unknown>, "limit") ?? 200,
+      Math.max(numberQuery(req.query as Record<string, unknown>, "limit") ?? 200, 1),
       500
     );
 

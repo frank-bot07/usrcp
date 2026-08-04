@@ -8,7 +8,7 @@ import { signRequest, canonicalKeyId } from "../auth.js";
 
 // DB identity is the canonical SPKI-DER id, not the PEM (#176).
 const canonId = (pem: string): string => canonicalKeyId(crypto.createPublicKey(pem));
-import { ROTATE_ATTESTATION_DOMAIN } from "../rotate.js";
+import { ROTATE_ATTESTATION_DOMAIN, ROTATE_POP_DOMAIN } from "../rotate.js";
 
 let db: Db;
 let app: FastifyInstance;
@@ -56,6 +56,13 @@ function attestRotation(oldPrivateKeyPem: string, newPublicKeyPem: string): stri
   return sig.toString("base64url");
 }
 
+// Proof of possession (#177): the NEW key signs over the OLD key's PEM.
+function attestPop(newPrivateKeyPem: string, oldPublicKeyPem: string): string {
+  const canon = Buffer.from(`${ROTATE_POP_DOMAIN}\n${oldPublicKeyPem}`, "utf8");
+  const sig = crypto.sign(null, canon, crypto.createPrivateKey(newPrivateKeyPem));
+  return sig.toString("base64url");
+}
+
 // Seed Alice with a row in users, a timeline event, and an identity row.
 async function seedUser(publicKeyPem: string, privateKeyPem: string) {
   // First signed write registers the user via auth's upsert.
@@ -85,6 +92,7 @@ describe("POST /v1/rotate-identity", () => {
     const rot = await signedInject(alice.privateKeyPem, alice.publicKeyPem, "POST", "/v1/rotate-identity", {
       new_public_key: aliceNew.publicKeyPem,
       rotation_attestation: att,
+      new_key_attestation: attestPop(aliceNew.privateKeyPem, alice.publicKeyPem),
     });
     expect(rot.statusCode).toBe(200);
     const body = rot.json();
@@ -129,6 +137,7 @@ describe("POST /v1/rotate-identity", () => {
     const res = await signedInject(alice.privateKeyPem, alice.publicKeyPem, "POST", "/v1/rotate-identity", {
       new_public_key: aliceNew.publicKeyPem,
       rotation_attestation: badAtt,
+      new_key_attestation: attestPop(aliceNew.privateKeyPem, alice.publicKeyPem),
     });
     expect(res.statusCode).toBe(401);
     expect(res.json().error).toBe("BAD_ATTESTATION");
@@ -145,6 +154,7 @@ describe("POST /v1/rotate-identity", () => {
     const res = await signedInject(alice.privateKeyPem, alice.publicKeyPem, "POST", "/v1/rotate-identity", {
       new_public_key: alice.publicKeyPem,
       rotation_attestation: att,
+      new_key_attestation: attestPop(alice.privateKeyPem, alice.publicKeyPem),
     });
     expect(res.statusCode).toBe(400);
     expect(res.json().error).toBe("ROTATE_TO_SELF");
@@ -160,6 +170,7 @@ describe("POST /v1/rotate-identity", () => {
     const res = await signedInject(alice.privateKeyPem, alice.publicKeyPem, "POST", "/v1/rotate-identity", {
       new_public_key: bob.publicKeyPem,
       rotation_attestation: att,
+      new_key_attestation: attestPop(bob.privateKeyPem, alice.publicKeyPem),
     });
     expect(res.statusCode).toBe(409);
     expect(res.json().error).toBe("NEW_KEY_IN_USE");
@@ -176,6 +187,7 @@ describe("POST /v1/rotate-identity", () => {
     const r1 = await signedInject(alice.privateKeyPem, alice.publicKeyPem, "POST", "/v1/rotate-identity", {
       new_public_key: aliceNew.publicKeyPem,
       rotation_attestation: att1,
+      new_key_attestation: attestPop(aliceNew.privateKeyPem, alice.publicKeyPem),
     });
     expect(r1.statusCode).toBe(200);
 
@@ -184,6 +196,7 @@ describe("POST /v1/rotate-identity", () => {
     const r2 = await signedInject(aliceNew.privateKeyPem, aliceNew.publicKeyPem, "POST", "/v1/rotate-identity", {
       new_public_key: alice.publicKeyPem,
       rotation_attestation: att2,
+      new_key_attestation: attestPop(alice.privateKeyPem, aliceNew.publicKeyPem),
     });
     expect(r2.statusCode).toBe(409);
     expect(r2.json().error).toBe("NEW_KEY_REVOKED");
@@ -193,6 +206,7 @@ describe("POST /v1/rotate-identity", () => {
     const r3 = await signedInject(aliceNew.privateKeyPem, aliceNew.publicKeyPem, "POST", "/v1/rotate-identity", {
       new_public_key: aliceNewer.publicKeyPem,
       rotation_attestation: att3,
+      new_key_attestation: attestPop(aliceNewer.privateKeyPem, aliceNew.publicKeyPem),
     });
     expect(r3.statusCode).toBe(200);
 
@@ -214,6 +228,7 @@ describe("POST /v1/rotate-identity", () => {
     const rot = await signedInject(alice.privateKeyPem, alice.publicKeyPem, "POST", "/v1/rotate-identity", {
       new_public_key: aliceNew.publicKeyPem,
       rotation_attestation: att,
+      new_key_attestation: attestPop(aliceNew.privateKeyPem, alice.publicKeyPem),
     });
     expect(rot.statusCode).toBe(200);
 
@@ -248,6 +263,7 @@ describe("POST /v1/rotate-identity", () => {
       payload: JSON.stringify({
         new_public_key: aliceNew.publicKeyPem,
         rotation_attestation: attestRotation(alice.privateKeyPem, aliceNew.publicKeyPem),
+        new_key_attestation: attestPop(aliceNew.privateKeyPem, alice.publicKeyPem),
       }),
     });
     expect(res.statusCode).toBe(401);
@@ -282,6 +298,7 @@ describe("POST /v1/rotate-identity", () => {
     const rot = await signedInject(alice.privateKeyPem, alice.publicKeyPem, "POST", "/v1/rotate-identity", {
       new_public_key: aliceNew.publicKeyPem,
       rotation_attestation: att,
+      new_key_attestation: attestPop(aliceNew.privateKeyPem, alice.publicKeyPem),
     });
     expect(rot.statusCode).toBe(200);
 
@@ -325,6 +342,7 @@ describe("POST /v1/rotate-identity", () => {
     const rot = await signedInject(alice.privateKeyPem, alice.publicKeyPem, "POST", "/v1/rotate-identity", {
       new_public_key: aliceNew.publicKeyPem,
       rotation_attestation: att,
+      new_key_attestation: attestPop(aliceNew.privateKeyPem, alice.publicKeyPem),
     });
     expect(rot.statusCode).toBe(200);
 
@@ -344,6 +362,7 @@ describe("auth middleware rejects revoked keys", () => {
     await signedInject(alice.privateKeyPem, alice.publicKeyPem, "POST", "/v1/rotate-identity", {
       new_public_key: aliceNew.publicKeyPem,
       rotation_attestation: att,
+      new_key_attestation: attestPop(aliceNew.privateKeyPem, alice.publicKeyPem),
     });
 
     // Every authenticated endpoint should return 401 KEY_REVOKED for alice.

@@ -37,6 +37,14 @@ export interface RateLimitConfig {
   probeWindowMs: number;
   /** Honor X-Forwarded-For for IP attribution (only set behind a trusted proxy). */
   trustProxy: boolean;
+  /**
+   * Number of trusted proxies appending to X-Forwarded-For in front of this
+   * process. The client IP is taken that many entries from the RIGHT of the
+   * chain: everything further left is client-controlled and must never be
+   * trusted, or a scanner rotates the leftmost entry and gets a fresh
+   * rate-limit bucket per request (#177).
+   */
+  trustProxyHops: number;
 }
 
 export const DEFAULT_RATE_LIMIT_CONFIG: RateLimitConfig = {
@@ -47,6 +55,7 @@ export const DEFAULT_RATE_LIMIT_CONFIG: RateLimitConfig = {
   pairingDistinctCodesPerWindow: 20, // 20 distinct codes in probeWindowMs => block
   probeWindowMs: 10 * 60_000,        // 10 min (matches pairing TTL)
   trustProxy: false,
+  trustProxyHops: 1,
 };
 
 export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): RateLimitConfig {
@@ -63,7 +72,16 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): RateLim
     windowMs: num("RATE_LIMIT_WINDOW_MS", DEFAULT_RATE_LIMIT_CONFIG.windowMs),
     pairingDistinctCodesPerWindow: num("RATE_LIMIT_PROBE_CODES", DEFAULT_RATE_LIMIT_CONFIG.pairingDistinctCodesPerWindow),
     probeWindowMs: num("RATE_LIMIT_PROBE_WINDOW_MS", DEFAULT_RATE_LIMIT_CONFIG.probeWindowMs),
-    trustProxy: env["TRUST_PROXY"] === "1" || env["TRUST_PROXY"]?.toLowerCase() === "true",
+    // TRUST_PROXY=1 or true enables XFF with one trusted hop; TRUST_PROXY=<n>
+    // (n >= 2) declares a chain of n trusted proxies. Anything else disables
+    // XFF and attributes by TCP peer.
+    trustProxy:
+      env["TRUST_PROXY"]?.toLowerCase() === "true" ||
+      (Number.isInteger(Number(env["TRUST_PROXY"])) && Number(env["TRUST_PROXY"]) >= 1),
+    trustProxyHops:
+      Number.isInteger(Number(env["TRUST_PROXY"])) && Number(env["TRUST_PROXY"]) >= 1
+        ? Number(env["TRUST_PROXY"])
+        : 1,
   };
 }
 
@@ -198,14 +216,22 @@ export function pruneRateLimitState(state: RateLimitState, now: number = Date.no
  * the immediate TCP peer when trust-proxy is not configured at the
  * Fastify level.
  */
-function clientIp(req: FastifyRequest, trustProxy: boolean): string {
+function clientIp(req: FastifyRequest, trustProxy: boolean, trustProxyHops: number): string {
   if (trustProxy) {
     const xff = req.headers["x-forwarded-for"];
     if (typeof xff === "string" && xff.length > 0) {
-      // X-Forwarded-For can be a comma-separated chain; the LEFTMOST
-      // value is the original client per RFC 7239 / convention.
-      const first = xff.split(",")[0]?.trim();
-      if (first) return first;
+      // X-Forwarded-For is client-controlled except for the entries appended
+      // by our own trusted proxies, which are the RIGHTMOST ones. With N
+      // trusted proxies, the real client IP is the Nth entry from the right;
+      // taking the leftmost let a scanner rotate a fake "client" per request
+      // and bypass every per-IP limit (#177, reproduced 0/50 blocked).
+      const entries = xff.split(",").map((e) => e.trim()).filter(Boolean);
+      const hops = Math.max(1, Math.floor(trustProxyHops));
+      const candidate = entries[entries.length - hops];
+      if (candidate) return candidate;
+      // Chain shorter than the declared trusted-hop count: the request did
+      // not traverse our proxy tier as configured. Fall back to the TCP peer
+      // rather than trusting any client-supplied entry.
     }
   }
   return req.ip ?? "unknown";
@@ -230,7 +256,7 @@ export function registerRateLimits(app: FastifyInstance, state: RateLimitState):
   const { config } = state;
 
   app.addHook("onRequest", async (req, reply) => {
-    const ip = clientIp(req, config.trustProxy);
+    const ip = clientIp(req, config.trustProxy, config.trustProxyHops);
     const url = req.routeOptions?.url ?? req.url;
     const method = req.method.toUpperCase();
     const now = Date.now();
