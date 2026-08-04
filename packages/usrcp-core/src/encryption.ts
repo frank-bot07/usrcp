@@ -191,6 +191,10 @@ function getModePath(): string {
   return path.join(getKeysDir(), "mode");
 }
 
+function getIdempotencySecretPath(): string {
+  return path.join(getKeysDir(), "idempotency.secret");
+}
+
 /**
  * Write file safely — prevents symlink TOCTOU attacks.
  * Writes to a temp file with O_EXCL then renames atomically.
@@ -703,19 +707,100 @@ export function deriveIdempotencyLookupKey(masterKey: Buffer): Buffer {
 // caller string never touches disk or the sync relay. The value is only ever
 // compared for equality, never decrypted, so unlike project_id we don't keep
 // the original at all.
+//
+// #171 part 2: the HMAC key is the caller-provided rotation-stable lookup
+// secret (Ledger.idempotencySecret), NOT a per-call derivation from the
+// master key. Deriving from the master key broke dedup across rotation: the
+// plaintext idempotency key is erased after hashing (by design), so unlike
+// channel_hash the stored hashes can never be recomputed under a new master
+// key. The stable secret is initialized from the pre-fix derivation
+// (loadOrInitIdempotencySecret), so every existing hash is preserved.
 export function hashIdempotencyKey(
-  masterKey: Buffer,
+  lookupSecret: Buffer,
   idempotencyKey: string
 ): string {
-  const lookupKey = deriveIdempotencyLookupKey(masterKey);
+  return crypto
+    .createHmac("sha256", lookupSecret)
+    .update(idempotencyKey)
+    .digest("hex");
+}
+
+/**
+ * Build the on-disk key-file entry for the idempotency lookup secret:
+ * the secret (base64) encrypted under the global key of `masterKey`,
+ * at keys/idempotency.secret. Used both for the initial persist and
+ * inside rotateKey's pendingFiles set, where re-encrypting the SAME
+ * secret under the new master's global key is exactly what keeps
+ * stored idempotency hashes valid across rotation.
+ */
+export function prepareIdempotencySecretFile(
+  lookupSecret: Buffer,
+  masterKey: Buffer
+): PendingKeyFile {
+  const globalKey = deriveGlobalEncryptionKey(masterKey);
   try {
-    return crypto
-      .createHmac("sha256", lookupKey)
-      .update(idempotencyKey)
-      .digest("hex");
+    return {
+      path: getIdempotencySecretPath(),
+      content: Buffer.from(encrypt(lookupSecret.toString("base64"), globalKey), "utf8"),
+      mode: 0o600,
+    };
   } finally {
-    zeroBuffer(lookupKey);
+    zeroBuffer(globalKey);
   }
+}
+
+/**
+ * Load the rotation-stable idempotency lookup secret, creating it on
+ * first open.
+ *
+ * First open (no keys/idempotency.secret): freeze the CURRENT derived
+ * lookup key as the permanent secret and persist it encrypted under
+ * the global key. Freezing the derived key (rather than fresh random
+ * bytes) preserves every idempotency_hash already stored by earlier
+ * releases, which computed HMAC(derive(masterKey), key) per call.
+ *
+ * Subsequent opens: decrypt the persisted secret. rotateKey re-encrypts
+ * the same secret under the new global key, so the value survives
+ * master-key rotation and dedup keeps matching pre-rotation hashes.
+ *
+ * If the file exists but does not decrypt under this master key (same
+ * orphaned-state class as a stale private.pem), hash continuity is
+ * already lost; warn, fall back to the current derived key, and
+ * persist that so subsequent opens agree with each other.
+ */
+export function loadOrInitIdempotencySecret(masterKey: Buffer): Buffer {
+  const secretPath = getIdempotencySecretPath();
+  if (fs.existsSync(secretPath)) {
+    const content = fs.readFileSync(secretPath, "utf-8").trim();
+    if (content.startsWith(ENCRYPTED_PREFIX)) {
+      const globalKey = deriveGlobalEncryptionKey(masterKey);
+      try {
+        const secret = Buffer.from(decrypt(content, globalKey), "base64");
+        if (secret.length === 32) return secret;
+        zeroBuffer(secret);
+        console.warn(
+          "[usrcp] idempotency.secret decrypted to an unexpected length; re-initializing from the current master key. Idempotency dedup continuity with prior events is lost."
+        );
+      } catch {
+        console.warn(
+          "[usrcp] idempotency.secret did not decrypt under the current master key; re-initializing. Idempotency dedup continuity with prior events is lost (same orphaned-state class as a stale private.pem)."
+        );
+      } finally {
+        zeroBuffer(globalKey);
+      }
+    } else {
+      // Never trust a plaintext secret file: it violates the at-rest
+      // guarantee and could have been planted. Reinitialize.
+      console.warn(
+        "[usrcp] idempotency.secret is not ciphertext; re-initializing from the current master key."
+      );
+    }
+  }
+  const secret = deriveIdempotencyLookupKey(masterKey);
+  const entry = prepareIdempotencySecretFile(secret, masterKey);
+  safeWriteFile(entry.path, entry.content, entry.mode);
+  fsyncFile(entry.path);
+  return secret;
 }
 
 export function encrypt(plaintext: string, key: Buffer): string {

@@ -24,6 +24,7 @@ import {
   getUserDir,
   commitKeyRotation,
   deserializePendingKeyFiles,
+  loadOrInitIdempotencySecret,
 } from "../encryption.js";
 import { ensurePrivateKeyEncrypted, getIdentity as getIdent, initializeIdentity as initIdent } from "../crypto.js";
 import { getDefaultDbPath, generateULID } from "./helpers.js";
@@ -63,6 +64,15 @@ export class Ledger {
   /** @internal */ db: Database;
   /** @internal */ closed = false;
   /** @internal */ masterKey: Buffer;
+  /**
+   * Rotation-stable idempotency lookup secret (#171 part 2). Loaded (or
+   * frozen from the current derived key on first open) AFTER rotation
+   * recovery, so it always decrypts under the post-recovery master key.
+   * rotateKey re-encrypts this same value under the new global key, so
+   * idempotency_hash values stay comparable across rotations.
+   * @internal
+   */
+  idempotencySecret: Buffer;
   /**
    * Re-entrancy guard for handleTamper. The tamper-tracker read/write
    * routes through getPreferences()/updatePreferences(), which decrypt the
@@ -195,6 +205,14 @@ export class Ledger {
     }
     // else: no checkpoint, or a pending_files_json replay failed above (the
     // row is left intact so the next open retries) — nothing to clear here.
+
+    // Idempotency lookup secret (#171 part 2). Load AFTER the rotation
+    // recovery blocks above so this.masterKey is final (a durable replay
+    // has already installed the post-rotation key files, including the
+    // re-encrypted idempotency.secret), and BEFORE migrateData(), whose
+    // legacy idempotency_key re-hash must use the same secret every
+    // subsequent appendEvent will compare against.
+    this.idempotencySecret = loadOrInitIdempotencySecret(this.masterKey);
 
     // Data migrations that need this.masterKey (e.g. blind-index
     // rebuild for older DBs that have events but no blind_index
@@ -758,7 +776,7 @@ export class Ledger {
       this.db.transaction(() => {
         for (const row of legacyIdem) {
           updIdem.run(
-            hashIdempotencyKey(this.masterKey, row.idempotency_key),
+            hashIdempotencyKey(this.idempotencySecret, row.idempotency_key),
             row.event_id
           );
         }
@@ -788,6 +806,7 @@ export class Ledger {
     this.db.close();
     // Zero the master key in memory — prevent heap dump exposure
     zeroBuffer(this.masterKey);
+    zeroBuffer(this.idempotencySecret);
   }
 
   // --------------------------------------------------------------------------

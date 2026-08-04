@@ -199,7 +199,8 @@ export function createApp(opts: ServerOptions): FastifyInstance {
       db.query(
         `SELECT event_id, ledger_sequence, client_timestamp, server_timestamp,
                 domain_pseudonym, platform_enc, summary_enc, intent_enc, outcome_enc,
-                detail_enc, artifacts_enc, tags_enc, session_id_enc, parent_event_id_enc
+                detail_enc, artifacts_enc, tags_enc, session_id_enc, parent_event_id_enc,
+                idempotency_key
          FROM timeline_events
          WHERE user_public_key = $1 AND ledger_sequence > $2
          ORDER BY ledger_sequence ASC LIMIT $3`,
