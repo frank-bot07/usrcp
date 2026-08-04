@@ -1410,19 +1410,26 @@ async function cmdKeychain(subcommand: string | undefined): Promise<void> {
 const HELP_BEFORE_UNLOCK = new Set([
   "init", "serve", "status", "users", "setup", "snapshot", "restore", "rotate-identity",
 ]);
-const requestedCommand = process.argv[2];
-const wantsHelp = hasFlag("help") || process.argv.includes("-h");
-const command =
-  wantsHelp && requestedCommand && HELP_BEFORE_UNLOCK.has(requestedCommand)
-    ? "--help"
-    : requestedCommand;
+// Import-safety: dispatch only when explicitly invoked as the CLI. Importing
+// this module (a test, another package, or the `usrcp` umbrella shim) must not
+// start the MCP server or create a default ledger as a side effect, so the
+// whole dispatch lives in this explicit entry function. Direct invocation
+// (`node dist/index.js`, the usrcp-local bin) runs it via the require.main
+// guard at the bottom of the file; the umbrella `usrcp` bin imports this module
+// from ESM (where require.main is never this module), so it calls runCli()
+// itself. argv is read here at call time so the reads stay side-effect-free on
+// import and a programmatic caller sees the real argv.
+export function runCli(): void {
+  const requestedCommand = process.argv[2];
+  const wantsHelp = hasFlag("help") || process.argv.includes("-h");
+  const command =
+    wantsHelp && requestedCommand && HELP_BEFORE_UNLOCK.has(requestedCommand)
+      ? "--help"
+      : requestedCommand;
 
-// Import-safety: dispatch only when this file is executed as the CLI
-// entrypoint. Importing the module (a test, or another package) must not
-// start the MCP server or create a default ledger as a side effect. The argv
-// reads above are pure. Guard is a single statement over the switch so the
-// dispatch body keeps its indentation.
-if (require.main === module) switch (command) {
+  // Body is intentionally left at its original indentation to keep this an
+  // additive wrap; the dispatch logic below is byte-identical to before.
+  switch (command) {
   case "init":
     cmdInit().catch((err) => {
       console.error("[usrcp] Fatal:", err instanceof Error ? err.message : "Unknown error");
@@ -1578,4 +1585,7 @@ if (require.main === module) switch (command) {
     usrcp setup --adapter=mcp-agent
   `);
     }
+  }
 }
+
+if (require.main === module) runCli();
