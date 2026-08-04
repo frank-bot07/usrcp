@@ -25,8 +25,8 @@
  */
 
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
+import { requireHomeDir } from "usrcp-core/encryption";
 
 /**
  * Public contract for adapters. Each in-tree adapter has an entry in
@@ -216,7 +216,7 @@ interface ExternalRegistryFile {
  * visible to the same backup/snapshot story.
  */
 export function getExternalRegistryPath(): string {
-  return path.join(os.homedir(), ".usrcp", EXTERNAL_REGISTRY_FILENAME);
+  return path.join(requireHomeDir(), ".usrcp", EXTERNAL_REGISTRY_FILENAME);
 }
 
 /**

@@ -11,20 +11,19 @@
  */
 
 import { promises as fs } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
-import { atomicWrite, readOrNull, getBackupDir } from "./shared.js";
+import { atomicWrite, readOrNull, getBackupDir, homeDir } from "./shared.js";
 
 const TARGET = "continue";
 const EXT = "json";
 
 function configPath(): string {
-  return join(homedir(), ".continue", "mcpServers", "usrcp.json");
+  return join(homeDir(), ".continue", "mcpServers", "usrcp.json");
 }
 
 export async function register(usrcpBin: string): Promise<{ target: string; path: string; ok: boolean; error?: string }> {
   const CONFIG = configPath();
-  await fs.mkdir(join(homedir(), ".continue", "mcpServers"), { recursive: true });
+  await fs.mkdir(join(homeDir(), ".continue", "mcpServers"), { recursive: true });
 
   const existingRaw = await readOrNull(CONFIG);
   const entry = {

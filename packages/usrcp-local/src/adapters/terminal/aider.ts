@@ -9,20 +9,19 @@
  */
 
 import { promises as fs } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import * as YAML from "yaml";
-import { atomicWrite, readOrNull } from "./shared.js";
+import { atomicWrite, readOrNull, homeDir } from "./shared.js";
 
 const TARGET = "aider";
 const EXT = "yml";
 
 function configPath(): string {
-  return join(homedir(), ".aider.conf.yml");
+  return join(homeDir(), ".aider.conf.yml");
 }
 
 function contextMdPath(): string {
-  return join(homedir(), ".usrcp", "CONTEXT.md");
+  return join(homeDir(), ".usrcp", "CONTEXT.md");
 }
 
 export async function register(_usrcpBin: string): Promise<{ target: string; path: string; ok: boolean; error?: string }> {

@@ -12,7 +12,7 @@
  */
 
 import { promises as fs } from "node:fs";
-import { homedir } from "node:os";
+import { homeDir } from "./shared.js";
 import { join } from "node:path";
 import { Ledger } from "usrcp-core/ledger";
 import {
@@ -25,7 +25,7 @@ import {
 const DEFAULT_LAST_N = 50;
 
 function outputPath(): string {
-  return join(homedir(), ".usrcp", "CONTEXT.md");
+  return join(homeDir(), ".usrcp", "CONTEXT.md");
 }
 
 function formatEvent(ev: {
@@ -79,7 +79,7 @@ export async function refreshContextMd(opts: {
   }
 
   const content = lines.join("\n") + "\n";
-  await fs.mkdir(join(homedir(), ".usrcp"), { recursive: true });
+  await fs.mkdir(join(homeDir(), ".usrcp"), { recursive: true });
   const output = outputPath();
   await fs.writeFile(output, content, { mode: 0o600 });
   return output;

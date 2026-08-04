@@ -8,15 +8,14 @@
  */
 
 import { promises as fs } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
-import { atomicWrite, readOrNull } from "./shared.js";
+import { atomicWrite, readOrNull, homeDir } from "./shared.js";
 
 const TARGET = "antigravity";
 const EXT = "json";
 
 function configDir(): string {
-  return join(homedir(), ".gemini", "antigravity");
+  return join(homeDir(), ".gemini", "antigravity");
 }
 
 function configPath(): string {

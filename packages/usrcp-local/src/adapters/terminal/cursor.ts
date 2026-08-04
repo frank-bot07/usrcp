@@ -6,20 +6,19 @@
  */
 
 import { promises as fs } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
-import { atomicWrite, readOrNull } from "./shared.js";
+import { atomicWrite, readOrNull, homeDir } from "./shared.js";
 
 const TARGET = "cursor";
 const EXT = "json";
 
 function configPath(): string {
-  return join(homedir(), ".cursor", "mcp.json");
+  return join(homeDir(), ".cursor", "mcp.json");
 }
 
 export async function register(usrcpBin: string): Promise<{ target: string; path: string; ok: boolean; error?: string }> {
   const CONFIG = configPath();
-  await fs.mkdir(join(homedir(), ".cursor"), { recursive: true });
+  await fs.mkdir(join(homeDir(), ".cursor"), { recursive: true });
 
   const existingRaw = await readOrNull(CONFIG);
   const doc: Record<string, unknown> = existingRaw ? JSON.parse(existingRaw) : {};
