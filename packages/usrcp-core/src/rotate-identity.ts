@@ -30,8 +30,10 @@ import {
 } from "./encryption.js";
 import { getDecryptedPrivateKeyPem, deriveUserId, type LedgerIdentity } from "./crypto.js";
 
-// KEEP IN SYNC with packages/usrcp-cloud/src/rotate.ts ROTATE_ATTESTATION_DOMAIN.
+// KEEP IN SYNC with packages/usrcp-cloud/src/rotate.ts ROTATE_ATTESTATION_DOMAIN
+// and ROTATE_POP_DOMAIN.
 const ROTATE_ATTESTATION_DOMAIN = "usrcp-rotate-v1";
+const ROTATE_POP_DOMAIN = "usrcp-rotate-v1-pop";
 
 // KEEP IN SYNC with packages/usrcp-cloud/src/auth.ts canonicalRequest/signRequest.
 function canonicalRequest(
@@ -64,6 +66,16 @@ function signRequest(
 function attestRotation(oldPrivateKeyPem: string, newPublicKeyPem: string): string {
   const canon = Buffer.from(`${ROTATE_ATTESTATION_DOMAIN}\n${newPublicKeyPem}`, "utf8");
   const sig = crypto.sign(null, canon, crypto.createPrivateKey(oldPrivateKeyPem));
+  return sig.toString("base64url");
+}
+
+// Proof of possession of the NEW key (#177): the new key counter-signs the
+// old key's exact PEM, so the cloud refuses a rotation whose new_public_key
+// the caller cannot actually sign with (which would brick the account,
+// since the old key is revoked in the same transaction).
+function attestNewKeyPossession(newPrivateKeyPem: string, oldPublicKeyPem: string): string {
+  const canon = Buffer.from(`${ROTATE_POP_DOMAIN}\n${oldPublicKeyPem}`, "utf8");
+  const sig = crypto.sign(null, canon, crypto.createPrivateKey(newPrivateKeyPem));
   return sig.toString("base64url");
 }
 
@@ -105,8 +117,10 @@ export async function rotateIdentity(opts: RotateIdentityOpts): Promise<RotateId
   const newUserId = deriveUserId(newPublicPem);
 
   // Sign the rotation attestation with the OLD private key over the
-  // canonical "usrcp-rotate-v1\n<new_pub>" bytes.
+  // canonical "usrcp-rotate-v1\n<new_pub>" bytes, and the proof of
+  // possession with the NEW private key over "usrcp-rotate-v1-pop\n<old_pub>".
   const rotationAttestation = attestRotation(oldPrivatePem, newPublicPem);
+  const newKeyAttestation = attestNewKeyPossession(newPrivatePem, oldPublicPem);
 
   // Encrypt K2's private key under the SAME master key, then BACK IT UP
   // to a sidecar file BEFORE the cloud call. This makes K2 durable on
@@ -138,6 +152,7 @@ export async function rotateIdentity(opts: RotateIdentityOpts): Promise<RotateId
   const body = {
     new_public_key: newPublicPem,
     rotation_attestation: rotationAttestation,
+    new_key_attestation: newKeyAttestation,
   };
   const bodyStr = JSON.stringify(body);
   const signed = signRequest(oldPrivatePem, "POST", "/v1/rotate-identity", bodyStr);

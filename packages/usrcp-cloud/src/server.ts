@@ -185,6 +185,36 @@ export function createApp(opts: ServerOptions): FastifyInstance {
     return Readable.from([raw]);
   });
 
+  // Generic error boundary (#177). Without it, Fastify's default handler
+  // serialized thrown pg errors verbatim, echoing raw SQL statements and
+  // driver internals to the client. Database conflicts map to a generic
+  // 409; everything else unexpected is a generic 500. Full detail still
+  // goes to the server log.
+  app.setErrorHandler((err, req, reply) => {
+    req.log.error({ err }, "request failed");
+    const pgCode = (err as { code?: unknown }).code;
+    const msg = err instanceof Error ? err.message : String(err);
+    // 23xxx = Postgres integrity-constraint violations (23505 unique, 23503
+    // FK, ...). pg-mem throws plain Errors, so match its message shape too.
+    const isConstraint =
+      (typeof pgCode === "string" && pgCode.startsWith("23")) ||
+      msg.includes("unique constraint") || msg.includes("duplicate key") ||
+      msg.includes("violates foreign key");
+    if (isConstraint) {
+      return reply.code(409).send({
+        error: "CONFLICT",
+        message: "The write conflicts with existing state.",
+      });
+    }
+    const statusCode = (err as { statusCode?: number }).statusCode;
+    if (typeof statusCode === "number" && statusCode >= 400 && statusCode < 500) {
+      // Fastify-generated client errors (bad content type, body limit, ...)
+      // are safe to surface as-is; they contain no SQL.
+      return reply.code(statusCode).send({ error: "BAD_REQUEST", message: msg });
+    }
+    return reply.code(500).send({ error: "INTERNAL", message: "Internal server error" });
+  });
+
   // --- GET /healthz — unauthenticated ---
   app.get("/healthz", async () => ({ status: "ok" }));
 
@@ -193,7 +223,9 @@ export function createApp(opts: ServerOptions): FastifyInstance {
     const auth = await tryAuth(req, reply, db, "");
     if (!auth) return;
     const since = numberQuery(req.query as any, "since") ?? 0;
-    const limit = Math.min(numberQuery(req.query as any, "limit") ?? 500, 500);
+    // Floor at 1: ?limit=0 used to return an empty page with has_more:true
+    // and an unchanged cursor, spinning any client that loops on has_more.
+    const limit = Math.min(Math.max(numberQuery(req.query as any, "limit") ?? 500, 1), 500);
 
     const [events, identity, preferences, domainContexts, projects, facts, domainMaps] = await Promise.all([
       db.query(
@@ -283,204 +315,245 @@ export function createApp(opts: ServerOptions): FastifyInstance {
     }
     const body = parse.data;
 
-    // Identity — upsert, check expected_version if given
-    if (body.identity) {
-      const cur = await db.query(
-        "SELECT version FROM core_identity WHERE user_public_key = $1",
-        [auth.userPublicKey]
-      );
-      const currentVersion = Number(cur.rows[0]?.version ?? 0);
-      if (replyVersionConflictIfMismatch(reply, "core_identity", currentVersion, body.identity.expected_version)) return;
-      const newVersion = currentVersion + 1;
-      await db.query(
-        `INSERT INTO core_identity
-           (user_public_key, display_name_enc, roles_enc, expertise_domains_enc, communication_style_enc, version)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (user_public_key) DO UPDATE SET
-           display_name_enc = COALESCE(EXCLUDED.display_name_enc, core_identity.display_name_enc),
-           roles_enc = COALESCE(EXCLUDED.roles_enc, core_identity.roles_enc),
-           expertise_domains_enc = COALESCE(EXCLUDED.expertise_domains_enc, core_identity.expertise_domains_enc),
-           communication_style_enc = COALESCE(EXCLUDED.communication_style_enc, core_identity.communication_style_enc),
-           version = EXCLUDED.version,
-           updated_at = now()`,
-        [
-          auth.userPublicKey,
-          body.identity.display_name_enc ?? "",
-          body.identity.roles_enc ?? "",
-          body.identity.expertise_domains_enc ?? "",
-          body.identity.communication_style_enc ?? "",
-          newVersion,
-        ]
-      );
-    }
+    // #170: the whole update is atomic. Two defenses layered:
+    //   (1) check-all-then-write: every expected_version is read and
+    //       verified BEFORE the first write, so a conflict in any section
+    //       aborts with 409 having written nothing. This holds on any
+    //       backend, including ones without transactional rollback.
+    //   (2) the writes then run inside ONE transaction, so a mid-write
+    //       failure (constraint, disconnect) also rolls the batch back on
+    //       real Postgres.
+    // The pre-fix handler wrote each section directly and returned on the
+    // first conflict, silently committing every earlier section.
+    const CHUNK_SIZE = 50;
+    type FactRow = { fact_id: string; domain_pseudonym: string; ns_key_hash: string; version: number };
 
-    // Preferences — upsert, check expected_version
-    if (body.preferences) {
-      const cur = await db.query(
-        "SELECT version FROM global_preferences WHERE user_public_key = $1",
-        [auth.userPublicKey]
-      );
-      const currentVersion = Number(cur.rows[0]?.version ?? 0);
-      if (replyVersionConflictIfMismatch(reply, "global_preferences", currentVersion, body.preferences.expected_version)) return;
-      const newVersion = currentVersion + 1;
-      await db.query(
-        `INSERT INTO global_preferences
-           (user_public_key, language_enc, timezone_enc, output_format_enc, verbosity_enc, custom_enc, version)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         ON CONFLICT (user_public_key) DO UPDATE SET
-           language_enc = COALESCE(EXCLUDED.language_enc, global_preferences.language_enc),
-           timezone_enc = COALESCE(EXCLUDED.timezone_enc, global_preferences.timezone_enc),
-           output_format_enc = COALESCE(EXCLUDED.output_format_enc, global_preferences.output_format_enc),
-           verbosity_enc = COALESCE(EXCLUDED.verbosity_enc, global_preferences.verbosity_enc),
-           custom_enc = COALESCE(EXCLUDED.custom_enc, global_preferences.custom_enc),
-           version = EXCLUDED.version,
-           updated_at = now()`,
-        [
-          auth.userPublicKey,
-          body.preferences.language_enc ?? "",
-          body.preferences.timezone_enc ?? "",
-          body.preferences.output_format_enc ?? "",
-          body.preferences.verbosity_enc ?? "",
-          body.preferences.custom_enc ?? "",
-          newVersion,
-        ]
-      );
-    }
-
-    // Domain contexts — per-row LWW with optional expected_version
-    for (const ctx of body.domain_contexts ?? []) {
-      const cur = await db.query(
-        "SELECT version FROM domain_context WHERE user_public_key = $1 AND domain_pseudonym = $2",
-        [auth.userPublicKey, ctx.domain_pseudonym]
-      );
-      const currentVersion = Number(cur.rows[0]?.version ?? 0);
-      if (replyVersionConflictIfMismatch(reply, "domain_context", currentVersion, ctx.expected_version, ctx.domain_pseudonym)) return;
-      await db.query(
-        `INSERT INTO domain_context (user_public_key, domain_pseudonym, context_enc, version)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (user_public_key, domain_pseudonym) DO UPDATE SET
-           context_enc = EXCLUDED.context_enc,
-           version = EXCLUDED.version,
-           updated_at = now()`,
-        [auth.userPublicKey, ctx.domain_pseudonym, ctx.context_enc, currentVersion + 1]
-      );
-    }
-
-    // Schemaless facts — per-row LWW with optional expected_version.
-    // We batch the queries to avoid N+1 query patterns while retaining the exact logic.
-    if (body.facts && body.facts.length > 0) {
-      // 1. Fetch existing facts in chunks to avoid N+1 SELECTs and param limits.
-      const CHUNK_SIZE = 50;
-      const curRows = [];
-      for (let i = 0; i < body.facts.length; i += CHUNK_SIZE) {
-        const chunk = body.facts.slice(i, i + CHUNK_SIZE);
-        const orClauses = chunk.map((_, idx) => `(domain_pseudonym = $${idx * 2 + 2} AND ns_key_hash = $${idx * 2 + 3})`).join(' OR ');
-        const params = [auth.userPublicKey];
-        for (const f of chunk) {
-          params.push(f.domain_pseudonym, f.ns_key_hash);
-        }
-
-        const chunkRes = await db.query<{ fact_id: string; domain_pseudonym: string; ns_key_hash: string; version: number }>(
-          `SELECT fact_id, domain_pseudonym, ns_key_hash, version FROM schemaless_facts WHERE user_public_key = $1 AND (${orClauses})`,
-          params
+    try {
+      // ---- Phase 1: read current versions + verify all conflicts (no writes) ----
+      let identityVersion = 0;
+      if (body.identity) {
+        const cur = await db.query(
+          "SELECT version FROM core_identity WHERE user_public_key = $1",
+          [auth.userPublicKey]
         );
-        curRows.push(...chunkRes.rows);
+        identityVersion = Number(cur.rows[0]?.version ?? 0);
+        throwIfVersionMismatch("core_identity", identityVersion, body.identity.expected_version);
       }
 
-      const existingMap = new Map();
-      for (const row of curRows) {
-        existingMap.set(row.domain_pseudonym + '/' + row.ns_key_hash, row);
+      let preferencesVersion = 0;
+      if (body.preferences) {
+        const cur = await db.query(
+          "SELECT version FROM global_preferences WHERE user_public_key = $1",
+          [auth.userPublicKey]
+        );
+        preferencesVersion = Number(cur.rows[0]?.version ?? 0);
+        throwIfVersionMismatch("global_preferences", preferencesVersion, body.preferences.expected_version);
       }
 
-      // 2. Pre-verify all versions. If any conflicts, abort the whole request.
-      for (const f of body.facts) {
-        const existing = existingMap.get(f.domain_pseudonym + '/' + f.ns_key_hash);
-        const currentVersion = Number(existing?.version ?? 0);
-        if (replyVersionConflictIfMismatch(reply, "schemaless_facts", currentVersion, f.expected_version, `${f.domain_pseudonym}/${f.ns_key_hash}`)) return;
+      const contextVersions = new Map<string, number>();
+      for (const ctx of body.domain_contexts ?? []) {
+        const cur = await db.query(
+          "SELECT version FROM domain_context WHERE user_public_key = $1 AND domain_pseudonym = $2",
+          [auth.userPublicKey, ctx.domain_pseudonym]
+        );
+        const currentVersion = Number(cur.rows[0]?.version ?? 0);
+        throwIfVersionMismatch("domain_context", currentVersion, ctx.expected_version, ctx.domain_pseudonym);
+        contextVersions.set(ctx.domain_pseudonym, currentVersion);
       }
 
-      // 3. Fold repeats of the same key, last write wins.
-      //
-      // The old sequential loop handled two entries for one key naturally:
-      // the first inserted, the second found the row and updated it. Batching
-      // classifies both against the same pre-write snapshot, so both would be
-      // inserts and collide on UNIQUE (user_public_key, domain_pseudonym,
-      // ns_key_hash). Nothing forbids the payload — `facts` has no in-batch
-      // uniqueness rule, and this is the sync endpoint, where a client
-      // flushing a session's writes is the expected shape.
-      const foldedFacts = new Map<string, typeof body.facts[number]>();
-      for (const f of body.facts) {
-        foldedFacts.set(f.domain_pseudonym + '/' + f.ns_key_hash, f);
-      }
+      // Facts: snapshot existing rows by BOTH identities. The PK is
+      // (user_public_key, fact_id) but the client-meaningful upsert key is
+      // UNIQUE (user, domain_pseudonym, ns_key_hash). Classifying by ns-key
+      // alone treated a reused fact_id under a new ns_key_hash as an insert
+      // and hit the PK with a raw 23505 500 (#177).
+      let resolveExisting: (f: { fact_id: string; domain_pseudonym: string; ns_key_hash: string }) => FactRow | undefined =
+        () => undefined;
+      if (body.facts && body.facts.length > 0) {
+        const curRows: FactRow[] = [];
+        for (let i = 0; i < body.facts.length; i += CHUNK_SIZE) {
+          const chunk = body.facts.slice(i, i + CHUNK_SIZE);
+          const orClauses = chunk.map((_, idx) => `(domain_pseudonym = $${idx * 2 + 2} AND ns_key_hash = $${idx * 2 + 3})`).join(' OR ');
+          const params = [auth.userPublicKey];
+          for (const f of chunk) {
+            params.push(f.domain_pseudonym, f.ns_key_hash);
+          }
+          const chunkRes = await db.query<FactRow>(
+            `SELECT fact_id, domain_pseudonym, ns_key_hash, version FROM schemaless_facts WHERE user_public_key = $1 AND (${orClauses})`,
+            params
+          );
+          curRows.push(...chunkRes.rows);
+        }
+        for (let i = 0; i < body.facts.length; i += CHUNK_SIZE) {
+          const ids = body.facts.slice(i, i + CHUNK_SIZE).map((f) => f.fact_id);
+          const idRes = await db.query<FactRow>(
+            `SELECT fact_id, domain_pseudonym, ns_key_hash, version FROM schemaless_facts
+             WHERE user_public_key = $1 AND fact_id = ANY($2::text[])`,
+            [auth.userPublicKey, ids]
+          );
+          curRows.push(...idRes.rows);
+        }
 
-      // 4. Batch INSERTs and run UPDATEs concurrently
-      const updates = [];
-      const inserts = [];
-      for (const f of foldedFacts.values()) {
-        const existing = existingMap.get(f.domain_pseudonym + '/' + f.ns_key_hash);
-        if (existing) {
-          updates.push({ f, existing });
-        } else {
-          inserts.push(f);
+        const existingByNsKey = new Map<string, FactRow>();
+        const existingByFactId = new Map<string, FactRow>();
+        for (const row of curRows) {
+          existingByNsKey.set(row.domain_pseudonym + '/' + row.ns_key_hash, row);
+          existingByFactId.set(row.fact_id, row);
+        }
+        // A fact resolves to the row its fact_id already names (the PK), else
+        // the row holding its ns-key. fact_id wins: an UPDATE targets the PK,
+        // so that is the row the write will actually land on.
+        resolveExisting = (f) =>
+          existingByFactId.get(f.fact_id) ?? existingByNsKey.get(f.domain_pseudonym + '/' + f.ns_key_hash);
+
+        for (const f of body.facts) {
+          const currentVersion = Number(resolveExisting(f)?.version ?? 0);
+          throwIfVersionMismatch("schemaless_facts", currentVersion, f.expected_version, `${f.domain_pseudonym}/${f.ns_key_hash}`);
         }
       }
 
-      // Execute INSERTs (bulk) and UPDATEs (concurrently) without waiting inside the loop.
-      const queryPromises = [];
+      // ---- Phase 2: all writes in one transaction ----
+      await db.transaction(async (client) => {
+        if (body.identity) {
+          await client.query(
+            `INSERT INTO core_identity
+               (user_public_key, display_name_enc, roles_enc, expertise_domains_enc, communication_style_enc, version)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (user_public_key) DO UPDATE SET
+               display_name_enc = COALESCE(EXCLUDED.display_name_enc, core_identity.display_name_enc),
+               roles_enc = COALESCE(EXCLUDED.roles_enc, core_identity.roles_enc),
+               expertise_domains_enc = COALESCE(EXCLUDED.expertise_domains_enc, core_identity.expertise_domains_enc),
+               communication_style_enc = COALESCE(EXCLUDED.communication_style_enc, core_identity.communication_style_enc),
+               version = EXCLUDED.version,
+               updated_at = now()`,
+            [
+              auth.userPublicKey,
+              body.identity.display_name_enc ?? "",
+              body.identity.roles_enc ?? "",
+              body.identity.expertise_domains_enc ?? "",
+              body.identity.communication_style_enc ?? "",
+              identityVersion + 1,
+            ]
+          );
+        }
 
-      // Execute all updates concurrently in the database instead of sequentially
-      for (const u of updates) {
-         queryPromises.push(db.query(
-          `UPDATE schemaless_facts
-             SET namespace_enc = $1, key_enc = $2, value_enc = $3,
-                 version = $4, updated_at = now()
-           WHERE user_public_key = $5 AND fact_id = $6`,
-          [
-            u.f.namespace_enc,
-            u.f.key_enc,
-            u.f.value_enc,
-            Number(u.existing.version ?? 0) + 1,
-            auth.userPublicKey,
-            u.existing.fact_id,
-          ]
-         ));
-      }
+        if (body.preferences) {
+          await client.query(
+            `INSERT INTO global_preferences
+               (user_public_key, language_enc, timezone_enc, output_format_enc, verbosity_enc, custom_enc, version)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             ON CONFLICT (user_public_key) DO UPDATE SET
+               language_enc = COALESCE(EXCLUDED.language_enc, global_preferences.language_enc),
+               timezone_enc = COALESCE(EXCLUDED.timezone_enc, global_preferences.timezone_enc),
+               output_format_enc = COALESCE(EXCLUDED.output_format_enc, global_preferences.output_format_enc),
+               verbosity_enc = COALESCE(EXCLUDED.verbosity_enc, global_preferences.verbosity_enc),
+               custom_enc = COALESCE(EXCLUDED.custom_enc, global_preferences.custom_enc),
+               version = EXCLUDED.version,
+               updated_at = now()`,
+            [
+              auth.userPublicKey,
+              body.preferences.language_enc ?? "",
+              body.preferences.timezone_enc ?? "",
+              body.preferences.output_format_enc ?? "",
+              body.preferences.verbosity_enc ?? "",
+              body.preferences.custom_enc ?? "",
+              preferencesVersion + 1,
+            ]
+          );
+        }
 
-      // PostgreSQL handles multiple values naturally which is extremely efficient.
-      // We chunk bulk inserts to a safe limit, assuming 50 rows per chunk.
-      if (inserts.length > 0) {
-         const CHUNK_SIZE = 50;
-         const cols = 7;
-         for (let i = 0; i < inserts.length; i += CHUNK_SIZE) {
-            const chunk = inserts.slice(i, i + CHUNK_SIZE);
-            const insertValues = chunk.map((_, idx) => `($${idx * cols + 1}, $${idx * cols + 2}, $${idx * cols + 3}, $${idx * cols + 4}, $${idx * cols + 5}, $${idx * cols + 6}, $${idx * cols + 7}, 1)`).join(', ');
-            const insertParams = [];
-            for (const f of chunk) {
-               insertParams.push(auth.userPublicKey, f.fact_id, f.domain_pseudonym, f.ns_key_hash, f.namespace_enc, f.key_enc, f.value_enc);
+        for (const ctx of body.domain_contexts ?? []) {
+          await client.query(
+            `INSERT INTO domain_context (user_public_key, domain_pseudonym, context_enc, version)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (user_public_key, domain_pseudonym) DO UPDATE SET
+               context_enc = EXCLUDED.context_enc,
+               version = EXCLUDED.version,
+               updated_at = now()`,
+            [auth.userPublicKey, ctx.domain_pseudonym, ctx.context_enc, (contextVersions.get(ctx.domain_pseudonym) ?? 0) + 1]
+          );
+        }
+
+        if (body.facts && body.facts.length > 0) {
+          // Fold repeats by BOTH identities so one batch never writes the
+          // same ns-key or the same PK twice (the second raw-23505 500 in
+          // #177). Last write wins.
+          const foldedByNsKey = new Map<string, typeof body.facts[number]>();
+          for (const f of body.facts) {
+            foldedByNsKey.set(f.domain_pseudonym + '/' + f.ns_key_hash, f);
+          }
+          const foldedFacts = new Map<string, typeof body.facts[number]>();
+          for (const f of foldedByNsKey.values()) {
+            foldedFacts.set(f.fact_id, f);
+          }
+
+          const updates = [];
+          const inserts = [];
+          for (const f of foldedFacts.values()) {
+            const existing = resolveExisting(f);
+            if (existing) updates.push({ f, existing });
+            else inserts.push(f);
+          }
+
+          const queryPromises = [];
+          // domain_pseudonym / ns_key_hash are written too so a fact_id
+          // reused under a new ns-key moves the row instead of stranding the
+          // old key.
+          for (const u of updates) {
+            queryPromises.push(client.query(
+              `UPDATE schemaless_facts
+                 SET namespace_enc = $1, key_enc = $2, value_enc = $3,
+                     domain_pseudonym = $4, ns_key_hash = $5,
+                     version = $6, updated_at = now()
+               WHERE user_public_key = $7 AND fact_id = $8`,
+              [
+                u.f.namespace_enc, u.f.key_enc, u.f.value_enc,
+                u.f.domain_pseudonym, u.f.ns_key_hash,
+                Number(u.existing.version ?? 0) + 1,
+                auth.userPublicKey, u.existing.fact_id,
+              ]
+            ));
+          }
+
+          if (inserts.length > 0) {
+            const cols = 7;
+            for (let i = 0; i < inserts.length; i += CHUNK_SIZE) {
+              const chunk = inserts.slice(i, i + CHUNK_SIZE);
+              const insertValues = chunk.map((_, idx) => `($${idx * cols + 1}, $${idx * cols + 2}, $${idx * cols + 3}, $${idx * cols + 4}, $${idx * cols + 5}, $${idx * cols + 6}, $${idx * cols + 7}, 1)`).join(', ');
+              const insertParams = [];
+              for (const f of chunk) {
+                insertParams.push(auth.userPublicKey, f.fact_id, f.domain_pseudonym, f.ns_key_hash, f.namespace_enc, f.key_enc, f.value_enc);
+              }
+              queryPromises.push(client.query(`INSERT INTO schemaless_facts (user_public_key, fact_id, domain_pseudonym, ns_key_hash, namespace_enc, key_enc, value_enc, version) VALUES ${insertValues}`, insertParams));
             }
-            queryPromises.push(db.query(`INSERT INTO schemaless_facts (user_public_key, fact_id, domain_pseudonym, ns_key_hash, namespace_enc, key_enc, value_enc, version) VALUES ${insertValues}`, insertParams));
-         }
-      }
+          }
 
-      if (queryPromises.length > 0) {
-        await Promise.all(queryPromises);
-      }
-    }
+          if (queryPromises.length > 0) {
+            await Promise.all(queryPromises);
+          }
+        }
 
-    // Projects — simple LWW on the row (no version col in Phase 1)
-    for (const p of body.projects ?? []) {
-      await db.query(
-        `INSERT INTO active_projects
-           (user_public_key, project_id, name_enc, domain_enc, status_enc, summary_enc, last_touched)
-         VALUES ($1, $2, $3, $4, $5, $6, now())
-         ON CONFLICT (user_public_key, project_id) DO UPDATE SET
-           name_enc = EXCLUDED.name_enc,
-           domain_enc = EXCLUDED.domain_enc,
-           status_enc = EXCLUDED.status_enc,
-           summary_enc = EXCLUDED.summary_enc,
-           last_touched = EXCLUDED.last_touched`,
-        [auth.userPublicKey, p.project_id, p.name_enc, p.domain_enc, p.status_enc, p.summary_enc]
-      );
+        // Projects: simple LWW on the row (no version col in Phase 1)
+        for (const p of body.projects ?? []) {
+          await client.query(
+            `INSERT INTO active_projects
+               (user_public_key, project_id, name_enc, domain_enc, status_enc, summary_enc, last_touched)
+             VALUES ($1, $2, $3, $4, $5, $6, now())
+             ON CONFLICT (user_public_key, project_id) DO UPDATE SET
+               name_enc = EXCLUDED.name_enc,
+               domain_enc = EXCLUDED.domain_enc,
+               status_enc = EXCLUDED.status_enc,
+               summary_enc = EXCLUDED.summary_enc,
+               last_touched = EXCLUDED.last_touched`,
+            [auth.userPublicKey, p.project_id, p.name_enc, p.domain_enc, p.status_enc, p.summary_enc]
+          );
+        }
+      });
+    } catch (err) {
+      if (err instanceof VersionConflictError) {
+        // Detected in phase 1: nothing was written (#170).
+        return reply.code(409).send(err.payload);
+      }
+      throw err;
     }
 
     return { status: "ok" };
@@ -568,6 +641,28 @@ async function pushAtomic(
     );
     let nextSeq = Number(maxSeqResult.rows[0]?.max_seq ?? 0);
 
+    // Pre-check event_ids the same way stream.ts does (#177): sequences used
+    // to be allocated before an ON CONFLICT (user_public_key, event_id)
+    // DO NOTHING insert, so re-pushing an existing event_id returned a
+    // fabricated fresh sequence with duplicate:false while the row silently
+    // kept its old one (permanent sequence gap + false success; divergent
+    // ciphertext for the same id was discarded but reported written).
+    const existingById = new Map<string, { event_id: string; ledger_sequence: number }>();
+    if (events.length > 0) {
+      const idResult = await client.query<{ event_id: string; ledger_sequence: number }>(
+        `SELECT event_id, ledger_sequence
+         FROM timeline_events
+         WHERE user_public_key = $1 AND event_id = ANY($2::text[])`,
+        [userPublicKey, events.map((e) => e.event_id)]
+      );
+      for (const row of idResult.rows) {
+        existingById.set(row.event_id, {
+          event_id: row.event_id,
+          ledger_sequence: Number(row.ledger_sequence),
+        });
+      }
+    }
+
     const existingByKey = new Map<string, { event_id: string; ledger_sequence: number }>();
     const idempKeys = events.map((e) => e.idempotency_key).filter((k): k is string => !!k);
     if (idempKeys.length > 0) {
@@ -595,6 +690,14 @@ async function pushAtomic(
     }[] = [];
 
     for (const ev of events) {
+      // Duplicate event_id (already stored, or repeated within this batch):
+      // report the REAL stored sequence with duplicate:true instead of
+      // fabricating a new one.
+      const byId = existingById.get(ev.event_id);
+      if (byId) {
+        accepted.push({ ...byId, duplicate: true });
+        continue;
+      }
       if (ev.idempotency_key) {
         const existing = existingByKey.get(ev.idempotency_key);
         if (existing) {
@@ -603,6 +706,10 @@ async function pushAtomic(
         }
       }
       nextSeq += 1;
+      // Register the assigned sequence so a repeat of this event_id later in
+      // the SAME batch reports duplicate:true instead of double-inserting
+      // and blowing the (user_public_key, event_id) PK.
+      existingById.set(ev.event_id, { event_id: ev.event_id, ledger_sequence: nextSeq });
       toInsert.push({
         event_id: ev.event_id, ledger_sequence: nextSeq,
         client_timestamp: ev.client_timestamp, domain_pseudonym: ev.domain_pseudonym,
@@ -639,10 +746,14 @@ async function pushAtomic(
            (user_public_key, event_id, ledger_sequence, client_timestamp, domain_pseudonym,
             platform_enc, summary_enc, intent_enc, outcome_enc, detail_enc, artifacts_enc,
             tags_enc, session_id_enc, parent_event_id_enc, idempotency_key)
-         VALUES ${valuesSql}
-         ON CONFLICT (user_public_key, event_id) DO NOTHING`,
+         VALUES ${valuesSql}`,
         params
       );
+      // No ON CONFLICT DO NOTHING: the pre-check above already classified
+      // every duplicate, and same-user pushes serialize on the users FOR
+      // UPDATE lock. If an unforeseen collision still happens, a loud 23505
+      // rolls back and pushWithRetry re-runs the pre-check, instead of
+      // silently dropping the row while reporting it accepted.
     }
 
     return { accepted, cursor: nextSeq };
@@ -682,26 +793,35 @@ async function pushWithRetry(
 // --- Helpers ---
 
 /**
- * Send a 409 VERSION_CONFLICT if expected is set and doesn't match current.
- * Returns true when the caller should stop processing.
+ * Version-conflict abort for POST /v1/state. Thrown inside the update
+ * transaction so Db.transaction ROLLBACKs everything already written in
+ * the request before the handler sends the 409 (#170); the pre-throw
+ * reply-and-return shape committed all earlier sections.
  */
-function replyVersionConflictIfMismatch(
-  reply: FastifyReply,
+class VersionConflictError extends Error {
+  readonly payload: Record<string, unknown>;
+  constructor(scope: string, currentVersion: number, expectedVersion: number, target?: string) {
+    super(`version conflict on ${scope}`);
+    this.name = "VersionConflictError";
+    this.payload = {
+      error: "VERSION_CONFLICT",
+      scope,
+      ...(target !== undefined ? { target } : {}),
+      current_version: currentVersion,
+      expected_version: expectedVersion,
+    };
+  }
+}
+
+function throwIfVersionMismatch(
   scope: string,
   currentVersion: number,
   expectedVersion: number | undefined,
   target?: string
-): boolean {
-  if (expectedVersion === undefined) return false;
-  if (currentVersion === expectedVersion) return false;
-  reply.code(409).send({
-    error: "VERSION_CONFLICT",
-    scope,
-    ...(target !== undefined ? { target } : {}),
-    current_version: currentVersion,
-    expected_version: expectedVersion,
-  });
-  return true;
+): void {
+  if (expectedVersion === undefined) return;
+  if (currentVersion === expectedVersion) return;
+  throw new VersionConflictError(scope, currentVersion, expectedVersion, target);
 }
 
 export async function tryAuth(
@@ -728,5 +848,9 @@ export function numberQuery(q: Record<string, unknown>, name: string): number | 
   const v = q[name];
   if (v === undefined || v === null) return undefined;
   const n = Number(v);
-  return Number.isFinite(n) ? n : undefined;
+  // Only non-negative safe integers reach SQL. Anything else falls back to
+  // the caller's default: a negative LIMIT or fractional bigint is a raw
+  // Postgres error on real servers (pg-mem masks it in tests), and those
+  // 500s echoed the SQL statement to the client (#177).
+  return Number.isSafeInteger(n) && n >= 0 ? n : undefined;
 }

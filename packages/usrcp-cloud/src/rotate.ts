@@ -31,10 +31,16 @@ import { tryAuth } from "./server.js";
 import { canonicalKeyId } from "./auth.js";
 
 export const ROTATE_ATTESTATION_DOMAIN = "usrcp-rotate-v1";
+// Domain-separated from ROTATE_ATTESTATION_DOMAIN: the OLD key signs over the
+// new PEM (authorization), the NEW key signs over the old PEM (proof of
+// possession). Distinct prefixes so neither signature can be replayed as the
+// other even for a maliciously chosen key pair.
+export const ROTATE_POP_DOMAIN = "usrcp-rotate-v1-pop";
 
 const RotateBody = z.object({
   new_public_key: z.string().min(64).max(2048),
   rotation_attestation: z.string().min(64).max(2048),
+  new_key_attestation: z.string().min(64).max(2048),
 });
 
 export function registerRotateRoutes(app: FastifyInstance, db: Db): void {
@@ -51,7 +57,7 @@ export function registerRotateRoutes(app: FastifyInstance, db: Db): void {
     if (!parse.success) {
       return reply.code(400).send({ error: "BAD_BODY", issues: parse.error.issues });
     }
-    const { new_public_key: newPub, rotation_attestation: attB64 } = parse.data;
+    const { new_public_key: newPub, rotation_attestation: attB64, new_key_attestation: popB64 } = parse.data;
 
     if (!newPub.includes("BEGIN PUBLIC KEY")) {
       return reply.code(400).send({ error: "BAD_NEW_PUBLIC_KEY", message: "Must be PEM Ed25519" });
@@ -96,6 +102,32 @@ export function registerRotateRoutes(app: FastifyInstance, db: Db): void {
       return reply.code(401).send({
         error: "BAD_ATTESTATION",
         message: "rotation_attestation must be Ed25519 signature by the OLD key over `usrcp-rotate-v1\\n<new_pem>`",
+      });
+    }
+
+    // Proof of possession of the NEW key (#177). Without this, a typo'd or
+    // attacker-substituted new_public_key moves every row to a key the user
+    // cannot sign with, and the old key is revoked in the same transaction,
+    // permanently bricking the account with no recovery path. The new key
+    // must counter-sign the OLD key's exact request PEM so only someone
+    // holding the new private half can complete the rotation.
+    let popBytes: Buffer;
+    try {
+      popBytes = Buffer.from(popB64, "base64url");
+    } catch {
+      return reply.code(400).send({ error: "BAD_NEW_KEY_ATTESTATION", message: "Must be base64url" });
+    }
+    const popCanon = Buffer.from(`${ROTATE_POP_DOMAIN}\n${oldPem}`, "utf8");
+    let popOk = false;
+    try {
+      popOk = crypto.verify(null, popCanon, newKey, popBytes);
+    } catch {
+      popOk = false;
+    }
+    if (!popOk) {
+      return reply.code(401).send({
+        error: "BAD_NEW_KEY_ATTESTATION",
+        message: "new_key_attestation must be Ed25519 signature by the NEW key over `usrcp-rotate-v1-pop\\n<old_pem>`",
       });
     }
 
