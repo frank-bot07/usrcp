@@ -31,7 +31,7 @@
   "author": "Chad Garner",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=22.5.0"
+    "node": ">=22.13.0"
   },
   "dependencies": {
     "@octokit/rest": "^22.0.1",
