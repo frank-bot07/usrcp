@@ -126,5 +126,16 @@ export async function assertNoLegacyPemIdentities(q: QueryClient): Promise<void>
 
 export function createPgPool(connectionString: string): Db {
   const pool = new Pool({ connectionString });
+  // An idle client dropped by the server (a PG restart, or a Neon/Railway/RDS
+  // idle-connection reaper) makes node-postgres emit 'error' on the pool. With
+  // no listener, Node treats it as an unhandled 'error' event and crashes the
+  // whole server process. Log it and let the pool evict the dead client; the
+  // next query transparently opens a fresh connection.
+  pool.on("error", (err) => {
+    console.error(
+      "[usrcp-cloud] idle pg client error (pool will recover):",
+      err instanceof Error ? err.message : err,
+    );
+  });
   return new Db(pool as unknown as PoolLike);
 }
