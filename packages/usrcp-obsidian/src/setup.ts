@@ -11,14 +11,28 @@
  */
 
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
+import { requireHomeDir } from "usrcp-core/encryption";
 import {
   getConfigPath,
   writeObsidianConfig,
   readPartialConfig,
   type ObsidianConfig,
 } from "./config.js";
+
+/**
+ * Expand a leading `~` in a user-typed path. Only a `~`-path needs a home
+ * directory, so requireHomeDir() is called (and throws under empty HOME:
+ * #192) only when there is a `~` to expand; an absolute or relative path the
+ * user types is returned untouched, working regardless of HOME. The old code
+ * used os.homedir() unconditionally, silently turning `~/vault` into `/vault`
+ * under empty HOME.
+ */
+function expandTilde(input: string): string {
+  return /^~(?=\/|$)/.test(input)
+    ? input.replace(/^~(?=\/|$)/, requireHomeDir())
+    : input;
+}
 
 // ---------------------------------------------------------------------------
 // Minimal prompt helpers — same shape as iMessage's setup.ts
@@ -57,7 +71,11 @@ function readYN(prompt: string, defaultYes = true): Promise<boolean> {
  * Returns at most a handful of candidates so the prompt stays readable.
  */
 function detectVaultCandidates(): string[] {
-  const home = os.homedir();
+  // requireHomeDir(), not os.homedir(): under empty HOME the candidate roots
+  // would become relative and the scan would probe CWD-relative dirs (#192).
+  // Obsidian setup writes ~/.usrcp config anyway, so a broken HOME cannot
+  // proceed; refusing here with the clear error is correct.
+  const home = requireHomeDir();
   const roots = [
     home,
     path.join(home, "Documents"),
@@ -180,7 +198,7 @@ export async function runObsidianSetup(): Promise<ObsidianConfig> {
           process.stderr.write("  Path cannot be empty.\n");
           continue;
         }
-        const expanded = manual.replace(/^~(?=\/|$)/, os.homedir());
+        const expanded = expandTilde(manual);
         if (!isLikelyVault(expanded)) {
           process.stderr.write(`  ${expanded} doesn't look like an Obsidian vault (no .obsidian/ subdir).\n`);
           const confirm = await readYN("  Use it anyway?", false);
@@ -211,7 +229,7 @@ export async function runObsidianSetup(): Promise<ObsidianConfig> {
         process.stderr.write("  Path cannot be empty.\n");
         continue;
       }
-      const expanded = trimmed.replace(/^~(?=\/|$)/, os.homedir());
+      const expanded = expandTilde(trimmed);
       if (!isLikelyVault(expanded)) {
         process.stderr.write(`  ${expanded} doesn't look like an Obsidian vault (no .obsidian/ subdir).\n`);
         const confirm = await readYN("  Use it anyway?", false);

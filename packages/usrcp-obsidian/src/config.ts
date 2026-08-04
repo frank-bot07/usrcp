@@ -11,8 +11,8 @@
  */
 
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
+import { requireHomeDir } from "usrcp-core/encryption";
 
 export interface ObsidianConfig {
   /** Absolute path to the vault directory. */
@@ -48,7 +48,10 @@ export interface ObsidianConfig {
 const CONFIG_FILENAME = "obsidian-config.json";
 
 export function getConfigPath(): string {
-  return path.join(os.homedir(), ".usrcp", CONFIG_FILENAME);
+  // requireHomeDir(), not os.homedir(): under empty HOME os.homedir() is ""
+  // and this join becomes a relative ".usrcp/..." written into the CWD
+  // (#192, same class as #174/#183).
+  return path.join(requireHomeDir(), ".usrcp", CONFIG_FILENAME);
 }
 
 export function readPartialConfig(): Partial<ObsidianConfig> {

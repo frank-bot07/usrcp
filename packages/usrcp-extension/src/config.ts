@@ -5,8 +5,8 @@
  */
 
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
+import { requireHomeDir } from "usrcp-core/encryption";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -43,7 +43,11 @@ export interface ExtensionConfig {
 // ---------------------------------------------------------------------------
 
 export function getUsrcpDir(): string {
-  return path.join(os.homedir(), ".usrcp");
+  // requireHomeDir(), not os.homedir(): an empty HOME would make this a
+  // relative ".usrcp" and the extension config / native-host launcher would
+  // be written into the CWD (#192, same class as #174/#183). Every path in
+  // this file funnels through here or getNMManifestPath below.
+  return path.join(requireHomeDir(), ".usrcp");
 }
 
 export function getConfigPath(): string {
@@ -80,9 +84,12 @@ export function writeNativeHostLauncher(nodePath: string, bridgePath: string): s
  * (v0 supports macOS only; Linux noted for v0.1)
  */
 export function getNMManifestPath(): string {
+  // requireHomeDir(), not os.homedir(): under empty HOME the Chrome native-
+  // messaging manifest would be written to a relative path in the CWD (#192).
+  const home = requireHomeDir();
   if (process.platform === "darwin") {
     return path.join(
-      os.homedir(),
+      home,
       "Library",
       "Application Support",
       "Google",
@@ -93,7 +100,7 @@ export function getNMManifestPath(): string {
   }
   if (process.platform === "linux") {
     return path.join(
-      os.homedir(),
+      home,
       ".config",
       "google-chrome",
       "NativeMessagingHosts",

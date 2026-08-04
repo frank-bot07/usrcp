@@ -16,6 +16,7 @@
     "native-host/manifest-template.json"
   ],
   "scripts": {
+    "prebuild": "cd ../usrcp-core && npm run build",
     "build": "node build.mjs",
     "lint": "tsc --noEmit",
     "pretest": "cd ../usrcp-local && npm run build",

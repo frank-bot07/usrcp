@@ -11,9 +11,9 @@
  */
 
 import * as vscode from "vscode";
-import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { requireHomeDir } from "./home.js";
 import { BinaryNotFoundError, UsrcpClient } from "./mcp-client.js";
 import { FactsTreeProvider } from "./tree-provider.js";
 import { StatusBar } from "./status-bar.js";
@@ -111,7 +111,9 @@ async function showStatus(c: UsrcpClient): Promise<void> {
 }
 
 async function openLedgerDir(): Promise<void> {
-  const dir = process.env.USRCP_HOME || join(homedir(), ".usrcp");
+  // USRCP_HOME wins; otherwise requireHomeDir() so an empty HOME refuses
+  // instead of revealing a relative ".usrcp" in the CWD (#192).
+  const dir = process.env.USRCP_HOME || join(requireHomeDir(), ".usrcp");
   const uri = vscode.Uri.file(dir);
   await vscode.commands.executeCommand("revealFileInOS", uri);
 }
