@@ -12,8 +12,11 @@
  */
 
 export const SCHEMA_SQL = `
--- Every user is identified by their Ed25519 public key (PEM). First write
--- with a new public key implicitly registers it. No accounts, no email.
+-- Every user is identified by the canonical form of their Ed25519 public key:
+-- the SPKI DER bytes, base64 (see auth.ts canonicalKeyId). Keying off that,
+-- not the raw PEM string, is what stops a re-encoded revoked key from minting
+-- a phantom account (#176). First write with a new key implicitly registers
+-- it. No accounts, no email.
 CREATE TABLE IF NOT EXISTS users (
   public_key TEXT PRIMARY KEY,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),

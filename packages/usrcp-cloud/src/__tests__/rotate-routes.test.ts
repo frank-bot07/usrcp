@@ -4,7 +4,10 @@ import * as crypto from "node:crypto";
 import { makeMemDb, makeKeyPair } from "./helpers.js";
 import { Db } from "../db.js";
 import { createApp } from "../server.js";
-import { signRequest } from "../auth.js";
+import { signRequest, canonicalKeyId } from "../auth.js";
+
+// DB identity is the canonical SPKI-DER id, not the PEM (#176).
+const canonId = (pem: string): string => canonicalKeyId(crypto.createPublicKey(pem));
 import { ROTATE_ATTESTATION_DOMAIN } from "../rotate.js";
 
 let db: Db;
@@ -104,15 +107,15 @@ describe("POST /v1/rotate-identity", () => {
 
     // The users table has only the new key.
     const users = await db.query<{ public_key: string }>("SELECT public_key FROM users");
-    expect(users.rows.map((r) => r.public_key).sort()).toEqual([aliceNew.publicKeyPem].sort());
+    expect(users.rows.map((r) => r.public_key).sort()).toEqual([canonId(aliceNew.publicKeyPem)].sort());
 
     // revoked_keys records the rotation pointer.
     const revoked = await db.query<{ public_key: string; rotated_to: string | null }>(
       "SELECT public_key, rotated_to FROM revoked_keys"
     );
     expect(revoked.rows.length).toBe(1);
-    expect(revoked.rows[0].public_key).toBe(alice.publicKeyPem);
-    expect(revoked.rows[0].rotated_to).toBe(aliceNew.publicKeyPem);
+    expect(revoked.rows[0].public_key).toBe(canonId(alice.publicKeyPem));
+    expect(revoked.rows[0].rotated_to).toBe(canonId(aliceNew.publicKeyPem));
   });
 
   it("rejects rotation when attestation is missing/wrong", async () => {
@@ -198,7 +201,41 @@ describe("POST /v1/rotate-identity", () => {
       "SELECT public_key, rotated_to FROM revoked_keys ORDER BY revoked_at ASC"
     );
     expect(revoked.rows.length).toBe(2);
-    expect(revoked.rows.map((r) => r.public_key)).toEqual([alice.publicKeyPem, aliceNew.publicKeyPem]);
+    expect(revoked.rows.map((r) => r.public_key)).toEqual([canonId(alice.publicKeyPem), canonId(aliceNew.publicKeyPem)]);
+  });
+
+  it("a byte-variant PEM of a revoked key is still rejected, with no phantom account (#176)", async () => {
+    const alice = makeKeyPair();
+    const aliceNew = makeKeyPair();
+    await seedUser(alice.publicKeyPem, alice.privateKeyPem);
+
+    // Rotate alice -> aliceNew; alice's key is now revoked.
+    const att = attestRotation(alice.privateKeyPem, aliceNew.publicKeyPem);
+    const rot = await signedInject(alice.privateKeyPem, alice.publicKeyPem, "POST", "/v1/rotate-identity", {
+      new_public_key: aliceNew.publicKeyPem,
+      rotation_attestation: att,
+    });
+    expect(rot.statusCode).toBe(200);
+
+    // The canonical revoked PEM is rejected.
+    const canonReq = await signedInject(alice.privateKeyPem, alice.publicKeyPem, "GET", "/v1/state");
+    expect(canonReq.statusCode).toBe(401);
+    expect(canonReq.json().error).toBe("KEY_REVOKED");
+
+    // A byte-variant of the SAME revoked key (an extra trailing newline)
+    // still verifies its own signatures but presents a different raw-PEM
+    // string. Pre-#176 the DB keyed off that string, so this returned 200 and
+    // minted a phantom second users row. It must now resolve to the same
+    // canonical id and be rejected.
+    const variantPem = alice.publicKeyPem + "\n";
+    expect(variantPem).not.toBe(alice.publicKeyPem);
+    const variantReq = await signedInject(alice.privateKeyPem, variantPem, "GET", "/v1/state");
+    expect(variantReq.statusCode).toBe(401);
+    expect(variantReq.json().error).toBe("KEY_REVOKED");
+
+    // Exactly one live user (aliceNew): no phantom account was created.
+    const users = await db.query<{ public_key: string }>("SELECT public_key FROM users");
+    expect(users.rows.map((r) => r.public_key)).toEqual([canonId(aliceNew.publicKeyPem)]);
   });
 
   it("rejects unsigned rotation requests", async () => {
@@ -232,13 +269,13 @@ describe("POST /v1/rotate-identity", () => {
        VALUES ($1, 'ev_pre_rot', 1, '2026-05-16T00:00:00Z', 'imessage',
                'inbound', 'text', 1747000000000, 'enc:CH', 'enc:AUTH',
                'enc:CONTENT', 1747000000000, 1, true)`,
-      [alice.publicKeyPem]
+      [canonId(alice.publicKeyPem)]
     );
     await db.query(
       `INSERT INTO stream_embeddings
          (user_public_key, event_id, vec_enc, dims, created_at_ms)
        VALUES ($1, 'ev_pre_rot', 'enc:VEC', 64, 1747000000000)`,
-      [alice.publicKeyPem]
+      [canonId(alice.publicKeyPem)]
     );
 
     const att = attestRotation(alice.privateKeyPem, aliceNew.publicKeyPem);
@@ -253,14 +290,14 @@ describe("POST /v1/rotate-identity", () => {
       "SELECT user_public_key, event_id FROM stream_events"
     );
     expect(events.rows.length).toBe(1);
-    expect(events.rows[0].user_public_key).toBe(aliceNew.publicKeyPem);
+    expect(events.rows[0].user_public_key).toBe(canonId(aliceNew.publicKeyPem));
     expect(events.rows[0].event_id).toBe("ev_pre_rot");
 
     const embeddings = await db.query<{ user_public_key: string; event_id: string }>(
       "SELECT user_public_key, event_id FROM stream_embeddings"
     );
     expect(embeddings.rows.length).toBe(1);
-    expect(embeddings.rows[0].user_public_key).toBe(aliceNew.publicKeyPem);
+    expect(embeddings.rows[0].user_public_key).toBe(canonId(aliceNew.publicKeyPem));
     expect(embeddings.rows[0].event_id).toBe("ev_pre_rot");
   });
 

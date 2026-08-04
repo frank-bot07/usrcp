@@ -107,6 +107,12 @@ function signedFetch(privateKeyPem: string, publicKeyPem: string, method: "GET" 
   });
 }
 
+
+// Canonical SPKI-DER identity id, matching usrcp-cloud auth.ts canonicalKeyId.
+// The cloud keys its DB rows off this (#176); responses still echo PEMs.
+const canonId = (pem: string): string =>
+  crypto.createPublicKey(pem).export({ type: "spki", format: "der" }).toString("base64");
+
 describe("identity rotation - end-to-end", () => {
   it("rotates K1 -> K2: K1 is revoked, K2 reads K1's data", async () => {
     // Set up alice with some data.
@@ -176,15 +182,15 @@ describe("identity rotation - end-to-end", () => {
     // The cloud's users table has exactly one row, owned by K2.
     const users = await cloud.cloudDb.query<{ public_key: string }>("SELECT public_key FROM users");
     expect(users.rows.length).toBe(1);
-    expect(users.rows[0].public_key).toBe(r.new_public_key);
+    expect(users.rows[0].public_key).toBe(canonId(r.new_public_key));
 
     // The revoked_keys table records (K1 -> K2).
     const revoked = await cloud.cloudDb.query<{ public_key: string; rotated_to: string }>(
       "SELECT public_key, rotated_to FROM revoked_keys"
     );
     expect(revoked.rows.length).toBe(1);
-    expect(revoked.rows[0].public_key).toBe(oldPub);
-    expect(revoked.rows[0].rotated_to).toBe(r.new_public_key);
+    expect(revoked.rows[0].public_key).toBe(canonId(oldPub));
+    expect(revoked.rows[0].rotated_to).toBe(canonId(r.new_public_key));
 
     zeroBuffer(masterKey);
   });

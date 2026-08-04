@@ -28,6 +28,7 @@ import * as crypto from "node:crypto";
 import { z } from "zod";
 import type { Db } from "./db.js";
 import { tryAuth } from "./server.js";
+import { canonicalKeyId } from "./auth.js";
 
 export const ROTATE_ATTESTATION_DOMAIN = "usrcp-rotate-v1";
 
@@ -41,7 +42,10 @@ export function registerRotateRoutes(app: FastifyInstance, db: Db): void {
     const raw = (req as unknown as { rawBody?: string }).rawBody ?? "";
     const auth = await tryAuth(req, reply, db, raw);
     if (!auth) return;
-    const oldPub = auth.userPublicKey;
+    // Canonical DER id for every DB key and every key-equality check; the PEM
+    // is used only to parse the key for attestation verification (#176).
+    const oldId = auth.userPublicKey;
+    const oldPem = auth.publicKeyPem;
 
     const parse = RotateBody.safeParse(req.body);
     if (!parse.success) {
@@ -52,21 +56,26 @@ export function registerRotateRoutes(app: FastifyInstance, db: Db): void {
     if (!newPub.includes("BEGIN PUBLIC KEY")) {
       return reply.code(400).send({ error: "BAD_NEW_PUBLIC_KEY", message: "Must be PEM Ed25519" });
     }
-    if (newPub === oldPub) {
-      return reply.code(400).send({ error: "ROTATE_TO_SELF", message: "New key must differ from old key" });
-    }
 
     // Parse keys and verify the attestation locally.
     let oldKey: crypto.KeyObject;
     let newKey: crypto.KeyObject;
     try {
-      oldKey = crypto.createPublicKey(oldPub);
+      oldKey = crypto.createPublicKey(oldPem);
       newKey = crypto.createPublicKey(newPub);
     } catch {
       return reply.code(400).send({ error: "BAD_NEW_PUBLIC_KEY", message: "Failed to parse PEM" });
     }
     if (newKey.asymmetricKeyType !== "ed25519") {
       return reply.code(400).send({ error: "BAD_NEW_PUBLIC_KEY", message: "New key must be Ed25519" });
+    }
+
+    // Compare canonical ids, not PEM strings: a byte-variant of the old PEM
+    // must still count as rotate-to-self, and the DB collision/revocation
+    // checks below key off newId (#176).
+    const newId = canonicalKeyId(newKey);
+    if (newId === oldId) {
+      return reply.code(400).send({ error: "ROTATE_TO_SELF", message: "New key must differ from old key" });
     }
 
     let attBytes: Buffer;
@@ -95,7 +104,7 @@ export function registerRotateRoutes(app: FastifyInstance, db: Db): void {
     // key, which would lock the user out).
     const newCollision = await db.query<{ public_key: string }>(
       "SELECT public_key FROM users WHERE public_key = $1",
-      [newPub]
+      [newId]
     );
     if (newCollision.rows.length > 0) {
       return reply.code(409).send({
@@ -105,7 +114,7 @@ export function registerRotateRoutes(app: FastifyInstance, db: Db): void {
     }
     const newRevoked = await db.query<{ public_key: string }>(
       "SELECT public_key FROM revoked_keys WHERE public_key = $1",
-      [newPub]
+      [newId]
     );
     if (newRevoked.rows.length > 0) {
       return reply.code(409).send({
@@ -132,7 +141,7 @@ export function registerRotateRoutes(app: FastifyInstance, db: Db): void {
       await db.transaction(async (client) => {
         await client.query(
           "SELECT public_key FROM users WHERE public_key = $1 FOR UPDATE",
-          [oldPub]
+          [oldId]
         );
         // Re-check revoked_keys INSIDE the transaction. Auth checked it
         // before the lock above, but a concurrent rotation could have
@@ -144,7 +153,7 @@ export function registerRotateRoutes(app: FastifyInstance, db: Db): void {
         // a phantom empty K1 row to the caller's K2.
         const reRevoked = await client.query<{ public_key: string }>(
           "SELECT public_key FROM revoked_keys WHERE public_key = $1",
-          [oldPub]
+          [oldId]
         );
         if (reRevoked.rows.length > 0) {
           throw new Error("__CONCURRENT_ROTATION__");
@@ -155,7 +164,7 @@ export function registerRotateRoutes(app: FastifyInstance, db: Db): void {
           `INSERT INTO users (public_key, created_at, last_seen_at)
            SELECT $2, created_at, now() FROM users WHERE public_key = $1
            RETURNING public_key`,
-          [oldPub, newPub]
+          [oldId, newId]
         );
         if (insertK2.rows.length === 0) {
           // K1's row vanished and auth didn't re-upsert it (e.g. rotate
@@ -180,18 +189,18 @@ export function registerRotateRoutes(app: FastifyInstance, db: Db): void {
                   content_enc, entity_refs_enc, ingested_at, schema_v, embedding_present,
                   idempotency_key
              FROM stream_events WHERE user_public_key = $1`,
-          [oldPub, newPub]
+          [oldId, newId]
         );
         await client.query(
           `INSERT INTO stream_embeddings
              (user_public_key, event_id, vec_enc, dims, model_enc, created_at_ms)
            SELECT $2, event_id, vec_enc, dims, model_enc, created_at_ms
              FROM stream_embeddings WHERE user_public_key = $1`,
-          [oldPub, newPub]
+          [oldId, newId]
         );
         // Delete child first then parent to respect the composite FK.
-        await client.query("DELETE FROM stream_embeddings WHERE user_public_key = $1", [oldPub]);
-        await client.query("DELETE FROM stream_events WHERE user_public_key = $1", [oldPub]);
+        await client.query("DELETE FROM stream_embeddings WHERE user_public_key = $1", [oldId]);
+        await client.query("DELETE FROM stream_events WHERE user_public_key = $1", [oldId]);
 
         // Tables that only reference users(public_key) with ON DELETE
         // CASCADE: a plain UPDATE works because the K2 users row already
@@ -209,21 +218,21 @@ export function registerRotateRoutes(app: FastifyInstance, db: Db): void {
         for (const t of tables) {
           await client.query(
             `UPDATE ${t} SET user_public_key = $2 WHERE user_public_key = $1`,
-            [oldPub, newPub]
+            [oldId, newId]
           );
         }
 
         await client.query(
           "DELETE FROM pairing_bundles WHERE owner_public_key = $1",
-          [oldPub]
+          [oldId]
         );
         await client.query(
           "DELETE FROM seen_nonces WHERE user_public_key = $1",
-          [oldPub]
+          [oldId]
         );
 
         // Remove the old user row. No children remain.
-        await client.query("DELETE FROM users WHERE public_key = $1", [oldPub]);
+        await client.query("DELETE FROM users WHERE public_key = $1", [oldId]);
 
         // Permanently revoke the old key so it can't recreate itself via
         // the upsert-on-write path the next time it signs a request.
@@ -235,7 +244,7 @@ export function registerRotateRoutes(app: FastifyInstance, db: Db): void {
           `INSERT INTO revoked_keys (public_key, rotated_to)
            VALUES ($1, $2)
            ON CONFLICT (public_key) DO NOTHING`,
-          [oldPub, newPub]
+          [oldId, newId]
         );
       });
       rotated = true;
@@ -257,7 +266,7 @@ export function registerRotateRoutes(app: FastifyInstance, db: Db): void {
 
     return reply.code(200).send({
       ok: true,
-      old_public_key: oldPub,
+      old_public_key: oldPem,
       new_public_key: newPub,
       revoked_at: new Date().toISOString(),
     });

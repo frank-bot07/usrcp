@@ -18,10 +18,34 @@ import type { Db } from "./db.js";
 export const TIMESTAMP_WINDOW_MS = 5 * 60 * 1000;
 
 export interface AuthenticatedRequest {
+  // The PEM exactly as the client presented it. Use ONLY for crypto
+  // operations (parsing the key, verifying signatures/attestations), never as
+  // a database key.
   publicKeyPem: string;
-  userPublicKey: string; // same as publicKeyPem — clearer name at call sites
+  // The canonical identity: SPKI DER of the key, base64. This is the value
+  // every table and every revocation/collision check keys off. See
+  // canonicalKeyId for why the raw PEM must not be used (#176).
+  userPublicKey: string;
   timestampMs: number;
   nonce: string;
+}
+
+/**
+ * Canonical identity string for an Ed25519 public key: its SPKI DER bytes,
+ * base64-encoded.
+ *
+ * crypto.createPublicKey accepts many byte-sequences for one logical key (a
+ * trailing newline, extra whitespace, different line wrapping), and a request
+ * signature is over the request, not the PEM. So keying the users /
+ * revoked_keys / rotated_to tables off the raw PEM string (#176) let a
+ * byte-variant of a revoked key verify its signatures AND present a different
+ * primary-key string, slipping past the revocation check and creating a
+ * phantom account. Exporting to the single canonical DER form collapses every
+ * byte-variant of a key to one identity, so revocation and collision checks
+ * hold. Key every table and every such check off this, not the PEM.
+ */
+export function canonicalKeyId(key: crypto.KeyObject): string {
+  return key.export({ type: "spki", format: "der" }).toString("base64");
 }
 
 export class AuthError extends Error {
@@ -127,6 +151,12 @@ export async function verifyAndClaim(
     throw new AuthError("BAD_PUBLIC_KEY", "Public key must be Ed25519");
   }
 
+  // The database identity is the canonical DER form, NOT the raw PEM: two
+  // byte-variant PEMs of one key must resolve to the same users /
+  // revoked_keys row so a re-encoded revoked key cannot slip past revocation
+  // (#176). Every DB key below uses this, not `pub`.
+  const userPublicKey = canonicalKeyId(publicKey);
+
   let sigBytes: Buffer;
   try {
     sigBytes = Buffer.from(sigB64, "base64url");
@@ -151,7 +181,7 @@ export async function verifyAndClaim(
   // confused client discover where to migrate.
   const revoked = await db.query<{ rotated_to: string | null }>(
     "SELECT rotated_to FROM revoked_keys WHERE public_key = $1",
-    [pub]
+    [userPublicKey]
   );
   if (revoked.rows.length > 0) {
     const rotatedTo = revoked.rows[0].rotated_to;
@@ -168,7 +198,7 @@ export async function verifyAndClaim(
   try {
     await db.query(
       "INSERT INTO seen_nonces (user_public_key, nonce) VALUES ($1, $2)",
-      [pub, nonce]
+      [userPublicKey, nonce]
     );
   } catch (err: any) {
     // pg unique_violation = 23505; pg-mem exposes the same code
@@ -182,7 +212,7 @@ export async function verifyAndClaim(
   await db.query(
     `INSERT INTO users (public_key) VALUES ($1)
      ON CONFLICT (public_key) DO UPDATE SET last_seen_at = now()`,
-    [pub]
+    [userPublicKey]
   );
 
   // Post-upsert revocation re-check (race close): the pre-upsert check
@@ -193,21 +223,21 @@ export async function verifyAndClaim(
   // remove the phantom row before any route handler runs.
   const postRevoked = await db.query<{ public_key: string }>(
     "SELECT public_key FROM revoked_keys WHERE public_key = $1",
-    [pub]
+    [userPublicKey]
   );
   if (postRevoked.rows.length > 0) {
     // Undo our upsert. K1 has no children: either it was just inserted
     // by us (no chance for child rows to exist) or the concurrent
     // rotation already moved all of K1's children to K2 before it
     // committed. The DELETE is a best-effort cleanup.
-    await db.query("DELETE FROM users WHERE public_key = $1", [pub]).catch(() => { /* */ });
+    await db.query("DELETE FROM users WHERE public_key = $1", [userPublicKey]).catch(() => { /* */ });
     throw new AuthError(
       "KEY_REVOKED",
       "This public key was rotated; sign requests with the new key."
     );
   }
 
-  return { publicKeyPem: pub, userPublicKey: pub, timestampMs, nonce };
+  return { publicKeyPem: pub, userPublicKey, timestampMs, nonce };
 }
 
 function stringHeader(
