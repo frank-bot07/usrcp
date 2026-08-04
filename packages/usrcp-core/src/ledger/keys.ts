@@ -11,6 +11,7 @@ import {
   prepareKeyRotation,
   commitKeyRotation,
   serializePendingKeyFiles,
+  prepareIdempotencySecretFile,
 } from "../encryption.js";
 import { prepareReencryptedPrivatePem } from "../crypto.js";
 import { safeJsonParse } from "./helpers.js";
@@ -174,6 +175,16 @@ Ledger.prototype.rotateKey = function (
   // recovers correctly on next Ledger open.
   const privatePemEntry = prepareReencryptedPrivatePem(oldKey, newKey);
   if (privatePemEntry) pendingFiles.push(privatePemEntry);
+
+  // Re-encrypt the SAME idempotency lookup secret under the new global key
+  // (#171 part 2). The secret's VALUE deliberately never changes across
+  // rotation: idempotency_hash rows are one-way HMACs whose plaintext keys
+  // were erased at append time, so they can never be recomputed; keeping
+  // the HMAC key stable is the only way dedup survives rotation. Using the
+  // in-memory secret (loaded at open) rather than re-reading the file also
+  // guarantees the entry always lands in pendingFiles, and therefore in
+  // pending_files_json's crash recovery, alongside the other key files.
+  pendingFiles.push(prepareIdempotencySecretFile(this.idempotencySecret, newKey));
   let reencrypted = 0;
   // Rotation and tampered rows: if a row fails to decrypt with the old key
   // (GCM auth failure from tampering, corruption, or key mismatch) it is

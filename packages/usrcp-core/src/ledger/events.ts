@@ -45,6 +45,7 @@ declare module "./core.js" {
         tags_enc?: string | null;
         session_id_enc?: string | null;
         parent_event_id_enc?: string | null;
+        idempotency_key?: string | null;
       }>,
       domainMaps?: Array<{ pseudonym: string; encrypted_name: string; version: number }>
     ): number;
@@ -107,8 +108,11 @@ Ledger.prototype.appendEvent = function (
   // The caller's dedup key never touches disk in cleartext — store/compare its
   // HMAC (idempotency_hash). Same key → same hash, so dedup is unchanged; the
   // original is not kept anywhere (it's only ever equality-compared).
+  // The HMAC key is the rotation-stable lookup secret, NOT a master-key
+  // derivation: master-derived hashes stopped matching after rotateKey,
+  // silently storing duplicates (#171 part 2).
   const idempotencyHash = idempotencyKey
-    ? hashIdempotencyKey(this.masterKey, idempotencyKey)
+    ? hashIdempotencyKey(this.idempotencySecret, idempotencyKey)
     : null;
 
   if (idempotencyHash) {
@@ -386,6 +390,7 @@ Ledger.prototype.applyPulledEvents = function (
     tags_enc?: string | null;
     session_id_enc?: string | null;
     parent_event_id_enc?: string | null;
+    idempotency_key?: string | null;
   }>,
   domainMaps: Array<{ pseudonym: string; encrypted_name: string; version: number }> = []
 ): number {
@@ -398,6 +403,9 @@ Ledger.prototype.applyPulledEvents = function (
   );
   const existsStmt = this.db.prepare(
     "SELECT 1 FROM timeline_events WHERE event_id = ? LIMIT 1"
+  );
+  const idemExistsStmt = this.db.prepare(
+    "SELECT 1 FROM timeline_events WHERE idempotency_hash = ? LIMIT 1"
   );
   const insertStmt = this.db.prepare(
     `INSERT INTO timeline_events
@@ -420,6 +428,21 @@ Ledger.prototype.applyPulledEvents = function (
     for (const e of events) {
       if (existsStmt.get(e.event_id)) continue;
       localSeq += 1;
+      // Carry the relay's idempotency hash into the local row when the wire
+      // provides it (#171 part 2): the hash is HMAC'd with the rotation-
+      // stable lookup secret shared via pairing, so a fresh device that
+      // pulls an event and then re-appends with the same caller key dedups
+      // locally instead of storing a duplicate. (`local:`/`cloud:` push
+      // placeholders arrive here too; they are equally opaque and unique, so
+      // they are stored verbatim.) Fall back to the historical `cloud:`
+      // placeholder when the wire omits the value (older relay) or when it
+      // already exists locally (both sides appended the same key before sync
+      // converged: the rows are distinct events by event_id, and the UNIQUE
+      // index on idempotency_hash must not abort the whole pull).
+      const pulledIdem =
+        e.idempotency_key && !idemExistsStmt.get(e.idempotency_key)
+          ? e.idempotency_key
+          : `cloud:${e.event_id}`;
       insertStmt.run(
         e.event_id,
         e.client_timestamp,
@@ -434,7 +457,7 @@ Ledger.prototype.applyPulledEvents = function (
         e.session_id_enc ?? null,
         e.parent_event_id_enc ?? null,
         localSeq,
-        `cloud:${e.event_id}`
+        pulledIdem
       );
       applied += 1;
 

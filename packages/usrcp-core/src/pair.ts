@@ -82,6 +82,16 @@ interface PairingBundle {
   verify: string;           // base64(master.verify)
   identity: LedgerIdentity;
   private_pem_enc: string;  // contents of private.pem (already enc:... ciphertext)
+  // Contents of keys/idempotency.secret (enc:... ciphertext under the global
+  // key), the rotation-stable idempotency lookup secret (#171 part 2).
+  // Optional within schema_v 2 for compatibility both ways: a bundle from a
+  // pre-#171 device A simply omits it (device B then freezes its own secret
+  // from the shared master key on first open, which matches A as long as A
+  // has never rotated, the same continuity pre-#171 code had), and an old
+  // device B ignores the extra field. Without propagating this, a device
+  // paired AFTER a rotation on A would derive from the post-rotation master
+  // key and could never reproduce A's pre-rotation idempotency hashes.
+  idempotency_secret_enc?: string;
 }
 
 // --- Signing (kept in sync with packages/usrcp-cloud/src/auth.ts) ---
@@ -275,13 +285,28 @@ function readBundleSources(userDir: string): PairingBundle {
     );
   }
 
-  return {
+  const bundle: PairingBundle = {
     schema_v: PAIRING_BUNDLE_SCHEMA_V,
     salt: salt.toString("base64"),
     verify: verify.toString("base64"),
     identity,
     private_pem_enc: privatePemEnc,
   };
+
+  // Idempotency lookup secret (#171 part 2): include when present so a
+  // freshly paired device reproduces the same idempotency hashes even
+  // after the source device has rotated. Absent only when this ledger has
+  // never been opened by a #171-aware build; omitting it then matches
+  // pre-#171 pairing behavior exactly.
+  const idempotencyPath = path.join(keysDir, "idempotency.secret");
+  if (fs.existsSync(idempotencyPath)) {
+    const idempotencyEnc = fs.readFileSync(idempotencyPath, "utf-8").trim();
+    if (idempotencyEnc.startsWith("enc:")) {
+      bundle.idempotency_secret_enc = idempotencyEnc;
+    }
+  }
+
+  return bundle;
 }
 
 function randomEightDigit(): string {
@@ -522,6 +547,12 @@ async function pairJoinAfterDecrypt(
   if (!bundle.private_pem_enc?.startsWith("enc:")) {
     throw new Error("pairJoin: bundle private_pem_enc is not ciphertext.");
   }
+  if (
+    bundle.idempotency_secret_enc !== undefined &&
+    !bundle.idempotency_secret_enc.startsWith("enc:")
+  ) {
+    throw new Error("pairJoin: bundle idempotency_secret_enc is not ciphertext.");
+  }
 
   const saltBytes = Buffer.from(bundle.salt, "base64");
   const verifyBytes = Buffer.from(bundle.verify, "base64");
@@ -554,7 +585,21 @@ async function pairJoinAfterDecrypt(
     const globalKey = deriveGlobalEncryptionKey(masterKey);
     try {
       decrypt(bundle.private_pem_enc, globalKey);
-    } catch {
+      // Same in-memory sanity check for the idempotency lookup secret:
+      // committing a secret sealed under a different master key would make
+      // the first Ledger open on this device warn and re-initialize,
+      // silently forking idempotency hashes away from device A.
+      if (bundle.idempotency_secret_enc !== undefined) {
+        try {
+          decrypt(bundle.idempotency_secret_enc, globalKey);
+        } catch {
+          throw new InvalidPairingCode(
+            "Bundle idempotency_secret_enc does not decrypt under the bundle's verify-hash master key."
+          );
+        }
+      }
+    } catch (err) {
+      if (err instanceof InvalidPairingCode) throw err;
       throw new InvalidPairingCode(
         "Bundle private_pem_enc does not decrypt under the bundle's verify-hash master key."
       );
@@ -611,6 +656,15 @@ async function pairJoinAfterDecrypt(
         0o600,
       ],
     ];
+    if (bundle.idempotency_secret_enc !== undefined) {
+      // Stage the rotation-stable idempotency lookup secret with the rest
+      // of the key files so the join stays all-or-nothing (#171 part 2).
+      stagedFiles.push([
+        path.join(stagingDir, "idempotency.secret"),
+        Buffer.from(bundle.idempotency_secret_enc, "utf8"),
+        0o600,
+      ]);
+    }
     for (const [p, content, mode] of stagedFiles) {
       safeWriteFile(p, content, mode);
       fsyncFile(p);
