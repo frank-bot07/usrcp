@@ -530,7 +530,10 @@ function registerMcpServer(
   );
 }
 
-function cmdStatus(): void {
+// async so a throw from migrateLegacyLayout()/requireHomeDir() (e.g. empty
+// HOME, #194) rejects into the dispatch .catch and prints the clean one-line
+// refusal instead of an uncaught stack trace. Body is otherwise synchronous.
+async function cmdStatus(): Promise<void> {
   printBanner();
 
   migrateLegacyLayout();
@@ -566,6 +569,20 @@ function cmdStatus(): void {
   console.error(`  DB size:       ${(stats.db_size_bytes / 1024).toFixed(1)} KB`);
   console.error(`  Domains:       ${stats.domains.join(", ") || "(none)"}`);
   console.error(`  Platforms:     ${stats.platforms.join(", ") || "(none)"}`);
+}
+
+// async so the migrateLegacyLayout()/getUsrcpBaseDir() throw under empty HOME
+// (#194) rejects into the dispatch .catch. Was inline in the switch, which is
+// why it escaped as an uncaught exception.
+async function cmdUsers(): Promise<void> {
+  migrateLegacyLayout();
+  const slugs = listUserSlugs();
+  if (slugs.length === 0) {
+    console.error("  No users. Run: usrcp init");
+  } else {
+    console.error(`  Users in ${getUsrcpBaseDir()}/users/:`);
+    for (const s of slugs) console.error(`    - ${s}`);
+  }
 }
 
 function cmdSnapshot(): void {
@@ -934,7 +951,9 @@ async function cmdSync(subcommand: string | undefined): Promise<void> {
   }
 }
 
-function cmdConfig(args: string[]): void {
+// async for the same reason as cmdStatus (#194): migrateLegacyLayout() throws
+// under empty HOME, and this path is dispatched without a synchronous guard.
+async function cmdConfig(args: string[]): Promise<void> {
   migrateLegacyLayout();
   resolveUserSlug();
   const [action, key, value] = args;
@@ -1448,19 +1467,16 @@ export function runCli(): void {
     });
     break;
   case "status":
-    cmdStatus();
+    cmdStatus().catch((err) => {
+      console.error("[usrcp] Fatal:", err instanceof Error ? err.message : "Unknown error");
+      process.exit(1);
+    });
     break;
   case "users":
-    migrateLegacyLayout();
-    {
-      const slugs = listUserSlugs();
-      if (slugs.length === 0) {
-        console.error("  No users. Run: usrcp init");
-      } else {
-        console.error(`  Users in ${getUsrcpBaseDir()}/users/:`);
-        for (const s of slugs) console.error(`    - ${s}`);
-      }
-    }
+    cmdUsers().catch((err) => {
+      console.error("[usrcp] Fatal:", err instanceof Error ? err.message : "Unknown error");
+      process.exit(1);
+    });
     break;
   case "sync":
     cmdSync(process.argv[3]).catch((err) => {
@@ -1481,7 +1497,10 @@ export function runCli(): void {
     });
     break;
   case "config":
-    cmdConfig(process.argv.slice(3));
+    cmdConfig(process.argv.slice(3)).catch((err) => {
+      console.error("[usrcp config] Error:", err instanceof Error ? err.message : "Unknown error");
+      process.exit(1);
+    });
     break;
   case "adapter":
     cmdAdapter(process.argv.slice(3)).catch((err) => {
