@@ -1,5 +1,10 @@
 #!/usr/bin/env node
 
+// MUST be first: fails fast with a clear message on Node < 22.13.0 before any
+// import evaluates `node:sqlite` (usrcp-core), which is flag-gated below that
+// version. Also the floor at which the rotate hook's require() of the ESM
+// usrcp-github adapter works (#179).
+import "./check-node.js";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
