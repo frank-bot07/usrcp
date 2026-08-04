@@ -21,9 +21,18 @@ declare module "./core.js" {
     getDomainContext(domains?: string[]): Record<string, Record<string, unknown>>;
     getDomainContextVersion(domain: string): number;
     upsertDomainContext(domain: string, context: Record<string, unknown>, expectedVersion?: number, agentId?: string): number;
-    getState(scopes: Scope[], agentId?: string): UserState;
-    // Forward declaration for getTimeline used by getState
-    getTimeline(options?: { last_n?: number; since?: string; domains?: string[] }): TimelineEvent[];
+    getState(
+      scopes: Scope[],
+      agentId?: string,
+      timelineOptions?: { last_n?: number; since?: string; domains?: string[] }
+    ): UserState;
+    // Forward declaration for getTimeline used by getState. Mirrors the real
+    // signature in timeline.ts, including agentId, so the recent_timeline read
+    // is attributed to the caller instead of "system" (#175).
+    getTimeline(
+      options?: { last_n?: number; since?: string; domains?: string[] },
+      agentId?: string
+    ): TimelineEvent[];
   }
 }
 
@@ -311,7 +320,8 @@ Ledger.prototype.upsertDomainContext = function (
 Ledger.prototype.getState = function (
   this: Ledger,
   scopes: Scope[],
-  agentId?: string
+  agentId?: string,
+  timelineOptions?: { last_n?: number; since?: string; domains?: string[] }
 ): UserState {
   const state: UserState = {};
 
@@ -324,7 +334,14 @@ Ledger.prototype.getState = function (
         state.global_preferences = this.getPreferences();
         break;
       case "recent_timeline":
-        state.recent_timeline = this.getTimeline({ last_n: 50 });
+        // Attribute the read to the caller (not "system"), and honor any
+        // timeline filter the caller passed so this is the ONE timeline read
+        // for get_state -- no redundant default read alongside a filtered one
+        // (#175).
+        state.recent_timeline = this.getTimeline(
+          timelineOptions ?? { last_n: 50 },
+          agentId
+        );
         break;
       case "domain_context":
         state.domain_context = this.getDomainContext();

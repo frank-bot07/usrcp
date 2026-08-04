@@ -5,8 +5,8 @@ import { safeJsonParse } from "./helpers.js";
 declare module "./core.js" {
   interface Ledger {
     rowToEvent(row: any): TimelineEvent & { tampered?: boolean };
-    getTimeline(options?: { last_n?: number; since?: string; domains?: string[] }): TimelineEvent[];
-    searchTimeline(query: string, options?: { limit?: number; domain?: string }): TimelineEvent[];
+    getTimeline(options?: { last_n?: number; since?: string; domains?: string[] }, agentId?: string): TimelineEvent[];
+    searchTimeline(query: string, options?: { limit?: number; domain?: string }, agentId?: string): TimelineEvent[];
     getRecentEventsByChannel(channelId: string, limit?: number): TimelineEvent[];
   }
 }
@@ -93,7 +93,8 @@ Ledger.prototype.rowToEvent = function (
 
 Ledger.prototype.getTimeline = function (
   this: Ledger,
-  options?: { last_n?: number; since?: string; domains?: string[] }
+  options?: { last_n?: number; since?: string; domains?: string[] },
+  agentId?: string
 ): TimelineEvent[] {
   const limit = options?.last_n || 50;
   let query = "SELECT * FROM timeline_events";
@@ -126,7 +127,8 @@ Ledger.prototype.getTimeline = function (
     options?.domains,
     events.map((e) => e.event_id),
     undefined,
-    JSON.stringify(events).length
+    JSON.stringify(events).length,
+    agentId
   );
   return events;
 };
@@ -134,16 +136,27 @@ Ledger.prototype.getTimeline = function (
 Ledger.prototype.searchTimeline = function (
   this: Ledger,
   query: string,
-  options?: { limit?: number; domain?: string }
+  options?: { limit?: number; domain?: string },
+  agentId?: string
 ): TimelineEvent[] {
   const limit = options?.limit || 20;
+
+  // Audit the search on every return path, including the empty-result early
+  // exits below. The audit log promises that every search is recorded, and
+  // agentId attributes it to the calling agent (was always "system").
+  const auditSearch = (eventIds: string[]): void => {
+    this.logAudit("search_timeline", undefined, eventIds, `query_length=${query.length}`, undefined, agentId);
+  };
 
   // Determine which domains to search (using real domain names for key derivation)
   const realDomains = options?.domain
     ? [options.domain]
     : getAllRealDomains(this);
 
-  if (realDomains.length === 0) return [];
+  if (realDomains.length === 0) {
+    auditSearch([]);
+    return [];
+  }
 
   // Collect matches per domain (OR across domains, AND across tokens within a domain)
   // An event must match ALL search tokens within its own domain.
@@ -183,7 +196,10 @@ Ledger.prototype.searchTimeline = function (
     }
   }
 
-  if (allMatchingEventIds.size === 0) return [];
+  if (allMatchingEventIds.size === 0) {
+    auditSearch([]);
+    return [];
+  }
   const matchingEventIds = allMatchingEventIds;
 
   // Fetch the actual events. Chunk to SQLite's parameter limit
@@ -209,7 +225,7 @@ Ledger.prototype.searchTimeline = function (
   const limitedRows = rows.slice(0, limit);
 
   const results = limitedRows.map((r) => this.rowToEvent(r));
-  this.logAudit("search_timeline", undefined, results.map((e) => e.event_id), `query_length=${query.length}`);
+  auditSearch(results.map((e) => e.event_id));
   return results;
 };
 
