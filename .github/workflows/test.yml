@@ -288,6 +288,11 @@ jobs:
             (cd "packages/$pkg" && npm audit --audit-level=high)
             echo "::endgroup::"
           done
+      # Scoped ip-address SSRF guard across EVERY lockfile (including packages a
+      # blanket npm audit can't cover without tripping the deferred #156 hono
+      # cluster, e.g. usrcp-vscode). Catches an ip-address regression repo-wide.
+      - name: ip-address advisory floor (all lockfiles)
+        run: node scripts/check-ipaddress-floor.mjs
 
   python:
     runs-on: ubuntu-latest

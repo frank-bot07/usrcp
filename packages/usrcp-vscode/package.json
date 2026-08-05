@@ -106,5 +106,8 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0"
   },
+  "overrides": {
+    "express-rate-limit": "^8.5.2"
+  },
   "author": "Chad Garner"
 }

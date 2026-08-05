@@ -31,6 +31,6 @@
   "homepage": "https://github.com/frank-bot07/usrcp#readme",
   "bugs": "https://github.com/frank-bot07/usrcp/issues",
   "engines": {
-    "node": ">=22.5.0"
+    "node": ">=22.13.0"
   }
 }
