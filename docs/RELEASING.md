@@ -22,6 +22,25 @@ dependency-ordered publish. Today that is:
 **Excluded by design:** `usrcp-cloud` (hosted server, deployed not installed),
 `usrcp-vscode` (VS Code marketplace), `usrcp-hermes` (pip).
 
+**The `usrcp` umbrella publishes separately, and the release tag does NOT
+trigger it.** The umbrella meta-package (`release/extra-names/usrcp`, the actual
+`npm i -g usrcp` target) is published by `.github/workflows/publish-extras.yml`,
+which is manual only (`workflow_dispatch`). It is split out because npm
+rate-limits brand-new package creation per window, so the umbrella/namespace
+packages go in a batch after the main set lands. Pushing the version tag runs
+`publish.yml` (the packages above) plus `publish-mcp-registry.yml`, but it does
+NOT run `publish-extras.yml`. So on every release, after the tag publish
+completes, dispatch it explicitly:
+
+```bash
+gh workflow run publish-extras.yml --ref vX.Y.Z -f execute=true
+```
+
+It is idempotent (skips any `name@version` already on the registry), so a re-run
+after a rate-limit only publishes the remainder. `publish-mcp-registry` verifies
+`usrcp@<version>` is live with its `mcpName`, so that job fails until the
+umbrella is published: that red is the signal you skipped this step.
+
 ## How the file: → versioned dep bridge works
 
 In the repo, packages depend on each other via `file:../usrcp-core` etc. so each
