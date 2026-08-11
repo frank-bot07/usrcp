@@ -11,6 +11,15 @@ const PACKAGE_DIR = path.resolve(TEST_DIR, "..", "..");
 const BRIDGE_PATH = path.join(PACKAGE_DIR, "native-host", "usrcp-bridge.cjs");
 const LOCAL_CLI_PATH = path.resolve(PACKAGE_DIR, "..", "usrcp-local", "dist", "index.js");
 
+// The first message to a freshly spawned bridge pays for the child-process
+// spawn, and a ledger op also pays for the lazy ledger open on top of that
+// (module resolution plus the scrypt key derivation this package's vitest
+// config already calls out as the dominant per-test cost). Two seconds covers
+// that locally but not on a shared CI runner, which is the only reason these
+// tests have flaked. The bridge speaks request/response and writes nothing at
+// startup, so there is no readiness signal to await instead of a budget.
+const RESPONSE_TIMEOUT_MS = process.env.CI ? 10_000 : 2_000;
+
 function frame(message: unknown): Buffer {
   const payload = Buffer.from(JSON.stringify(message), "utf8");
   const header = Buffer.alloc(4);
@@ -32,7 +41,7 @@ describe("native-host framing", () => {
       const timer = setTimeout(() => {
         child.kill();
         reject(new Error(`native host did not respond before timeout: ${stderr}`));
-      }, 2_000);
+      }, RESPONSE_TIMEOUT_MS);
       let stdout = Buffer.alloc(0);
 
       child.stdout.on("data", (chunk) => {
@@ -114,7 +123,7 @@ describe("native-host framing", () => {
       new Promise<Record<string, unknown>>((resolve, reject) => {
         const timer = setTimeout(() => {
           reject(new Error(`native host did not respond before timeout: ${stderr}`));
-        }, 2_000);
+        }, RESPONSE_TIMEOUT_MS);
         responses.push((response) => {
           clearTimeout(timer);
           resolve(response);
