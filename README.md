@@ -92,7 +92,7 @@ npm install -g usrcp        # the `usrcp` command + local ledger
 npx usrcp init
 ```
 
-No native build, no compiler, no postinstall — usrcp uses Node's built-in SQLite (`node:sqlite`), so `npm install` just works on any npm (including npm 12+, whose `allowScripts` default blocks native build scripts). Requires **Node ≥ 22.5** (Node 24+ recommended).
+No native build, no compiler, no postinstall — usrcp uses Node's built-in SQLite (`node:sqlite`), so `npm install` just works on any npm (including npm 12+, whose `allowScripts` default blocks native build scripts). Requires **Node ≥ 22.13** (Node 24+ recommended).
 
 **Homebrew (macOS / Linux)** — alternative for the core CLI:
 
