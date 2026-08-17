@@ -3,7 +3,30 @@ name: tests
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.github/dependabot.yml'
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.github/dependabot.yml'
+  # Nightly full matrix (all Node versions + macOS) so the cross-version and
+  # darwin coverage still runs daily even though PRs no longer pay for it.
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+# CI cost model (why the matrix below is shaped the way it is):
+#   - PRs run ONE Node version (24) on Linux only.
+#   - Pushes to main, the nightly schedule, and manual dispatch run the full
+#     22/24/26 matrix and the macOS jobs.
+#   - GitHub bills macOS at 10x Linux and every job at a 1-minute minimum, so a
+#     57-job matrix on every PR push was ~65-75 billed minutes per run. This
+#     shape cuts a PR run to ~17 Linux jobs and keeps full coverage on main.
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -19,7 +42,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: ['22', '24', '26']
+        # PRs: Node 24 only. main / nightly / dispatch: 22, 24, 26.
+        node-version: ${{ github.event_name == 'pull_request' && fromJSON('["24"]') || fromJSON('["22", "24", "26"]') }}
         package:
           - usrcp-core
           - usrcp-adapter-kit
@@ -95,6 +119,8 @@ jobs:
         run: npm test
 
   node-macos:
+    # macOS bills at 10x; run it on main, nightly, and dispatch - not per PR push.
+    if: github.event_name != 'pull_request'
     runs-on: macos-latest
     strategy:
       fail-fast: false
@@ -145,8 +171,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        node-version: ['22', '24', '26']
+        # PRs: ubuntu / Node 24 only. main / nightly / dispatch: both OSes, all versions.
+        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest"]') }}
+        node-version: ${{ github.event_name == 'pull_request' && fromJSON('["24"]') || fromJSON('["22", "24", "26"]') }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
