@@ -1,7 +1,7 @@
 {
   "name": "usrcp-obsidian",
-  "version": "0.2.6",
-  "description": "Obsidian capture adapter for USRCP — watches a local vault and appends note edits to the ledger",
+  "version": "0.2.7",
+  "description": "Obsidian capture adapter for USRCP \u2014 watches a local vault and appends note edits to the ledger",
   "main": "dist/index.js",
   "files": [
     "dist/**/*.js",

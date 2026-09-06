@@ -15,7 +15,7 @@
  *   2. Client B (Cursor persona): a FRESH `usrcp serve` process →
  *      initialize → usrcp_get_state. Assert A's identity + event are
  *      visible. This is the cross-client read.
- *   3. Open the raw ledger.db with better-sqlite3 and assert the plaintext
+ *   3. Open the raw ledger.db with node:sqlite and assert the plaintext
  *      markers never appear in any column — the ciphertext-at-rest proof.
  *
  * Runs against an isolated HOME so it never touches a real ledger. Exit 0
@@ -23,7 +23,7 @@
  *
  * Usage:
  *   node scripts/cross-client-proof.mjs              # uses built dist + a fresh tmp HOME
- *   USRCP_BIN="node /abs/dist/index.js" node scripts/cross-client-proof.mjs
+ *   USRCP_ENTRY="/abs/dist/index.js" node scripts/cross-client-proof.mjs
  */
 
 import { spawn } from "node:child_process";
@@ -37,7 +37,7 @@ import { createRequire } from "node:module";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
 const LOCAL_PKG = path.join(REPO_ROOT, "packages", "usrcp-local");
-const ENTRY = path.join(LOCAL_PKG, "dist", "index.js");
+const ENTRY = process.env.USRCP_ENTRY || path.join(LOCAL_PKG, "dist", "index.js");
 
 const PASSPHRASE = "cross-client-demo-pass";
 // Content markers: user-authored values written by editor A. Each must be
@@ -49,12 +49,9 @@ const MARKERS = {
   projectName: "Helios Memory Engine",
   eventSummary: "shipped the npm publish rail",
   projectSummary: "encrypted cross-editor memory protocol",
+  projectId: "proj-demo-0xfeed",
 };
-// The project's primary key. By design this is stored PLAINTEXT — it's the
-// ON CONFLICT upsert/idempotency key, which can't match against a
-// random-IV ciphertext column. It's an opaque slug the user chooses, not
-// content, so we exclude it from the ciphertext scan and surface the
-// distinction explicitly rather than pretend the row is fully encrypted.
+// Include the original user-chosen project id in the plaintext scan.
 const PROJECT_ID = "proj-demo-0xfeed";
 
 function log(m) { process.stdout.write(`${m}\n`); }
@@ -65,7 +62,7 @@ if (!fs.existsSync(ENTRY)) {
   die(`built CLI not found at ${ENTRY}. Run: (cd packages/usrcp-local && npm run build)`);
 }
 
-const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-xclient-"));
+const proofHome = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-xclient-"));
 
 /**
  * Drive one `usrcp serve --stdio` session: initialize, then run each
@@ -76,7 +73,7 @@ const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-xclient-"));
 function runSession(calls) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [ENTRY, "serve", "--stdio"], {
-      env: { ...process.env, HOME, USRCP_PASSPHRASE: PASSPHRASE },
+      env: { ...process.env, HOME: proofHome, USRCP_PASSPHRASE: PASSPHRASE },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "";
@@ -129,7 +126,8 @@ function runSession(calls) {
           const res = await waitFor(id);
           if (res.error) throw new Error(`${call.name}: ${JSON.stringify(res.error)}`);
           const text = res.result?.content?.[0]?.text ?? "{}";
-          results.push(JSON.parse(text));
+          if (res.result?.isError) throw new Error(`${call.name}: ${text}`);
+          results.push(call.name === "usrcp_handoff" ? text : JSON.parse(text));
         }
         child.kill("SIGTERM");
         resolve(results);
@@ -144,9 +142,9 @@ function runSession(calls) {
 try {
   // ── Bootstrap: init a passphrase ledger in the isolated HOME ──────────
   execFileSync(process.execPath, [ENTRY, "init", "--passphrase", PASSPHRASE], {
-    env: { ...process.env, HOME }, stdio: "ignore",
+    env: { ...process.env, HOME: proofHome }, stdio: "ignore",
   });
-  ok(`isolated ledger initialized at ${HOME}/.usrcp`);
+  ok(`isolated ledger initialized at ${proofHome}/.usrcp`);
 
   // ── Editor A (Claude Desktop persona): WRITE identity + event ─────────
   log("\n── Editor A (Claude Desktop) writes user state ──");
@@ -182,12 +180,18 @@ try {
   }
   ok("Editor B sees A's identity, event, and project — cross-editor state confirmed");
 
+  const [brief] = await runSession([{ name: "usrcp_handoff", args: { domain: "coding", max_chars: 6000 } }]);
+  if (!brief.startsWith("# User context handoff") || !brief.includes(MARKERS.eventSummary)) throw new Error("Fresh client did not receive the latest Markdown brief");
+  const markdown = execFileSync(process.execPath, [ENTRY, "handoff", "--domain=coding"], { env: { ...process.env, HOME: proofHome, USRCP_PASSPHRASE: PASSPHRASE }, encoding: "utf8" });
+  if (!markdown.includes(MARKERS.eventSummary)) throw new Error("CLI Markdown handoff omitted recent work");
+  ok("Fresh MCP client and CLI export both receive the latest condensed Markdown brief");
+
   // ── Ciphertext-at-rest: raw DB must NOT contain the plaintext ─────────
   log("\n── Server-sees-only-ciphertext proof (raw SQLite scan) ──");
   const require = createRequire(path.join(LOCAL_PKG, "package.json"));
-  const Database = require("better-sqlite3");
-  const dbPath = path.join(HOME, ".usrcp", "users", "default", "ledger.db");
-  const db = new Database(dbPath, { readonly: true });
+  const { DatabaseSync: Database } = require("node:sqlite");
+  const dbPath = path.join(proofHome, ".usrcp", "users", "default", "ledger.db");
+  const db = new Database(dbPath, { readOnly: true });
   const tables = db.prepare(
     "SELECT name FROM sqlite_master WHERE type='table'").all().map((r) => r.name);
   let scannedCells = 0;
@@ -206,26 +210,17 @@ try {
       }
     }
   }
-  // The opaque project_id IS expected in plaintext (UPSERT key). Assert it
-  // is present (so the demo states the exception truthfully) but that NO
-  // content marker leaks.
-  const pidPresent = (() => {
-    const row = db.prepare("SELECT project_id FROM active_projects WHERE project_id = ?").get(PROJECT_ID);
-    return !!row;
-  })();
   db.close();
   if (leaks.length) {
     die(`CONTENT PLAINTEXT LEAK in ledger.db:\n  ${leaks.join("\n  ")}`);
   }
   ok(`scanned ${scannedCells} string cells across ${tables.length} tables — zero content markers in plaintext`);
-  if (pidPresent) {
-    log(`  note: project_id "${PROJECT_ID}" is stored plaintext by design (UPSERT/idempotency key); name + summary are ciphertext.`);
-  }
+
 
   log("\n\x1b[1;32m━━━ cross-editor claim VERIFIED end-to-end ━━━\x1b[0m");
-  log("State written in Editor A is readable in Editor B; all content on disk is ciphertext.");
+  log("Two independent MCP processes share state and Markdown handoffs; tested content markers are absent from raw ledger cells.");
 } catch (err) {
   die(err instanceof Error ? err.message : String(err));
 } finally {
-  fs.rmSync(HOME, { recursive: true, force: true });
+  fs.rmSync(proofHome, { recursive: true, force: true });
 }

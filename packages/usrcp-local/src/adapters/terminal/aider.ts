@@ -13,15 +13,14 @@ import { join } from "node:path";
 import * as YAML from "yaml";
 import { atomicWrite, readOrNull, homeDir } from "./shared.js";
 
+import { contextMdPath } from "./context-md.js";
+import { getUsrcpBaseDir } from "usrcp-core/encryption";
+
 const TARGET = "aider";
 const EXT = "yml";
 
 function configPath(): string {
   return join(homeDir(), ".aider.conf.yml");
-}
-
-function contextMdPath(): string {
-  return join(homeDir(), ".usrcp", "CONTEXT.md");
 }
 
 export async function register(_usrcpBin: string): Promise<{ target: string; path: string; ok: boolean; error?: string }> {
@@ -43,6 +42,11 @@ export async function register(_usrcpBin: string): Promise<{ target: string; pat
     readList = [String(doc.read)];
   }
 
+  // Aider has one global config. Selecting a profile must replace earlier
+  // USRCP exports, not silently read both profiles. Preserve unrelated files.
+  const base = getUsrcpBaseDir();
+  readList = readList.filter((p) => p !== join(base, "CONTEXT.md") &&
+    !(p.startsWith(join(base, "users") + "/") && p.endsWith("/CONTEXT.md")));
   if (!readList.includes(CONTEXT_MD)) {
     readList.push(CONTEXT_MD);
   }

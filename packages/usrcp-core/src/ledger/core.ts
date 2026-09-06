@@ -690,6 +690,11 @@ export class Ledger {
       }
     }
 
+    const factColumns = this.db.prepare("PRAGMA table_info(schemaless_facts)").all() as { name: string }[];
+    if (!factColumns.some((column) => column.name === "review_enc")) {
+      this.db.exec("ALTER TABLE schemaless_facts ADD COLUMN review_enc TEXT");
+    }
+
     // v0.2.2 migration: version column on domain_map for sync conflict resolution
     try {
       this.db.exec("ALTER TABLE domain_map ADD COLUMN version INTEGER NOT NULL DEFAULT 1");

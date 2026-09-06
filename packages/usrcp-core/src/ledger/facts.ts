@@ -1,6 +1,6 @@
 import * as crypto from "node:crypto";
 import { Ledger } from "./core.js";
-import type { SchemaFact } from "../types.js";
+import type { SchemaFact, FactReview } from "../types.js";
 import { deriveBlindIndexKey, zeroBuffer } from "../encryption.js";
 import { safeJsonParse, generateULID } from "./helpers.js";
 
@@ -11,7 +11,7 @@ declare module "./core.js" {
       namespace: string,
       key: string,
       value: unknown,
-      opts?: { expectedVersion?: number; agentId?: string }
+      opts?: { expectedVersion?: number; agentId?: string; review?: FactReview }
     ): { fact_id: string; created: boolean; updated_at: string; version: number };
     getFact(domain: string, namespace: string, key: string): SchemaFact | null;
     listFacts(domain: string, namespace?: string): SchemaFact[];
@@ -54,7 +54,11 @@ function rowToFact(ledger: Ledger, row: any): SchemaFact {
   const namespace = ledger.decryptForDomain(row.namespace, realDomain);
   const key = ledger.decryptForDomain(row.key, realDomain);
   const valueRaw = ledger.decryptForDomain(row.value, realDomain);
+  const review = row.review_enc
+    ? safeJsonParse<FactReview>(ledger.decryptForDomain(row.review_enc, realDomain), { source: "unknown", status: "unreviewed" })
+    : { source: "legacy", status: "unreviewed" as const };
   return {
+    review,
     fact_id: row.fact_id,
     domain: realDomain,
     namespace,
@@ -72,12 +76,18 @@ Ledger.prototype.setFact = function (
   namespace: string,
   key: string,
   value: unknown,
-  opts: { expectedVersion?: number; agentId?: string } = {}
+  opts: { expectedVersion?: number; agentId?: string; review?: FactReview } = {}
 ): { fact_id: string; created: boolean; updated_at: string; version: number } {
   const agentId = opts.agentId ?? "system";
   const valueSerialized = JSON.stringify(value ?? null);
   validateFactInput(namespace, key, valueSerialized);
 
+  const review: FactReview = opts.review ?? { source: agentId, status: "unreviewed" };
+  if (!review.source || review.source.length > 200 || !["unreviewed", "approved", "rejected"].includes(review.status)) throw new Error("Invalid fact review");
+  for (const date of [review.confirmed_at, review.expires_at]) {
+    if (date !== undefined && !Number.isFinite(Date.parse(date))) throw new Error("Invalid fact review date");
+  }
+  const reviewEnc = this.encryptForDomain(JSON.stringify(review), domain);
   const domainPseudo = this.ensureDomainMapping(domain);
   const nsKeyHash = factLookupHash(this, domain, namespace, key);
 
@@ -103,10 +113,10 @@ Ledger.prototype.setFact = function (
     this.db
       .prepare(
         `UPDATE schemaless_facts
-        SET namespace = ?, "key" = ?, value = ?, version = ?, updated_at = datetime('now')
+        SET namespace = ?, "key" = ?, value = ?, version = ?, review_enc = ?, updated_at = datetime('now')
         WHERE fact_id = ?`
       )
-      .run(namespaceEnc, keyEnc, valueEnc, newVersion, existing.fact_id);
+      .run(namespaceEnc, keyEnc, valueEnc, newVersion, reviewEnc, existing.fact_id);
     const updated = this.db
       .prepare("SELECT updated_at FROM schemaless_facts WHERE fact_id = ?")
       .get(existing.fact_id) as { updated_at: string };
@@ -117,10 +127,10 @@ Ledger.prototype.setFact = function (
   const factId = generateULID();
   this.db
     .prepare(
-      `INSERT INTO schemaless_facts (fact_id, domain, ns_key_hash, namespace, "key", value, version)
-      VALUES (?, ?, ?, ?, ?, ?, 1)`
+      `INSERT INTO schemaless_facts (fact_id, domain, ns_key_hash, namespace, "key", value, version, review_enc)
+      VALUES (?, ?, ?, ?, ?, ?, 1, ?)`
     )
-    .run(factId, domainPseudo, nsKeyHash, namespaceEnc, keyEnc, valueEnc);
+    .run(factId, domainPseudo, nsKeyHash, namespaceEnc, keyEnc, valueEnc, reviewEnc);
   const created = this.db
     .prepare("SELECT created_at FROM schemaless_facts WHERE fact_id = ?")
     .get(factId) as { created_at: string };

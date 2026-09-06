@@ -82,8 +82,16 @@ export interface TamperTracker {
   sessionId: string;
 }
 
+export interface FactReview {
+  source: string;
+  status: "unreviewed" | "approved" | "rejected";
+  confirmed_at?: string;
+  expires_at?: string;
+}
+
 export interface SchemaFact {
   fact_id: string;
+  review?: FactReview;
   domain: string;
   namespace: string;
   key: string;

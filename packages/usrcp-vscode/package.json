@@ -1,7 +1,7 @@
 {
   "name": "usrcp-vscode",
   "displayName": "USRCP",
-  "description": "Browse your encrypted USRCP memory ledger from VS Code — facts by domain, recent timeline, status",
+  "description": "Browse your encrypted USRCP memory ledger from VS Code \u2014 facts by domain, recent timeline, status",
   "version": "0.1.8",
   "publisher": "usrcp",
   "license": "Apache-2.0",

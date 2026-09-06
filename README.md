@@ -1,6 +1,6 @@
 # USRCP — User Context Protocol
 
-**Structured user state that follows you across AI tools. Local-first. Open source. AES-256-GCM encrypted, and you hold the key.**
+**A private context brief for the human behind every AI tool. Continue your work across interfaces without repeating the briefing.**
 
 You told Claude Desktop your stack on Tuesday. On Wednesday, Cursor doesn't know. Thursday, Codex asks again. Every AI tool you use has its own memory, or none.
 
@@ -19,7 +19,7 @@ usrcp init
 
 ---
 
-> **What USRCP is not.** USRCP is **not** a semantic memory layer. It doesn't do vector search, embeddings, or fuzzy conversational recall. If you ask "what did I tell you about my anxiety meds last week?" USRCP won't find that unless you stored it as a structured fact. For fuzzy recall over chat transcripts, use [Mem0](https://mem0.ai) or [Zep](https://www.getzep.com) — they solve a different problem. See [What USRCP is vs. isn't](#what-usrcp-is-vs-isnt) below.
+> **Core and optional features:** the structured core uses exact-keyword lookup. Optional `usrcp-stream` adds semantic recall with a different storage/privacy boundary; see the capability matrix below.
 
 ## Protocol Stack
 
@@ -35,50 +35,30 @@ usrcp init
 └─────────────────────────────────┘
 ```
 
-## What USRCP is vs. isn't
+## One human, many AI interfaces
 
-|                              | USRCP                                          | Mem0 / Zep (semantic memory)          |
-| ---------------------------- | ---------------------------------------------- | ------------------------------------- |
-| **Storage model**            | Structured schema + encrypted schemaless facts | Opaque vector blobs                   |
-| **Search**                   | Exact keyword via HMAC blind index             | Semantic similarity via embeddings    |
-| **Representative query**     | "What is the user's timezone and framework?"   | "What did the user feel last week?"   |
-| **Does the server see plaintext?** | No — content is never sent in the clear; identifiers are opaque ([relay metadata caveats](docs/SECURITY.md#9-cloud-sync-relay--what-the-operator-sees)). | Yes — at embed time. |
-| **Cross-device sync**        | Content zero-knowledge (relay holds opaque payload ciphertext) — platform names, timing, pseudonym counts visible to relay; see [`docs/SECURITY.md` §9](docs/SECURITY.md#9-cloud-sync-relay--what-the-operator-sees) | Provider-trusted                |
-| **Use case**                 | Cross-platform persistent state for agents     | Conversational recall over history    |
-| **Audit log**                | Cryptographically signed, encrypted            | Provider-managed                      |
+USRCP is the human user's context layer. The launch workflow is live retrieval of a compact brief from one shared ledger. Your next assistant should know the relevant ongoing work, decisions, constraints and next steps.
 
-**USRCP is the right choice when:**
-- You need identity, preferences, or project state to flow between Claude Desktop, Cursor, Continue, Cline, etc.
-- You're in a regulated industry (health, finance, legal) where a memory provider seeing plaintext is a non-starter.
-- You want users to own the encryption key, not the memory vendor.
+```bash
+usrcp handoff --domain=coding --output=HANDOFF.md
+```
 
-**Semantic memory (Mem0/Zep) is the right choice when:**
-- You want fuzzy recall over free-form chat history.
-- You're building a consumer product where "remind me what I said about X" is the core feature.
-- The user trusts the memory provider with plaintext.
+Connected MCP clients call `usrcp_handoff` to get current context and save meaningful updates immediately. The file command above is an optional manual fallback. The local MCP server provides startup instructions, but clients must honor them; verify actual behavior with the [two-client acceptance test](docs/launch/PILOT.md). A shared ledger alone does not prove automatic retrieval.
 
-The two are complementary, not competitive. Nothing stops an agent from using both.
+### Capability and privacy boundaries
 
-### vs OpenMemory MCP (Mem0)
+| Component | Purpose | Boundary |
+| --- | --- | --- |
+| Structured core | Identity, preferences, projects, facts and timeline | Content encrypted at rest; authorized agents receive decrypted context |
+| Markdown handoff | Condensed next-agent briefing | Explicit plaintext export with restricted file permissions; share only intended context |
+| Optional stream | Capture and semantic recall | Local embedding vectors are plaintext on disk; optional external embedding providers receive content after consent |
+| Optional device relay | Timeline/stream event sync | Ciphertext content with visible metadata; the local client does not synchronize the entire structured profile |
 
-Mem0 shipped [OpenMemory MCP](https://mem0.ai/blog/introducing-openmemory-mcp) in early 2026 — a local-first MCP server that shares memory across Cursor / Claude / Windsurf / Cline. Closest neighbor on positioning. The differentiation is real but tight:
+The initial supported workflow is developers switching Claude Code, Codex and Cursor, with Markdown export available for other interfaces. The broader goal remains continuity for the human user across tools. Read [context ownership](docs/launch/CONTEXT.md) for inspection, correction, provenance, expiry and deletion alternatives.
 
-|                              | USRCP                                                            | OpenMemory MCP                                  |
-| ---------------------------- | ---------------------------------------------------------------- | ----------------------------------------------- |
-| **Memory shape**             | Structured user state (identity, prefs, projects, timeline) + blind-index search over ciphertext | Vector-embedded semantic recall of chat turns   |
-| **Install footprint**        | One SQLite file, `brew install`                                  | Docker (frontend + MCP server + vector DB)      |
-| **External API dependency**  | None — works offline                                             | Requires an OpenAI API key (memory extraction is an LLM call) |
-| **Encryption at rest**       | AES-256-GCM; user owns the key; relay sees only content ciphertext ([metadata caveats](docs/SECURITY.md#9-cloud-sync-relay--what-the-operator-sees)) | Not a claim |
-| **Cross-vendor sync**        | Optional content-zero-knowledge relay (`usrcp-stream`)           | Not addressed                                   |
-| **License**                  | Apache 2.0                                                       | OSS                                             |
+### Alternatives
 
-Same broad goal (cross-tool memory you control); different shape of "memory" and a much smaller install footprint here. Worth using both if your workflow wants structured state *and* semantic chat recall.
-
-### vs vendor-built memory (Claude Memory, ChatGPT Memory, Cursor Memory)
-
-The 2026 vendor surfaces — Claude Memory, ChatGPT Memory, Gemini personalization — solve the cross-session problem **within** one vendor. USRCP solves it **across** vendors. If you only use Claude (or only ChatGPT), the vendor's built-in memory is probably enough. The day you add a second tool, USRCP starts paying for itself: the structured user state you typed once is there in every MCP-aware client, and the encryption key stays with you instead of the vendor.
-
-Cursor users specifically: native `@memories` was removed in v2.1.x. USRCP is one way to fill that gap that also bonus-shares the memory with the rest of your stack.
+[OpenMemory](https://mem0.ai/openmemory) also targets cross-tool coding context and automatic capture. [Zep](https://help.getzep.com/graph-overview) provides temporal knowledge graphs. These products overlap with parts of USRCP's workflow. USRCP's proposed advantage is a small, inspectable human-context brief backed by a local encrypted ledger, explicit sharing and no required cloud account for the core workflow. Compare current editions and test against your existing project notes; do not assume other products are merely vector storage or always require a particular provider.
 
 ## Quickstart
 
@@ -226,7 +206,7 @@ Alongside these, the inline adapters that ship with the brew CLI (`terminal`, `m
 
 ### Conversation capture adapters (experimental)
 
-These adapters capture messages you send — in iMessage, Slack, Discord, Telegram, Gmail, or on claude.ai — into the encrypted ledger. Be clear-eyed about the trade: search over captured messages is exact-keyword only, with no semantic recall, which is the weakest retrieval model for free-form chat (see [What USRCP is vs. isn't](#what-usrcp-is-vs-isnt)). If conversational memory is your primary need, Mem0 or Zep are better tools for that job. These adapters exist for users who want specific structured facts pulled from their conversations to live under their own key, not for fuzzy recall over chat history.
+These adapters capture allowlisted activity into the local ledger. The optional stream layer includes semantic retrieval and has a different storage boundary from the core: consult [security boundaries](docs/SECURITY.md) before enabling it. Capture is not proof that another assistant retrieved or correctly understood the context. The initial product test is live cross-interface continuity using concise checkpoints.
 
 | Adapter | What it captures | Mode | Requirements |
 |---------|------------------|------|--------------|
@@ -260,12 +240,13 @@ Read-only clients that browse the encrypted ledger via a local `usrcp serve` sub
 
 ### Cross-device sync
 
-[`usrcp-cloud`](packages/usrcp-cloud) is the hosted ledger for syncing the local SQLite store across devices. It only ever sees ciphertext — encryption happens client-side under the user's passphrase before push, and decryption happens client-side after pull. The server cannot read your data.
+[`usrcp-cloud`](packages/usrcp-cloud) is an optional experimental ciphertext relay. The local sync client currently transfers timeline events and domain maps only. Full structured-state synchronization is outside the launch workflow; agents on the same machine and profile already share a live ledger; cross-device continuity needs separate validation. Relay metadata remains visible.
 
 ## MCP Tools (12)
 
 | Tool | Description |
 |------|-------------|
+| `usrcp_handoff` | Condensed domain-specific startup brief with reviewed facts and recent work |
 | `usrcp_get_state` | Query identity, preferences, projects, timeline |
 | `usrcp_append_event` | Record an interaction event |
 | `usrcp_update_identity` | Update user roles, expertise, communication style (with optional `expected_version` for read-modify-write) |
@@ -415,7 +396,7 @@ per-adapter capture/idempotency/ciphertext-at-rest checks.
 
 ## Business Model
 
-Open-source protocol (Apache 2.0). The reference implementation is free and local-first. Revenue comes from the hosted ledger — cross-device sync, team ledgers, compliance-grade audit features — all operating on ciphertext only.
+Open-source protocol (Apache 2.0). The reference implementation is free and local-first. Potential paid offerings will be tested with users; reliable managed handoff/sync and team controls are hypotheses, not shipped commercial or compliance guarantees.
 
 The wedge isn't "every AI-using human." It's **security-conscious developers and regulated enterprises** who can't adopt an AI state store that phones a third party with plaintext. See [strategy/PITCH.md](strategy/PITCH.md) and [strategy/GTM.md](strategy/GTM.md) for the full positioning.
 

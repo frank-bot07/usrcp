@@ -64,6 +64,8 @@ import {
 } from "./adapters/terminal/index.js";
 import { resolveUsrcpBin } from "./adapters/terminal/shared.js";
 import { refreshContextMd } from "./adapters/terminal/context-md.js";
+import { pilotStatus, setPilotConsent } from "./pilot.js";
+import { buildHandoff, renderHandoff } from "./handoff.js";
 import { runSetup } from "./setup.js";
 import {
   takeSnapshot,
@@ -136,7 +138,7 @@ function printBanner(): void {
   console.error(`
   ╦ ╦╔═╗╦═╗╔═╗╔═╗
   ║ ║╚═╗╠╦╝║  ╠═╝
-  ╚═╝╚═╝╩╚═╚═╝╩   v0.2.6
+  ╚═╝╚═╝╩╚═╚═╝╩   v0.2.7
 
   User Context Protocol — Local Ledger
   `);
@@ -920,6 +922,7 @@ async function cmdServe(): Promise<void> {
 }
 
 async function cmdSync(subcommand: string | undefined): Promise<void> {
+  console.error("Experimental device sync: timeline events and domain maps only. Identity, preferences, facts and projects stay on this device.");
   migrateLegacyLayout();
   resolveUserSlug();
   const passphrase = isPassphraseMode() ? getPassphrase({ keychain: true }) : undefined;
@@ -1007,7 +1010,10 @@ async function cmdAdapter(args: string[]): Promise<void> {
     // usrcp adapter terminal refresh-context
     const passphraseArg = getArg("passphrase") ?? process.env.USRCP_PASSPHRASE;
     const userSlug = getArg("user");
-    const outPath = await refreshContextMd({ passphrase: passphraseArg, userSlug });
+    const domainsArg = args.find((arg) => arg.startsWith("--domains="))?.slice("--domains=".length);
+    const domains = domainsArg?.split(",").map((d) => d.trim()).filter(Boolean);
+    if (domainsArg !== undefined && !domains?.length) throw new Error("--domains must name at least one domain");
+    const outPath = await refreshContextMd({ passphrase: passphraseArg, userSlug, domains });
     console.error(`  CONTEXT.md written to ${outPath}`);
     return;
   }
@@ -1424,6 +1430,45 @@ async function cmdKeychain(subcommand: string | undefined): Promise<void> {
   }
 }
 
+async function cmdInspect(command: string): Promise<void> {
+  migrateLegacyLayout(); resolveUserSlug();
+  if (!getIdentity()) throw new Error("Initialize this user first: usrcp init");
+  const passphrase = isPassphraseMode() ? getPassphrase({ keychain: true }) : undefined;
+  const ledger = new Ledger(undefined, passphrase);
+  try {
+    const domain = getArg("domain");
+    if (command === "handoff") {
+      const packet = buildHandoff(ledger, domain ?? "coding", Number(getArg("max-chars") ?? 6000));
+      const brief = hasFlag("json") ? JSON.stringify(packet, null, 2) : renderHandoff(packet);
+      const output = getArg("output");
+      if (output) { safeWriteFile(path.resolve(output), Buffer.from(brief), 0o600); console.error("Condensed plaintext handoff written to " + path.resolve(output)); }
+      else console.log(brief);
+      return;
+    }
+    if (command === "fact") {
+      const namespace = getArg("namespace"), key = getArg("key");
+      if (!domain || !namespace || !key) throw new Error("fact requires --domain, --namespace and --key");
+      const fact = ledger.getFact(domain, namespace, key);
+      const action = process.argv[3];
+      if (action === "set") {
+        const file = getArg("value-file");
+        if (!file) throw new Error("fact set requires --value-file containing JSON");
+        const value = JSON.parse(fs.readFileSync(file, "utf8"));
+        console.log(JSON.stringify(ledger.setFact(domain, namespace, key, value, { expectedVersion: fact?.version ?? 0, agentId: "owner-cli", review: { source: "owner-cli", status: "approved", confirmed_at: new Date().toISOString(), expires_at: getArg("expires") } })));
+      } else if (action === "approve" || action === "reject") {
+        if (!fact) throw new Error("Fact not found");
+        console.log(JSON.stringify(ledger.setFact(domain, namespace, key, fact.value, { expectedVersion: fact.version, agentId: "owner-cli", review: { source: fact.review?.source ?? "legacy", status: action === "approve" ? "approved" : "rejected", confirmed_at: new Date().toISOString(), expires_at: getArg("expires") ?? fact.review?.expires_at } })));
+      } else throw new Error("Usage: usrcp fact <set|approve|reject> --domain=... --namespace=... --key=...");
+      return;
+    }
+    const domains = domain ? [domain] : ledger.getStats().domains;
+    const result = { user: getUserSlug(), privacy: "Decrypted context. No data is sent to a service.", state: ledger.getState(["core_identity", "global_preferences", "active_projects"], "owner-inspect"), facts: domains.flatMap((d) => ledger.listFacts(d)), clients: await listTerminalAdapters(), note: "Registration does not prove retrieval. Verify each client with the cross-tool acceptance test." };
+    const output = getArg("output");
+    if (output) { safeWriteFile(path.resolve(output), Buffer.from(JSON.stringify(result, null, 2)), 0o600); console.error("Plaintext export written to " + path.resolve(output)); }
+    else console.log(JSON.stringify(result, null, 2));
+  } finally { ledger.close(); }
+}
+
 // Subcommands that resolve a passphrase or open the ledger before they could
 // ever reach help: `usrcp init --help` exited on "no passphrase provided and
 // stdin is not a TTY" rather than printing usage, which also made
@@ -1432,7 +1477,7 @@ async function cmdKeychain(subcommand: string | undefined): Promise<void> {
 // (adapter, config, sync, pair, keychain) already print it for an
 // unrecognised op, so they keep their more specific help.
 const HELP_BEFORE_UNLOCK = new Set([
-  "init", "serve", "status", "users", "setup", "snapshot", "restore", "rotate-identity",
+  "inspect", "handoff", "fact", "init", "serve", "status", "users", "setup", "snapshot", "restore", "rotate-identity",
 ]);
 // Import-safety: dispatch only when explicitly invoked as the CLI. Importing
 // this module (a test, another package, or the `usrcp` umbrella shim) must not
@@ -1454,6 +1499,25 @@ export function runCli(): void {
   // Body is intentionally left at its original indentation to keep this an
   // additive wrap; the dispatch logic below is byte-identical to before.
   switch (command) {
+  case "pilot":
+    try {
+      migrateLegacyLayout(); resolveUserSlug();
+      if (!getIdentity()) throw new Error("Initialize this user first: usrcp init");
+      const action = process.argv[3];
+      if (!["enable", "disable", "status", "export"].includes(action)) throw new Error("Usage: usrcp pilot <enable|disable|status|export> [--output=file.json]");
+      const data = action === "enable" || action === "disable" ? setPilotConsent(action === "enable") : pilotStatus();
+      if (action === "export") {
+        const output = getArg("output"); if (!output) throw new Error("pilot export requires --output");
+        safeWriteFile(path.resolve(output), Buffer.from(JSON.stringify(data, null, 2)), 0o600);
+      } else console.log(JSON.stringify(data, null, 2));
+      console.error("Local opt-in aggregates only: day, handoff count, client category. No content, identifiers or network transmission. Disabling clears the history.");
+    } catch (err) { console.error(err instanceof Error ? err.message : String(err)); process.exitCode = 1; }
+    break;
+  case "inspect":
+  case "handoff":
+  case "fact":
+    cmdInspect(command).catch((err) => { console.error(err instanceof Error ? err.message : String(err)); process.exitCode = 1; });
+    break;
   case "init":
     cmdInit().catch((err) => {
       console.error("[usrcp] Fatal:", err instanceof Error ? err.message : "Unknown error");
@@ -1591,6 +1655,20 @@ export function runCli(): void {
     USRCP_PASSPHRASE="my secret phrase" usrcp serve     # env var still works
     usrcp keychain store                                # add keychain entry later
     usrcp serve                                         # unlocks via keychain
+
+  Pilot measurement (off by default):
+    usrcp pilot enable
+    usrcp pilot status
+    usrcp pilot export --output=pilot.json
+    usrcp pilot disable
+
+  Context ownership:
+    usrcp inspect --domain=coding                # inspect facts, sources and review status
+    usrcp inspect --output=./context.json        # explicit plaintext export (0600)
+    usrcp handoff --domain=coding --output=HANDOFF.md # condensed next-agent brief
+    usrcp fact approve --domain=coding --namespace=stack --key=language
+    usrcp fact reject --domain=coding --namespace=stack --key=language
+    usrcp fact set --domain=coding --namespace=stack --key=language --value-file=value.json
 
   Scoped agent examples:
     # Read-only Cursor agent on coding/work, no audit access:

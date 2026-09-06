@@ -1,7 +1,7 @@
 {
   "name": "usrcp-local",
-  "version": "0.2.6",
-  "description": "Local MCP server for USRCP — persistent AI memory on your machine",
+  "version": "0.2.7",
+  "description": "Local MCP server for USRCP \u2014 persistent AI memory on your machine",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {

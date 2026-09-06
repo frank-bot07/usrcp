@@ -278,11 +278,11 @@ export function createApp(opts: ServerOptions): FastifyInstance {
 
     return {
       events: events.rows,
-      identity: identity.rows[0] ?? null,
-      preferences: preferences.rows[0] ?? null,
-      domain_contexts: domainContexts.rows,
+      identity: identity.rows[0] ? { ...identity.rows[0], version: Number(identity.rows[0].version) } : null,
+      preferences: preferences.rows[0] ? { ...preferences.rows[0], version: Number(preferences.rows[0].version) } : null,
+      domain_contexts: domainContexts.rows.map((r) => ({ ...r, version: Number(r.version) })),
       projects: projects.rows,
-      facts: facts.rows,
+      facts: facts.rows.map((r) => ({ ...r, version: Number(r.version) })),
       domain_maps: domainMaps.rows,
       cursor,
       has_more: events.rows.length === limit,
@@ -315,44 +315,42 @@ export function createApp(opts: ServerOptions): FastifyInstance {
     }
     const body = parse.data;
 
-    // #170: the whole update is atomic. Two defenses layered:
-    //   (1) check-all-then-write: every expected_version is read and
-    //       verified BEFORE the first write, so a conflict in any section
-    //       aborts with 409 having written nothing. This holds on any
-    //       backend, including ones without transactional rollback.
-    //   (2) the writes then run inside ONE transaction, so a mid-write
-    //       failure (constraint, disconnect) also rolls the batch back on
-    //       real Postgres.
-    // The pre-fix handler wrote each section directly and returned on the
-    // first conflict, silently committing every earlier section.
     const CHUNK_SIZE = 50;
     type FactRow = { fact_id: string; domain_pseudonym: string; ns_key_hash: string; version: number };
 
     try {
+      await db.transaction(async (client) => {
+      // Serialize a user's state updates, including first writes with no state
+      // row yet. The lock and every version read/write share this transaction.
+      await client.query("SELECT public_key FROM users WHERE public_key = $1 FOR UPDATE", [auth.userPublicKey]);
       // ---- Phase 1: read current versions + verify all conflicts (no writes) ----
       let identityVersion = 0;
+      let identityRow: Record<string, any> = {};
       if (body.identity) {
-        const cur = await db.query(
-          "SELECT version FROM core_identity WHERE user_public_key = $1",
+        const cur = await client.query(
+          "SELECT * FROM core_identity WHERE user_public_key = $1",
           [auth.userPublicKey]
         );
-        identityVersion = Number(cur.rows[0]?.version ?? 0);
+        identityRow = cur.rows[0] ?? {};
+        identityVersion = Number(identityRow.version ?? 0);
         throwIfVersionMismatch("core_identity", identityVersion, body.identity.expected_version);
       }
 
       let preferencesVersion = 0;
+      let preferencesRow: Record<string, any> = {};
       if (body.preferences) {
-        const cur = await db.query(
-          "SELECT version FROM global_preferences WHERE user_public_key = $1",
+        const cur = await client.query(
+          "SELECT * FROM global_preferences WHERE user_public_key = $1",
           [auth.userPublicKey]
         );
-        preferencesVersion = Number(cur.rows[0]?.version ?? 0);
+        preferencesRow = cur.rows[0] ?? {};
+        preferencesVersion = Number(preferencesRow.version ?? 0);
         throwIfVersionMismatch("global_preferences", preferencesVersion, body.preferences.expected_version);
       }
 
       const contextVersions = new Map<string, number>();
       for (const ctx of body.domain_contexts ?? []) {
-        const cur = await db.query(
+        const cur = await client.query(
           "SELECT version FROM domain_context WHERE user_public_key = $1 AND domain_pseudonym = $2",
           [auth.userPublicKey, ctx.domain_pseudonym]
         );
@@ -377,7 +375,7 @@ export function createApp(opts: ServerOptions): FastifyInstance {
           for (const f of chunk) {
             params.push(f.domain_pseudonym, f.ns_key_hash);
           }
-          const chunkRes = await db.query<FactRow>(
+          const chunkRes = await client.query<FactRow>(
             `SELECT fact_id, domain_pseudonym, ns_key_hash, version FROM schemaless_facts WHERE user_public_key = $1 AND (${orClauses})`,
             params
           );
@@ -385,7 +383,7 @@ export function createApp(opts: ServerOptions): FastifyInstance {
         }
         for (let i = 0; i < body.facts.length; i += CHUNK_SIZE) {
           const ids = body.facts.slice(i, i + CHUNK_SIZE).map((f) => f.fact_id);
-          const idRes = await db.query<FactRow>(
+          const idRes = await client.query<FactRow>(
             `SELECT fact_id, domain_pseudonym, ns_key_hash, version FROM schemaless_facts
              WHERE user_public_key = $1 AND fact_id = ANY($2::text[])`,
             [auth.userPublicKey, ids]
@@ -411,8 +409,7 @@ export function createApp(opts: ServerOptions): FastifyInstance {
         }
       }
 
-      // ---- Phase 2: all writes in one transaction ----
-      await db.transaction(async (client) => {
+      // ---- Phase 2: apply only after all expected versions matched ----
         if (body.identity) {
           await client.query(
             `INSERT INTO core_identity
@@ -427,10 +424,10 @@ export function createApp(opts: ServerOptions): FastifyInstance {
                updated_at = now()`,
             [
               auth.userPublicKey,
-              body.identity.display_name_enc ?? "",
-              body.identity.roles_enc ?? "",
-              body.identity.expertise_domains_enc ?? "",
-              body.identity.communication_style_enc ?? "",
+              body.identity.display_name_enc ?? identityRow.display_name_enc ?? "",
+              body.identity.roles_enc ?? identityRow.roles_enc ?? "",
+              body.identity.expertise_domains_enc ?? identityRow.expertise_domains_enc ?? "",
+              body.identity.communication_style_enc ?? identityRow.communication_style_enc ?? "",
               identityVersion + 1,
             ]
           );
@@ -451,11 +448,11 @@ export function createApp(opts: ServerOptions): FastifyInstance {
                updated_at = now()`,
             [
               auth.userPublicKey,
-              body.preferences.language_enc ?? "",
-              body.preferences.timezone_enc ?? "",
-              body.preferences.output_format_enc ?? "",
-              body.preferences.verbosity_enc ?? "",
-              body.preferences.custom_enc ?? "",
+              body.preferences.language_enc ?? preferencesRow.language_enc ?? "",
+              body.preferences.timezone_enc ?? preferencesRow.timezone_enc ?? "",
+              body.preferences.output_format_enc ?? preferencesRow.output_format_enc ?? "",
+              body.preferences.verbosity_enc ?? preferencesRow.verbosity_enc ?? "",
+              body.preferences.custom_enc ?? preferencesRow.custom_enc ?? "",
               preferencesVersion + 1,
             ]
           );

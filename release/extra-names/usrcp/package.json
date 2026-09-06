@@ -1,8 +1,8 @@
 {
   "name": "usrcp",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "mcpName": "io.github.frank-bot07/usrcp",
-  "description": "USRCP — User Context Protocol. Installs the local CLI + encrypted ledger (usrcp-local): structured, encrypted, cross-platform memory for AI agents.",
+  "description": "USRCP \u2014 User Context Protocol. Installs the local CLI + encrypted ledger (usrcp-local): structured, encrypted, cross-platform memory for AI agents.",
   "type": "module",
   "bin": {
     "usrcp": "bin/usrcp.mjs"
@@ -11,7 +11,7 @@
     "bin/**"
   ],
   "dependencies": {
-    "usrcp-local": "^0.2.6"
+    "usrcp-local": "^0.2.7"
   },
   "keywords": [
     "usrcp",

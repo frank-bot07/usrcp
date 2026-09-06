@@ -340,10 +340,10 @@ Ledger.prototype.rotateKey = function (
 
     // Re-encrypt schemaless_facts using the same per-domain cache.
     const facts = this.db.prepare(
-      "SELECT fact_id, domain, namespace, \"key\", value FROM schemaless_facts"
+      "SELECT fact_id, domain, namespace, \"key\", value, review_enc FROM schemaless_facts"
     ).all() as any[];
     const updateFact = this.db.prepare(
-      `UPDATE schemaless_facts SET domain = ?, ns_key_hash = ?, namespace = ?, "key" = ?, value = ? WHERE fact_id = ?`
+      `UPDATE schemaless_facts SET domain = ?, ns_key_hash = ?, namespace = ?, "key" = ?, value = ?, review_enc = ? WHERE fact_id = ?`
     );
     for (const f of facts) {
       const realDomain = pseudoToReal.get(f.domain) || f.domain;
@@ -365,6 +365,7 @@ Ledger.prototype.rotateKey = function (
           encrypt(nsPlain, bundle.newDomainKey),
           encrypt(keyPlain, bundle.newDomainKey),
           encrypt(valuePlain, bundle.newDomainKey),
+          f.review_enc ? encrypt(decrypt(f.review_enc, bundle.oldDomainKey), bundle.newDomainKey) : null,
           f.fact_id
         );
       } catch (err) {
