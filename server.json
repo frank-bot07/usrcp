@@ -8,12 +8,12 @@
     "url": "https://github.com/frank-bot07/usrcp",
     "source": "github"
   },
-  "version": "0.2.6",
+  "version": "0.2.7",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "usrcp",
-      "version": "0.2.6",
+      "version": "0.2.7",
       "transport": {
         "type": "stdio"
       },

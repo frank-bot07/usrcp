@@ -53,8 +53,7 @@ class USRCPLedger extends EventEmitter implements Ledger {
     `);
 
     const countStmt = this.db.prepare('SELECT COUNT(*) FROM events');
-    const countRow = countStmt.get() as [number];
-    this.entryCount = countRow ? countRow[0] : 0;
+    this.entryCount = countStmt.step() ? Number(countStmt.get()[0]) : 0;
     countStmt.free();
   }
 

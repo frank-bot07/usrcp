@@ -1,7 +1,7 @@
 {
   "name": "usrcp-telegram",
-  "version": "0.2.6",
-  "description": "Telegram capture+reader adapter for USRCP — vision-proof cross-channel memory",
+  "version": "0.2.7",
+  "description": "Telegram capture+reader adapter for USRCP \u2014 vision-proof cross-channel memory",
   "main": "dist/index.js",
   "files": [
     "dist/**/*.js",

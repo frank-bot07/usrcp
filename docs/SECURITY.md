@@ -1,6 +1,8 @@
 # USRCP Security & Privacy Model
 
-**Implemented encryption architecture for the local MCP server.**
+**Implemented encryption architecture for the structured local ledger.**
+
+This document's core encryption claims do not cover plaintext Markdown exports or optional stream vector indexes. `HANDOFF.md` / `CONTEXT.md` are explicit decrypted exports. Stream vectors are unencrypted on local disk; optional vendor embedding services receive content after consent. Authorized AI clients receive plaintext context. Review the [capability matrix](../README.md#capability-and-privacy-boundaries) before enabling a component. Fact review metadata is encrypted with its domain key and re-encrypted during rotation.
 
 ---
 

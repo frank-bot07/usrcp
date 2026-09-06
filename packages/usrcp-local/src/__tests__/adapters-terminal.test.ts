@@ -6,6 +6,7 @@
  * This ensures no test ever touches the real ~/.claude.json, ~/.cursor/mcp.json, etc.
  */
 
+import { createRequire } from "node:module";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -63,7 +64,7 @@ describe("claude-code adapter", () => {
     const doc = readJson(config);
     expect((doc.mcpServers as Record<string, unknown>).usrcp).toEqual({
       command: "/usr/local/bin/usrcp",
-      args: ["serve", "--stdio"],
+      args: ["serve", "--stdio", "--user=default", "--agent-id=claude-code"],
     });
   });
 
@@ -135,7 +136,7 @@ describe("cursor adapter", () => {
     const doc = readJson(config);
     expect((doc.mcpServers as Record<string, unknown>).usrcp).toEqual({
       command: "/usr/local/bin/usrcp",
-      args: ["serve", "--stdio"],
+      args: ["serve", "--stdio", "--user=default", "--agent-id=cursor"],
     });
   });
 
@@ -263,7 +264,7 @@ describe("copilot-cli adapter", () => {
     const doc = readJson(config);
     expect((doc.mcpServers as Record<string, unknown>).usrcp).toEqual({
       command: "/usr/local/bin/usrcp",
-      args: ["serve", "--stdio"],
+      args: ["serve", "--stdio", "--user=default"],
     });
   });
 
@@ -338,7 +339,7 @@ describe("cline adapter", () => {
     const doc = readJson(files[0]);
     expect((doc.mcpServers as Record<string, unknown>).usrcp).toEqual({
       command: "/usr/local/bin/usrcp",
-      args: ["serve", "--stdio"],
+      args: ["serve", "--stdio", "--user=default"],
     });
   });
 
@@ -385,7 +386,7 @@ describe("continue adapter", () => {
     const doc = readJson(config);
     expect(doc.name).toBe("usrcp");
     expect(doc.command).toBe("/usr/local/bin/usrcp");
-    expect(doc.args).toEqual(["serve", "--stdio"]);
+    expect(doc.args).toEqual(["serve", "--stdio", "--user=default"]);
   });
 
   it("creates backup when prior config existed", async () => {
@@ -517,7 +518,7 @@ describe("antigravity adapter", () => {
     const doc = readJson(config);
     expect((doc.mcpServers as Record<string, unknown>).usrcp).toEqual({
       command: "/usr/local/bin/usrcp",
-      args: ["serve", "--stdio"],
+      args: ["serve", "--stdio", "--user=default"],
     });
   });
 
@@ -827,5 +828,35 @@ describe("printDevModeWarning", () => {
     // Names the concrete on-disk risk and the escape hatch, not just a vibe.
     expect(out).toContain("master.key");
     expect(out).toContain("usrcp init --passphrase");
+  });
+});
+
+
+describe("profile-scoped plaintext exports", () => {
+  it("keeps user exports separate and never merges them in Aider", async () => {
+    const { Ledger } = createRequire(import.meta.url)("usrcp-core/ledger");
+    const { setUserSlug } = createRequire(import.meta.url)("usrcp-core/encryption");
+    const { refreshContextMd } = await import("../adapters/terminal/context-md.js");
+    const aider = await import("../adapters/terminal/aider.js");
+    try {
+      const paths: string[] = [];
+      for (const slug of ["alice", "bob"]) {
+        setUserSlug(slug);
+        const ledger = new Ledger();
+        ledger.appendEvent({ domain: "coding", summary: slug + " private", intent: "test", outcome: "success" }, "test");
+        ledger.appendEvent({ domain: "health", summary: "excluded health", intent: "test", outcome: "success" }, "test");
+        ledger.close();
+        paths.push(await refreshContextMd({ userSlug: slug, domains: ["coding"] }));
+        await aider.register("usrcp");
+      }
+      expect(paths[0]).not.toBe(paths[1]);
+      expect(fs.readFileSync(paths[0], "utf8")).toContain("alice private");
+      expect(fs.readFileSync(paths[0], "utf8")).not.toContain("bob private");
+      expect(fs.readFileSync(paths[1], "utf8")).not.toContain("excluded health");
+      const config = fs.readFileSync(path.join(tmpHome, ".aider.conf.yml"), "utf8");
+      expect(config).toContain(paths[1]);
+      expect(config).not.toContain(paths[0]);
+      expect(fs.statSync(paths[0]).mode & 0o777).toBe(0o600);
+    } finally { setUserSlug("default"); }
   });
 });

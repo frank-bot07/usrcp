@@ -1,3 +1,4 @@
+import { terminalServeArgs } from "./shared.js";
 /**
  * Cursor CLI adapter (~/.cursor/mcp.json)
  *
@@ -28,7 +29,7 @@ export async function register(usrcpBin: string): Promise<{ target: string; path
   }
   (doc.mcpServers as Record<string, unknown>).usrcp = {
     command: usrcpBin,
-    args: ["serve", "--stdio"],
+    args: [...terminalServeArgs(), "--agent-id=cursor"],
   };
 
   await atomicWrite(CONFIG, JSON.stringify(doc, null, 2), EXT, TARGET, existingRaw);

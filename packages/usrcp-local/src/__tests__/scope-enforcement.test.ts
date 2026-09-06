@@ -8,7 +8,7 @@
  *     out-of-scope domains, refuses global-mutation tools, and filters
  *     multi-domain reads to the scope list.
  *   - Audit attribution: agent_id is recorded on the audit row in scoped mode.
- *   - Default path (no flags) keeps all 12 tools and does NOT add wrapper-layer
+ *   - Default path (no flags) keeps all 13 tools and does NOT add wrapper-layer
  *     audit rows beyond the pre-refactor baseline (zero regression for the
  *     unscoped single-agent setup).
  */
@@ -60,10 +60,10 @@ function listTools(server: McpServer): string[] {
 // ---------------------------------------------------------------------------
 
 describe("createServer registration filtering", () => {
-  it("default opts registers all 12 tools (no regression on unscoped path)", () => {
+  it("default opts registers all 13 tools (no regression on unscoped path)", () => {
     const { server, shutdown } = createServer();
     try {
-      expect(listTools(server)).toHaveLength(12);
+      expect(listTools(server)).toHaveLength(13);
     } finally {
       shutdown();
     }
@@ -641,8 +641,8 @@ describe("asymmetric scopes (readScopes / writeScopes)", () => {
     });
     try {
       const tools = listTools(server);
-      // All 12 tools registered (no stripping).
-      expect(tools).toHaveLength(12);
+      // All 13 tools registered (no stripping).
+      expect(tools).toHaveLength(13);
       // Mutating tools still present.
       expect(tools).toContain("usrcp_append_event");
       expect(tools).toContain("usrcp_set_fact");
@@ -869,5 +869,25 @@ describe("v0.1.4 SECURITY: audit_log is owner-only (stripped from scoped agents)
     } finally {
       shutdown();
     }
+  });
+});
+
+describe("live Markdown handoff boundary", () => {
+  it("reads another connection's new update and denies another domain", async () => {
+    const { server, shutdown } = createServer(undefined, { scopes: ["coding"] });
+    const writer = new Ledger();
+    try {
+      const handler = (server as any)._registeredTools.usrcp_handoff.handler;
+      const before = await handler({ domain: "coding", max_chars: 6000 }, {});
+      expect(before.content[0].text).not.toContain("human-chose-postgres");
+      writer.appendEvent({ domain: "coding", summary: "human-chose-postgres", intent: "next: migrate", outcome: "in_progress" }, "agent-a");
+      writer.appendEvent({ domain: "health", summary: "private-health-context", intent: "private", outcome: "in_progress" }, "agent-a");
+      const after = await handler({ domain: "coding", max_chars: 6000 }, {});
+      expect(after.content[0].text).toContain("human-chose-postgres");
+      expect(after.content[0].text).not.toContain("private-health-context");
+      const denied = await handler({ domain: "health", max_chars: 6000 }, {});
+      expect(JSON.parse(denied.content[0].text).status).toBe("out_of_scope");
+      expect(denied.content[0].text).not.toContain("private-health-context");
+    } finally { writer.close(); shutdown(); }
   });
 });

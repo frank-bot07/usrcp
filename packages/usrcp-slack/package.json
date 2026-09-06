@@ -1,7 +1,7 @@
 {
   "name": "usrcp-slack",
-  "version": "0.2.6",
-  "description": "Slack capture+reader adapter for USRCP — vision-proof cross-channel memory via @slack/bolt + Socket Mode",
+  "version": "0.2.7",
+  "description": "Slack capture+reader adapter for USRCP \u2014 vision-proof cross-channel memory via @slack/bolt + Socket Mode",
   "main": "dist/index.js",
   "files": [
     "dist/**/*.js",

@@ -338,3 +338,20 @@ describe("XFF spoofing cannot bypass per-IP limits (#177)", () => {
     await limited.close();
   });
 });
+
+
+describe("partial state writes", () => {
+  it("preserves omitted identity and preference fields, including explicit empty updates", async () => {
+    const { privateKeyPem, publicKeyPem } = makeKeyPair();
+    const write = (body: unknown) => signedInject(privateKeyPem, publicKeyPem, "POST", "/v1/state", body);
+    expect((await write({ identity: { display_name_enc: "enc:name", roles_enc: "enc:roles" }, preferences: { timezone_enc: "enc:zone", custom_enc: "enc:custom" } })).statusCode).toBe(200);
+    expect((await write({ identity: { display_name_enc: "enc:new", expected_version: 1 }, preferences: { timezone_enc: "enc:new-zone", expected_version: 1 } })).statusCode).toBe(200);
+    let state = (await signedInject(privateKeyPem, publicKeyPem, "GET", "/v1/state")).json();
+    expect(state.identity.roles_enc).toBe("enc:roles");
+    expect(state.preferences.custom_enc).toBe("enc:custom");
+    expect((await write({ identity: { roles_enc: "", expected_version: 2 } })).statusCode).toBe(200);
+    state = (await signedInject(privateKeyPem, publicKeyPem, "GET", "/v1/state")).json();
+    expect(state.identity.roles_enc).toBe("");
+    expect(state.identity.display_name_enc).toBe("enc:new");
+  });
+});

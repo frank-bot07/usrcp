@@ -1,3 +1,4 @@
+import { terminalServeArgs } from "./shared.js";
 /**
  * OpenAI Codex CLI adapter (~/.codex/config.toml)
  *
@@ -28,7 +29,7 @@ export async function register(usrcpBin: string): Promise<{ target: string; path
   }
   (doc.mcp_servers as TOML.JsonMap).usrcp = {
     command: usrcpBin,
-    args: ["serve", "--stdio"],
+    args: [...terminalServeArgs(), "--agent-id=codex"],
   };
 
   await atomicWrite(CONFIG, TOML.stringify(doc), EXT, TARGET, existingRaw);

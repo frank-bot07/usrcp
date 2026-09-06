@@ -7,7 +7,7 @@ import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { execSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { requireHomeDir } from "usrcp-core/encryption";
+import { requireHomeDir, getUserSlug } from "usrcp-core/encryption";
 
 /**
  * Home directory for terminal-adapter config writes, guarded (#174).
@@ -87,4 +87,10 @@ export async function readOrNull(filePath: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+
+/** Pin the selected ledger so adding another user cannot redirect this client. */
+export function terminalServeArgs(): string[] {
+  return ["serve", "--stdio", "--user=" + getUserSlug()];
 }

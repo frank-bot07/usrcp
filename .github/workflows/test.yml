@@ -60,6 +60,7 @@ jobs:
           - usrcp-slack
           - usrcp-stream
           - usrcp-telegram
+          - usrcp-vscode
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -114,6 +115,9 @@ jobs:
       - name: Build ${{ matrix.package }}
         working-directory: packages/${{ matrix.package }}
         run: npm run build
+      - name: Type-check ${{ matrix.package }}
+        working-directory: packages/${{ matrix.package }}
+        run: npm run lint --if-present
       - name: Test ${{ matrix.package }}
         working-directory: packages/${{ matrix.package }}
         run: npm test
@@ -295,10 +299,7 @@ jobs:
           });
           NODE
 
-  # Supply-chain gate: fail the build on a high/critical advisory in the two
-  # packages with the largest dependency surface (usrcp-local pulls in
-  # better-sqlite3 + the MCP SDK; usrcp-core is the crypto tier-0). --audit-level=high
-  # ignores moderate/low noise so only advisories worth acting on break CI.
+  # Supply-chain gate across all Node lockfiles.
   audit:
     runs-on: ubuntu-latest
     steps:
@@ -310,14 +311,13 @@ jobs:
         run: npm install -g npm@11.5.1
       - name: npm audit (high + critical only)
         run: |
-          for pkg in usrcp-core usrcp-local; do
+          for lock in packages/*/package-lock.json sdk/package-lock.json; do
+            pkg=$(dirname "$lock")
             echo "::group::npm audit $pkg"
-            (cd "packages/$pkg" && npm audit --audit-level=high)
+            (cd "$pkg" && npm audit --audit-level=high)
             echo "::endgroup::"
           done
-      # Scoped ip-address SSRF guard across EVERY lockfile (including packages a
-      # blanket npm audit can't cover without tripping the deferred #156 hono
-      # cluster, e.g. usrcp-vscode). Catches an ip-address regression repo-wide.
+      # Retain the explicit ip-address advisory regression guard.
       - name: ip-address advisory floor (all lockfiles)
         run: node scripts/check-ipaddress-floor.mjs
 
@@ -335,3 +335,43 @@ jobs:
       - name: Test usrcp-hermes
         working-directory: packages/usrcp-hermes
         run: pytest
+
+  postgres-integrity:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci-test-only
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - run: npm ci
+        working-directory: packages/usrcp-cloud
+      - run: npm test
+        working-directory: packages/usrcp-cloud
+        env:
+          USRCP_TEST_DATABASE_URL: postgres://postgres:ci-test-only@localhost:5432/postgres
+
+  packed-minimum-node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.13.0'
+      - run: npm ci --ignore-scripts
+        working-directory: packages/usrcp-core
+      - run: npm ci --ignore-scripts
+        working-directory: packages/usrcp-local
+      - run: npm run build
+        working-directory: packages/usrcp-local
+      - run: node scripts/verify-packed-install.mjs

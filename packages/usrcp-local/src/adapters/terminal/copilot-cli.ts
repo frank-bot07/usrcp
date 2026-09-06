@@ -1,3 +1,4 @@
+import { terminalServeArgs } from "./shared.js";
 /**
  * GitHub Copilot CLI adapter (~/.copilot/mcp-config.json)
  *
@@ -27,7 +28,7 @@ export async function register(usrcpBin: string): Promise<{ target: string; path
   }
   (doc.mcpServers as Record<string, unknown>).usrcp = {
     command: usrcpBin,
-    args: ["serve", "--stdio"],
+    args: terminalServeArgs(),
   };
 
   await atomicWrite(CONFIG, JSON.stringify(doc, null, 2), EXT, TARGET, existingRaw);

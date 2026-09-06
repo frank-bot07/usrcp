@@ -1,3 +1,4 @@
+import { terminalServeArgs } from "./shared.js";
 /**
  * Continue.dev adapter (~/.continue/mcpServers/usrcp.json)
  *
@@ -7,7 +8,7 @@
  * supported by Continue.dev simultaneously; we don't touch config.json here.
  *
  * The file IS the entry — no nesting needed:
- *   { "name": "usrcp", "command": "<bin>", "args": ["serve", "--stdio"] }
+ *   { "name": "usrcp", "command": "<bin>", "args": terminalServeArgs() }
  */
 
 import { promises as fs } from "node:fs";
@@ -29,7 +30,7 @@ export async function register(usrcpBin: string): Promise<{ target: string; path
   const entry = {
     name: "usrcp",
     command: usrcpBin,
-    args: ["serve", "--stdio"],
+    args: terminalServeArgs(),
   };
 
   await atomicWrite(CONFIG, JSON.stringify(entry, null, 2), EXT, TARGET, existingRaw);
