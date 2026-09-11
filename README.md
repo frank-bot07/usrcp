@@ -1,10 +1,10 @@
 # USRCP — User Context Protocol
 
-**A private context brief for the human behind every AI tool. Continue your work across interfaces without repeating the briefing.**
+**Switch AI tools without starting the conversation over.**
 
 You told Claude Desktop your stack on Tuesday. On Wednesday, Cursor doesn't know. Thursday, Codex asks again. Every AI tool you use has its own memory, or none.
 
-USRCP is a local, encrypted SQLite ledger that any MCP-aware tool can read and write. One install, one passphrase, and every tool shares the same structured user state — your timezone, your stack, your projects, your preferences.
+USRCP is a local, encrypted SQLite ledger that any MCP-aware tool can read and write. Connect supported tools to the same local profile so they can share your recent work, decisions and preferences. USRCP is an early beta; automatic capture and recall depend on the integration.
 
 Registers with **Claude Desktop**, **Cursor**, **Continue**, **Cline**, and terminal agents (**Claude Code**, **Codex CLI**, **Copilot CLI**, **Aider**, **OpenCode**, **Antigravity**). Captures structured activity from **GitHub**, **Linear**, **Obsidian**, **Claude Code sessions**, and **Google Calendar** — plus an [experimental conversation-capture set](#conversation-capture-adapters-experimental).
 
@@ -14,7 +14,7 @@ usrcp init
 ```
 
 <!-- TODO(chad): swap the demo link below for the 30s screencast once recorded — runbook in tasks/32-demo-script.md -->
-→ **See it work:** [the cross-editor demo](docs/demos/cross-editor.md), or prove the claim on your own machine in one command — `node scripts/cross-client-proof.mjs` (writes state as one editor, reads it as another, then scans the raw DB to show it's all ciphertext).
+→ **See it work:** [the cross-editor demo](docs/demos/cross-editor.md), or check the protocol path on your own machine in one command — `node scripts/cross-client-proof.mjs` (uses two synthetic MCP clients and scans raw database cells for test content markers; it does not test actual AI hosts).
 → Apache 2.0 · 600+ tests · threat model in [`docs/SECURITY.md`](docs/SECURITY.md)
 
 ---
@@ -39,22 +39,20 @@ usrcp init
 
 USRCP is the human user's context layer. The launch workflow is live retrieval of a compact brief from one shared ledger. Your next assistant should know the relevant ongoing work, decisions, constraints and next steps.
 
-```bash
-usrcp handoff --domain=coding --output=HANDOFF.md
-```
+Discuss your work in one connected tool, then ask another: **“What was I just working on?”** You should not have to select a project, copy a summary, or repeat the background.
 
-Connected MCP clients call `usrcp_handoff` to get current context and save meaningful updates immediately. The file command above is an optional manual fallback. The local MCP server provides startup instructions, but clients must honor them; verify actual behavior with the [two-client acceptance test](docs/launch/PILOT.md). A shared ledger alone does not prove automatic retrieval.
+Connected MCP clients can read recent activity across the profile with `usrcp_get_state` and request a focused live brief with `usrcp_handoff`. The local MCP server provides startup instructions, but clients must honor them; verify actual behavior with the [two-client acceptance test](docs/launch/PILOT.md). A shared ledger alone does not prove automatic retrieval.
 
 ### Capability and privacy boundaries
 
 | Component | Purpose | Boundary |
 | --- | --- | --- |
 | Structured core | Identity, preferences, projects, facts and timeline | Content encrypted at rest; authorized agents receive decrypted context |
-| Markdown handoff | Condensed next-agent briefing | Explicit plaintext export with restricted file permissions; share only intended context |
+| Live context retrieval | Recent work and compact context for connected agents | Generated on demand from the local ledger; no file transfer required |
 | Optional stream | Capture and semantic recall | Local embedding vectors are plaintext on disk; optional external embedding providers receive content after consent |
 | Optional device relay | Timeline/stream event sync | Ciphertext content with visible metadata; the local client does not synchronize the entire structured profile |
 
-The initial supported workflow is developers switching Claude Code, Codex and Cursor, with Markdown export available for other interfaces. The broader goal remains continuity for the human user across tools. Read [context ownership](docs/launch/CONTEXT.md) for inspection, correction, provenance, expiry and deletion alternatives.
+The initial beta focuses on people switching Claude Code, Codex and Cursor. Domain restrictions are optional access controls, not a required step in normal conversation. The broader goal remains continuity for the human user across tools. Read [context ownership](docs/launch/CONTEXT.md) for inspection, correction, provenance, expiry and deletion alternatives.
 
 ### Alternatives
 

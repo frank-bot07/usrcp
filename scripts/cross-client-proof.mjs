@@ -1,25 +1,14 @@
 #!/usr/bin/env node
 /**
- * Headless proof of the USRCP cross-editor claim.
+ * Protocol-level continuity check using two synthetic MCP clients.
  *
- * The pitch's central artifact is "the same structured user state across
- * two editors, with the server holding only ciphertext." Two editors
- * (Claude Desktop, Cursor) are, mechanically, just two MCP clients each
- * running `usrcp serve --stdio` against the same ~/.usrcp ledger. So this
- * script reproduces the exact claim WITHOUT any editor — to de-risk a live
- * recording (if this passes, the only thing that can go wrong on camera is
- * an editor's MCP wiring, not USRCP itself):
+ * Writes context through one server process and retrieves it through another
+ * against an isolated ledger. Also checks a compact live brief, optional CLI
+ * export, and absence of synthetic content markers in raw database cells.
  *
- *   1. Client A (Claude Desktop persona): initialize → usrcp_update_identity
- *      + usrcp_append_event. Then disconnect.
- *   2. Client B (Cursor persona): a FRESH `usrcp serve` process →
- *      initialize → usrcp_get_state. Assert A's identity + event are
- *      visible. This is the cross-client read.
- *   3. Open the raw ledger.db with node:sqlite and assert the plaintext
- *      markers never appear in any column — the ciphertext-at-rest proof.
- *
- * Runs against an isolated HOME so it never touches a real ledger. Exit 0
- * = the demo's claim holds end-to-end.
+ * This does not launch Claude Desktop, Cursor, or another AI host. Passing
+ * proves the tested protocol path, not automatic host capture or retrieval.
+ * Run docs/launch/PILOT.md in actual hosts before making that claim.
  *
  * Usage:
  *   node scripts/cross-client-proof.mjs              # uses built dist + a fresh tmp HOME
@@ -147,7 +136,7 @@ try {
   ok(`isolated ledger initialized at ${proofHome}/.usrcp`);
 
   // ── Editor A (Claude Desktop persona): WRITE identity + event ─────────
-  log("\n── Editor A (Claude Desktop) writes user state ──");
+  log("\n── Synthetic MCP client A writes user state ──");
   await runSession([
     { name: "usrcp_update_identity", args: {
       display_name: "Demo Founder",
@@ -166,7 +155,7 @@ try {
   ok("Editor A wrote identity, an event, and a project");
 
   // ── Editor B (Cursor persona): READ it back, fresh process ────────────
-  log("\n── Editor B (Cursor) reads the same ledger ──");
+  log("\n── Synthetic MCP client B reads the same ledger ──");
   const [state] = await runSession([
     { name: "usrcp_get_state", args: { scopes: [
       "core_identity", "global_preferences", "active_projects", "recent_timeline",
@@ -178,7 +167,7 @@ try {
       die(`cross-client read FAILED: marker "${k}"="${v}" not visible to Editor B`);
     }
   }
-  ok("Editor B sees A's identity, event, and project — cross-editor state confirmed");
+  ok("Editor B sees A's identity, event, and project — cross-process state confirmed");
 
   const [brief] = await runSession([{ name: "usrcp_handoff", args: { domain: "coding", max_chars: 6000 } }]);
   if (!brief.startsWith("# User context handoff") || !brief.includes(MARKERS.eventSummary)) throw new Error("Fresh client did not receive the latest Markdown brief");
@@ -217,7 +206,7 @@ try {
   ok(`scanned ${scannedCells} string cells across ${tables.length} tables — zero content markers in plaintext`);
 
 
-  log("\n\x1b[1;32m━━━ cross-editor claim VERIFIED end-to-end ━━━\x1b[0m");
+  log("\n\x1b[1;32m━━━ protocol continuity checks PASSED ━━━\x1b[0m");
   log("Two independent MCP processes share state and Markdown handoffs; tested content markers are absent from raw ledger cells.");
 } catch (err) {
   die(err instanceof Error ? err.message : String(err));
