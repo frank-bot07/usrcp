@@ -6,11 +6,12 @@ USRCP is the user's context layer across AI interfaces. Developers switching har
 
 1. Install the reviewed candidate. Initialize one passphrase-protected profile and use keychain storage if desired.
 2. Register two clients: `usrcp adapter add terminal --targets=claude-code,codex --user=work` (Cursor is also in the initial cohort).
-3. In client A, explain one small project, its current constraint and next step. Have it save the active project and a concise timeline event in USRCP.
+3. In client A, explain one small project, its current constraint and next step. Do not explicitly ask it to save to USRCP. Check whether the integration records a useful checkpoint on its own; needing a reminder is an activation failure.
 4. Start a fresh session in client B. Ask only: "Continue my current project. What constraint and next step do you have?"
 5. Confirm that B calls USRCP, states the correct facts and proceeds without a repeated briefing. Repeat in the reverse direction.
 6. Correct one fact using `usrcp fact set --domain=coding --namespace=project --key=constraint --value-file=correction.json`. Confirm the next handoff uses the correction.
-7. Run a negative control: a client scoped to another domain must not retrieve the project. A fresh profile must not see the original profile's state.
+7. Ask "What was I just working on?" without specifying a folder, project or domain. Recent permitted activity should be available across topics.
+8. Run a negative control: a client scoped to another domain must not retrieve the project. A fresh profile must not see the original profile's state. These are optional privacy boundaries; normal use must not require selecting a project before every question.
 
 MCP server instructions ask clients to retrieve context automatically; a client may ignore them. Record that as an activation failure. A low-level MCP process test is necessary but does not replace this real-interface acceptance test. The primary path is a fresh `usrcp_handoff` read from the shared ledger. Also test B while it is already running: A saves a new decision, B refreshes within two minutes and uses it correctly. A Markdown file export is an optional fallback and must not count as live continuity. Whole-state synchronization is not required. Experimental device event sync is separate.
 
