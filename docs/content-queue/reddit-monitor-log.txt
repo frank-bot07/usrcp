@@ -1,0 +1,1 @@
+Sat Sep 26 12:04:29 UTC 2026: reddit monitor run FAILED — reddit.com blocked by egress policy (403 on CONNECT to www.reddit.com:443). No posts fetched. Action needed: allowlist reddit.com in the session's network policy.
