@@ -1,0 +1,1 @@
+2026-10-06T12:04:23Z: monitor run failed — www.reddit.com:443 blocked by network policy (proxy 403 connect_rejected); no posts fetched
