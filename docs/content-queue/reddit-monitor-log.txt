@@ -1,0 +1,1 @@
+2026-10-08T12:04:30Z: reddit fetch blocked — proxy policy denial (403) for www.reddit.com:443. No posts evaluated.
