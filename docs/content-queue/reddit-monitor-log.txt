@@ -1,0 +1,1 @@
+Sat Oct 10 12:04:54 UTC 2026: reddit monitor run FAILED — proxy blocked outbound access to reddit.com (HTTP 403 on CONNECT tunnel to www.reddit.com:443). No posts fetched. Action needed: configure network policy to allow reddit.com or run this routine in an environment with direct internet access.
