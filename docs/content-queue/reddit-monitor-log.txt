@@ -1,0 +1,1 @@
+2026-10-11T12:04:55Z: reddit monitor run failed — outbound access to reddit.com blocked by network policy (proxy 403 on CONNECT). No posts fetched.
