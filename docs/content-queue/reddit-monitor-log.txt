@@ -1,0 +1,1 @@
+Mon Oct 12 12:04:49 UTC 2026: reddit monitor run FAILED — network policy blocks outbound connections to reddit.com (HTTP 403 on CONNECT from proxy). No posts fetched.
