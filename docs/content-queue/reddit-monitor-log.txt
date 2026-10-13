@@ -1,0 +1,1 @@
+Tue Oct 13 12:04:26 UTC 2026: no new relevant posts found — reddit.com blocked in this execution environment (proxy 403 + WebFetch/WebSearch denied); manual run or environment change required
