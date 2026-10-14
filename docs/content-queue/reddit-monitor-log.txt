@@ -1,0 +1,1 @@
+Wed Oct 14 12:04:15 UTC 2026: reddit monitor run FAILED — www.reddit.com:443 blocked by proxy network policy (403 connect_rejected). Cannot fetch posts. Fix: configure the cloud session's network policy to allow reddit.com.
