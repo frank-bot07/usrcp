@@ -1,7 +1,7 @@
 /**
  * OpenClaw adapter — registers `usrcp serve` as an MCP server in the
  * user's OpenClaw config so OpenClaw agents can read/write the USRCP
- * ledger via the same 6 MCP tools exposed to Claude Code, Cursor, etc.
+ * ledger via the same MCP tools exposed to Claude Code, Cursor, etc.
  *
  * v1: capture-only path is intentionally out of scope. Users running
  * OpenClaw with multiplexed Discord/Slack/iMessage channels should use
@@ -19,7 +19,7 @@
  */
 
 import { execSync } from "node:child_process";
-import { resolveUsrcpBin } from "../terminal/shared.js";
+import { resolveUsrcpBin, terminalServeArgs, serverCommand } from "../terminal/shared.js";
 import { isPassphraseMode } from "usrcp-core/encryption";
 
 export interface OpenclawSetupDeps {
@@ -50,8 +50,7 @@ export function buildOpenclawMcpServerEntry(
   passphraseMode: boolean,
 ): OpenclawMcpServerEntry {
   const entry: OpenclawMcpServerEntry = {
-    command: usrcpBin,
-    args: ["serve", "--stdio"],
+    ...serverCommand(usrcpBin, terminalServeArgs()),
   };
   if (passphraseMode) {
     entry.env = { USRCP_PASSPHRASE: "<your passphrase>" };
@@ -60,9 +59,8 @@ export function buildOpenclawMcpServerEntry(
 }
 
 export function buildOpenclawMcpSetCommand(entry: OpenclawMcpServerEntry): string {
-  // Single-quote the JSON for shell safety. JSON has no embedded single
-  // quotes by spec, so this is unambiguous on any POSIX shell.
-  return `openclaw mcp set usrcp '${JSON.stringify(entry)}'`;
+  // JSON strings can contain apostrophes. Escape them for POSIX single quoting.
+  return `openclaw mcp set usrcp '${JSON.stringify(entry).replace(/'/g, "'\\''")}'`;
 }
 
 export async function runOpenclawSetup(
@@ -94,8 +92,7 @@ export async function runOpenclawSetup(
 
   log("  This wizard prints the command to register USRCP as an MCP server");
   log("  in your OpenClaw config. OpenClaw agents will then have access to");
-  log("  all 6 USRCP tools: get_state, append_event, search_timeline,");
-  log("  set_fact, get_facts, status.");
+  log("  USRCP tools, including live context retrieval and handoff.");
   log("");
   log("  Run this command from a shell where the `openclaw` CLI is on PATH:");
   log("");

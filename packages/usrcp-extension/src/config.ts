@@ -6,7 +6,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { requireHomeDir } from "usrcp-core/encryption";
+import { requireHomeDir, getUserSlug } from "usrcp-core/encryption";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -71,7 +71,7 @@ export function writeNativeHostLauncher(nodePath: string, bridgePath: string): s
   fs.mkdirSync(path.dirname(launcherPath), { recursive: true, mode: 0o700 });
   fs.writeFileSync(
     launcherPath,
-    `#!/bin/sh\nexec ${shellQuote(nodePath)} ${shellQuote(bridgePath)} \"$@\"\n`,
+    `#!/bin/sh\nexec ${shellQuote(nodePath)} ${shellQuote(bridgePath)} ${shellQuote("--user=" + getUserSlug())} \"$@\"\n`,
     { encoding: "utf8", mode: 0o700, flag: "w" }
   );
   fs.chmodSync(launcherPath, 0o700);

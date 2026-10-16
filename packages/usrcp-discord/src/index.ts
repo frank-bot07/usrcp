@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { selectAdapterUser, getUserSlug } from "usrcp-core/encryption";
 /**
  * USRCP Discord adapter entry point.
  *
@@ -113,11 +114,12 @@ function toCaptureMessage(m: Message): CaptureMessage {
 }
 
 async function main() {
+  selectAdapterUser();
   // --reset-config delegates to the unified wizard instead of prompting inline.
   if (hasFlag("reset-config")) {
     console.error("[usrcp-discord] --reset-config: launching 'usrcp setup --adapter=discord'...");
     try {
-      execSync("usrcp setup --adapter=discord", { stdio: "inherit" });
+      execSync(`usrcp setup --adapter=discord --user=${getUserSlug()}`, { stdio: "inherit" });
     } catch {
       // execSync throws on non-zero exit; the wizard already printed the error.
       process.exit(1);

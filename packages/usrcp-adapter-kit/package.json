@@ -1,6 +1,6 @@
 {
   "name": "usrcp-adapter-kit",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "Shared encrypted-at-rest config store and helpers for USRCP capture adapters",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -38,7 +38,7 @@
   "devDependencies": {
     "@types/node": "26.1.1",
     "typescript": "5.9.3",
-    "vitest": "4.1.4"
+    "vitest": "4.1.12"
   },
   "repository": {
     "type": "git",

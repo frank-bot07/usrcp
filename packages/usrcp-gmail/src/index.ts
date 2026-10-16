@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { selectAdapterUser, getUserSlug } from "usrcp-core/encryption";
 /**
  * usrcp-gmail: capture-only Gmail adapter for messages the user SENT.
  *
@@ -61,10 +62,11 @@ async function pollOnce(
 }
 
 async function main(): Promise<void> {
+  selectAdapterUser();
   if (hasFlag("reset-config")) {
     console.error("[usrcp-gmail] --reset-config: launching 'usrcp setup --adapter=gmail'...");
     try {
-      execSync("usrcp setup --adapter=gmail", { stdio: "inherit" });
+      execSync(`usrcp setup --adapter=gmail --user=${getUserSlug()}`, { stdio: "inherit" });
     } catch {
       process.exit(1);
     }

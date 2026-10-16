@@ -1,6 +1,6 @@
 {
   "name": "usrcp-stream",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "Cross-surface conversation layer for USRCP - encrypted local capture, embeddings, thread stitching, active-surface presence",
   "main": "dist/index.js",
   "files": [
@@ -38,7 +38,7 @@
     "@anthropic-ai/sdk": "^0.115.0",
     "@iarna/toml": "^2.2.5",
     "@inquirer/prompts": "^8.4.2",
-    "@modelcontextprotocol/sdk": "1.29.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "better-sqlite3": "12.10.0",
     "sqlite-vec": "^0.1.6",
     "usrcp-core": "file:../usrcp-core",
@@ -50,7 +50,7 @@
     "pg-mem": "^3.0.5",
     "typescript": "5.9.3",
     "usrcp-cloud": "file:../usrcp-cloud",
-    "vitest": "4.1.4"
+    "vitest": "4.1.12"
   },
   "repository": {
     "type": "git",

@@ -1,3 +1,4 @@
+import { serverCommand, preserveServerOptions } from "./shared.js";
 import { terminalServeArgs } from "./shared.js";
 /**
  * OpenAI Codex CLI adapter (~/.codex/config.toml)
@@ -28,8 +29,8 @@ export async function register(usrcpBin: string): Promise<{ target: string; path
     doc.mcp_servers = {};
   }
   (doc.mcp_servers as TOML.JsonMap).usrcp = {
-    command: usrcpBin,
-    args: [...terminalServeArgs(), "--agent-id=codex"],
+    ...preserveServerOptions((doc.mcp_servers as TOML.JsonMap).usrcp) as TOML.JsonMap,
+    ...serverCommand(usrcpBin, [...terminalServeArgs(), "--agent-id=codex"], (doc.mcp_servers as TOML.JsonMap).usrcp),
   };
 
   await atomicWrite(CONFIG, TOML.stringify(doc), EXT, TARGET, existingRaw);

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { selectAdapterUser, getUserSlug } from "usrcp-core/encryption";
 /**
  * usrcp-linear: capture-only Linear adapter (issues + comments authored by
  * the API-key viewer, filtered to allowlisted teams).
@@ -127,10 +128,11 @@ async function pollOnce(
 }
 
 async function main() {
+  selectAdapterUser();
   if (hasFlag("reset-config")) {
     console.error("[usrcp-linear] --reset-config: launching 'usrcp setup --adapter=linear'...");
     try {
-      execSync("usrcp setup --adapter=linear", { stdio: "inherit" });
+      execSync(`usrcp setup --adapter=linear --user=${getUserSlug()}`, { stdio: "inherit" });
     } catch {
       process.exit(1);
     }

@@ -1,6 +1,6 @@
 {
   "name": "usrcp-obsidian",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "Obsidian capture adapter for USRCP \u2014 watches a local vault and appends note edits to the ledger",
   "main": "dist/index.js",
   "files": [
@@ -39,7 +39,7 @@
   "devDependencies": {
     "@types/node": "26.1.1",
     "typescript": "5.9.3",
-    "vitest": "4.1.4"
+    "vitest": "4.1.12"
   },
   "repository": {
     "type": "git",

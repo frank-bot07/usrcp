@@ -1,3 +1,4 @@
+import { getUserSlug } from "usrcp-core/encryption";
 /**
  * Interactive setup wizard. Validates the PAT by issuing a /user
  * lookup before persisting, so a typo fails at the wizard, not at
@@ -272,8 +273,8 @@ export async function runGithubSetup(
 
   process.stderr.write(`  ✓ GitHub adapter configured. Saved to ${getConfigPath()} (mode 0600)\n\n`);
   process.stderr.write("  What's next:\n");
-  process.stderr.write("    usrcp-github\n");
-  process.stderr.write("    # or: USRCP_PASSPHRASE=<pp> usrcp-github\n\n");
+  process.stderr.write(`    usrcp-github --user=${getUserSlug()}\n`);
+  process.stderr.write(`    # or: USRCP_PASSPHRASE=<pp> usrcp-github --user=${getUserSlug()}\n\n`);
 
   return cfg;
 }

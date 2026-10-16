@@ -1,0 +1,44 @@
+name: adapter-install
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adapter-install-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  packed-consumer:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest"]') }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Install package build dependencies
+        shell: bash
+        run: |
+          for pkg in packages/*; do
+            if [ ! -f "$pkg/package-lock.json" ]; then continue; fi
+            if [ "$RUNNER_OS" != macOS ] && [ "$(basename "$pkg")" = usrcp-imessage ]; then continue; fi
+            npm ci --prefix "$pkg"
+          done
+      - name: Build packages
+        shell: bash
+        run: |
+          npm run build --prefix packages/usrcp-core
+          npm run build --prefix packages/usrcp-local
+          npm run build --prefix packages/usrcp-adapter-kit
+          for pkg in packages/*; do
+            if [ ! -f "$pkg/package-lock.json" ]; then continue; fi
+            if [ "$RUNNER_OS" != macOS ] && [ "$(basename "$pkg")" = usrcp-imessage ]; then continue; fi
+            npm run build --prefix "$pkg"
+          done
+      - name: Install packed adapters and verify shared-context protocol
+        run: node scripts/verify-adapter-install.mjs

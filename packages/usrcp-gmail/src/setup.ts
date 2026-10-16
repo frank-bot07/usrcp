@@ -1,3 +1,4 @@
+import { getUserSlug } from "usrcp-core/encryption";
 /**
  * Interactive setup wizard for the Gmail adapter. Same OAuth posture
  * as the Google Calendar adapter (#51): the user supplies an OAuth
@@ -277,8 +278,8 @@ export async function runGmailSetup(
 
   process.stderr.write(`  ✓ Gmail adapter configured. Saved to ${getConfigPath()} (mode 0600)\n\n`);
   process.stderr.write("  What's next:\n");
-  process.stderr.write("    usrcp-gmail\n");
-  process.stderr.write("    # or: USRCP_PASSPHRASE=<pp> usrcp-gmail\n\n");
+  process.stderr.write(`    usrcp-gmail --user=${getUserSlug()}\n`);
+  process.stderr.write(`    # or: USRCP_PASSPHRASE=<pp> usrcp-gmail --user=${getUserSlug()}\n\n`);
 
   return cfg;
 }

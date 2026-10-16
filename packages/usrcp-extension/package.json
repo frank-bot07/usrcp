@@ -1,6 +1,6 @@
 {
   "name": "usrcp-extension",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "Chrome browser extension for capturing claude.ai conversations into the USRCP ledger",
   "type": "module",
   "main": "dist/setup.js",
@@ -43,7 +43,7 @@
     "@types/node": "26.1.1",
     "esbuild": "^0.28.1",
     "typescript": "5.9.3",
-    "vitest": "4.1.4"
+    "vitest": "4.1.12"
   },
   "repository": {
     "type": "git",

@@ -1,3 +1,4 @@
+import { serverCommand, preserveServerOptions } from "./shared.js";
 import { terminalServeArgs } from "./shared.js";
 /**
  * Continue.dev adapter (~/.continue/mcpServers/usrcp.json)
@@ -29,8 +30,8 @@ export async function register(usrcpBin: string): Promise<{ target: string; path
   const existingRaw = await readOrNull(CONFIG);
   const entry = {
     name: "usrcp",
-    command: usrcpBin,
-    args: terminalServeArgs(),
+    ...preserveServerOptions(existingRaw ? JSON.parse(existingRaw) : undefined),
+    ...serverCommand(usrcpBin, terminalServeArgs(), existingRaw ? JSON.parse(existingRaw) : undefined),
   };
 
   await atomicWrite(CONFIG, JSON.stringify(entry, null, 2), EXT, TARGET, existingRaw);
@@ -47,7 +48,7 @@ export async function unregister(): Promise<void> {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const backupDir = getBackupDir();
   await fs.mkdir(backupDir, { recursive: true });
-  await fs.writeFile(join(backupDir, `${TARGET}.${stamp}.${EXT}`), existingRaw);
+  await fs.writeFile(join(backupDir, `${TARGET}.${stamp}.${EXT}`), existingRaw, { mode: 0o600, flag: "wx" });
   await fs.unlink(CONFIG);
 }
 

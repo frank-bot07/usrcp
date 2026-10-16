@@ -1,3 +1,4 @@
+import { serverCommand, preserveServerOptions } from "./shared.js";
 import { terminalServeArgs } from "./shared.js";
 /**
  * Claude Code CLI adapter (~/.claude.json)
@@ -29,8 +30,8 @@ export async function register(usrcpBin: string): Promise<{ target: string; path
     doc.mcpServers = {};
   }
   (doc.mcpServers as Record<string, unknown>).usrcp = {
-    command: usrcpBin,
-    args: [...terminalServeArgs(), "--agent-id=claude-code"],
+    ...preserveServerOptions((doc.mcpServers as Record<string, unknown>).usrcp),
+    ...serverCommand(usrcpBin, [...terminalServeArgs(), "--agent-id=claude-code"], (doc.mcpServers as Record<string, unknown>).usrcp),
   };
 
   await atomicWrite(CONFIG, JSON.stringify(doc, null, 2), EXT, TARGET, existingRaw);

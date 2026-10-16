@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { selectAdapterUser, getUserSlug } from "usrcp-core/encryption";
 /**
  * usrcp-google-calendar: capture-only Google Calendar adapter (events
  * the configured user attended on the primary calendar).
@@ -73,10 +74,11 @@ async function pollOnce(
 }
 
 async function main(): Promise<void> {
+  selectAdapterUser();
   if (hasFlag("reset-config")) {
     console.error("[usrcp-google-calendar] --reset-config: launching 'usrcp setup --adapter=google-calendar'...");
     try {
-      execSync("usrcp setup --adapter=google-calendar", { stdio: "inherit" });
+      execSync(`usrcp setup --adapter=google-calendar --user=${getUserSlug()}`, { stdio: "inherit" });
     } catch {
       process.exit(1);
     }

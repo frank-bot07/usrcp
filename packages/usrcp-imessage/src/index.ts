@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { selectAdapterUser, getUserSlug } from "usrcp-core/encryption";
 /**
  * USRCP iMessage adapter entry point.
  *
@@ -111,11 +112,12 @@ function validateEventSchema(evt: unknown): string[] {
 }
 
 async function main() {
+  selectAdapterUser();
   // --reset-config delegates to the unified wizard instead of prompting inline.
   if (hasFlag("reset-config")) {
     console.error("[usrcp-imessage] --reset-config: launching 'usrcp setup --adapter=imessage'...");
     try {
-      execSync("usrcp setup --adapter=imessage", { stdio: "inherit" });
+      execSync(`usrcp setup --adapter=imessage --user=${getUserSlug()}`, { stdio: "inherit" });
     } catch {
       process.exit(1);
     }

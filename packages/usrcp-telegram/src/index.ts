@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { selectAdapterUser, getUserSlug } from "usrcp-core/encryption";
 /**
  * USRCP Telegram adapter entry point.
  *
@@ -149,11 +150,12 @@ function shouldReply(ctx: Context, botId: number, botUsername: string): boolean 
 }
 
 async function main() {
+  selectAdapterUser();
   // --reset-config delegates to the unified wizard instead of prompting inline.
   if (hasFlag("reset-config")) {
     console.error("[usrcp-telegram] --reset-config: launching 'usrcp setup --adapter=telegram'...");
     try {
-      execSync("usrcp setup --adapter=telegram", { stdio: "inherit" });
+      execSync(`usrcp setup --adapter=telegram --user=${getUserSlug()}`, { stdio: "inherit" });
     } catch {
       process.exit(1);
     }

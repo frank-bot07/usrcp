@@ -1,6 +1,6 @@
 {
   "name": "usrcp-gmail",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "Gmail capture adapter for USRCP - polls the configured user's SENT messages and appends them to the local ledger",
   "main": "dist/index.js",
   "files": [
@@ -35,13 +35,13 @@
   "dependencies": {
     "@googleapis/gmail": "^17.0.0",
     "google-auth-library": "^10.1.0",
-    "usrcp-core": "file:../usrcp-core",
-    "usrcp-adapter-kit": "file:../usrcp-adapter-kit"
+    "usrcp-adapter-kit": "file:../usrcp-adapter-kit",
+    "usrcp-core": "file:../usrcp-core"
   },
   "devDependencies": {
     "@types/node": "26.1.1",
     "typescript": "5.9.3",
-    "vitest": "4.1.4"
+    "vitest": "4.1.12"
   },
   "repository": {
     "type": "git",

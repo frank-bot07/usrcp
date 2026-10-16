@@ -109,7 +109,7 @@ export const BUILTIN_ADAPTERS: readonly AdapterManifest[] = [
   {
     value: "openclaw",
     name: "OpenClaw (agent harness)",
-    blurb: "Requires OpenClaw already installed (https://docs.openclaw.ai/start/getting-started). Registers USRCP as an MCP server in your OpenClaw config so OpenClaw agents can read/write your ledger via the same 6 tools as Claude Code. Read-side only in v0 - capture per channel still goes through the dedicated Discord/Slack/iMessage adapters.",
+    blurb: "Requires OpenClaw already installed (https://docs.openclaw.ai/start/getting-started). Registers USRCP as an MCP server in your OpenClaw config so OpenClaw agents can read/write your ledger through MCP tools. Automatic channel capture is separate and uses dedicated capture adapters.",
     builtinInternal: true,
   },
   {
@@ -140,7 +140,7 @@ export const BUILTIN_ADAPTERS: readonly AdapterManifest[] = [
   {
     value: "slack",
     name: "Slack",
-    blurb: "⚠️  Requires a PAID Slack workspace tier (Pro, Business+, or Enterprise) - bot APIs are restricted on the free tier. Skip this if your workspace is on the free plan.",
+    blurb: "⚠️  Requires permission to install a Slack app in your workspace and configure its bot token and event access.",
     setupFunction: "runSlackSetup",
     requiresMasterKey: true,
     supportsRotateKey: true,
@@ -188,7 +188,7 @@ export const BUILTIN_ADAPTERS: readonly AdapterManifest[] = [
   {
     value: "github",
     name: "GitHub",
-    blurb: "Capture pull requests YOU author on GitHub. Polls GitHub's REST search API every 10 min (configurable). Requires a personal access token. v1: capture-only on pr_opened (state changes come later).",
+    blurb: "Capture pull requests YOU author on GitHub. Polls GitHub's REST search API every 10 min (configurable). Requires a personal access token. Capture-only: pull request opens/merges/closes, issue opens/comments, and reviews. This does not provide a GitHub chat agent.",
     setupFunction: "runGithubSetup",
     requiresMasterKey: true,
     supportsRotateKey: true,

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { selectAdapterUser, getUserSlug } from "usrcp-core/encryption";
 /**
  * USRCP Obsidian adapter entry point.
  *
@@ -70,10 +71,11 @@ async function processFile(
 }
 
 async function main() {
+  selectAdapterUser();
   if (hasFlag("reset-config")) {
     console.error("[usrcp-obsidian] --reset-config: launching 'usrcp setup --adapter=obsidian'...");
     try {
-      execSync("usrcp setup --adapter=obsidian", { stdio: "inherit" });
+      execSync(`usrcp setup --adapter=obsidian --user=${getUserSlug()}`, { stdio: "inherit" });
     } catch {
       process.exit(1);
     }
