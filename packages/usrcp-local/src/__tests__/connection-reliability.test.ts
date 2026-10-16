@@ -10,8 +10,8 @@ import { parse } from "jsonc-parser";
 import { register as registerOpenCode, unregister as unregisterOpenCode } from "../adapters/terminal/opencode.js";
 import { register as registerCursor } from "../adapters/terminal/cursor.js";
 let home: string; let previous: string | undefined;
-beforeEach(() => { previous = process.env.HOME; home = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-connect-")); process.env.HOME = home; setUserSlug("rehearsal"); });
-afterEach(() => { if (previous === undefined) delete process.env.HOME; else process.env.HOME = previous; setUserSlug("default"); fs.rmSync(home, { recursive: true, force: true }); });
+beforeEach(() => { previous = process.env.HOME; home = fs.mkdtempSync(path.join(os.tmpdir(), "usrcp-connect-")); process.env.HOME = home; vi.stubEnv("XDG_CONFIG_HOME", path.join(home, ".config")); setUserSlug("rehearsal"); });
+afterEach(() => { vi.unstubAllEnvs(); if (previous === undefined) delete process.env.HOME; else process.env.HOME = previous; setUserSlug("default"); fs.rmSync(home, { recursive: true, force: true }); });
 describe("connection reliability", () => {
   it("prefers Antigravity's current config but supports an existing legacy installation", async () => {
     const legacy = path.join(home, ".gemini/antigravity/mcp_config.json");
