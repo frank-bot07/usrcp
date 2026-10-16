@@ -4,7 +4,9 @@ import {
   encrypt,
   decrypt,
   deriveGlobalEncryptionKey,
-  requireHomeDir,
+  getAdapterConfigPath,
+  safeWriteFile,
+  getUserSlug,
   zeroBuffer,
 } from "usrcp-core/encryption";
 
@@ -143,14 +145,14 @@ export function createAdapterConfig<TConfig extends object>(
   const cursorFields = spec.cursorFields ?? [];
   const defaults = spec.fields.filter((f) => f.default !== undefined);
   const migrateLegacyOnLoad = spec.migrateLegacyOnLoad ?? true;
-  const setupHint = `Run 'usrcp setup --adapter=${adapterName}' to`;
+  const setupHint = () => `Run 'usrcp setup --adapter=${adapterName} --user=${getUserSlug()}' to`;
 
   function getConfigPath(): string {
     // requireHomeDir(), not os.homedir(): an empty HOME makes os.homedir()
     // return "" so this join produces a RELATIVE ".usrcp/<filename>" that
     // reads/writes an adapter's encrypted secrets into the process CWD
     // instead of the home directory (#192, same class as #174/#183).
-    return path.join(requireHomeDir(), ".usrcp", filename);
+    return getAdapterConfigPath(filename);
   }
 
   function readPartialConfig(): Partial<TConfig> {
@@ -183,18 +185,7 @@ export function createAdapterConfig<TConfig extends object>(
     const p = getConfigPath();
     fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });
     const body = JSON.stringify(obj, null, 2);
-    const fd = fs.openSync(
-      p,
-      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC,
-      0o600,
-    );
-    try {
-      fs.writeSync(fd, body);
-    } finally {
-      fs.closeSync(fd);
-    }
-    // O_CREAT mode is a no-op if the file already existed.
-    fs.chmodSync(p, 0o600);
+    safeWriteFile(p, Buffer.from(body), 0o600);
   }
 
   function writeConfig(cfg: TConfig, masterKey: Buffer): void {
@@ -240,7 +231,7 @@ export function createAdapterConfig<TConfig extends object>(
     } catch {
       console.error(
         `usrcp-${adapterName}: no config found at ${p}.\n` +
-          `${setupHint} configure.`,
+          `${setupHint()} configure.`,
       );
       process.exit(1);
     }
@@ -250,7 +241,7 @@ export function createAdapterConfig<TConfig extends object>(
     } catch {
       console.error(
         `usrcp-${adapterName}: failed to parse config at ${p}.\n` +
-          `${setupHint} re-configure.`,
+          `${setupHint()} re-configure.`,
       );
       process.exit(1);
     }
@@ -258,7 +249,7 @@ export function createAdapterConfig<TConfig extends object>(
     if (missing.length > 0) {
       console.error(
         `usrcp-${adapterName}: incomplete config (missing: ${missing.join(", ")}).\n` +
-          `${setupHint} re-configure.`,
+          `${setupHint()} re-configure.`,
       );
       process.exit(1);
     }

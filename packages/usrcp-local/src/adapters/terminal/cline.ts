@@ -1,3 +1,4 @@
+import { serverCommand, preserveServerOptions } from "./shared.js";
 import { terminalServeArgs } from "./shared.js";
 /**
  * Cline VS Code extension adapter (platform-specific globalStorage path)
@@ -46,8 +47,8 @@ export async function register(usrcpBin: string): Promise<{ target: string; path
     doc.mcpServers = {};
   }
   (doc.mcpServers as Record<string, unknown>).usrcp = {
-    command: usrcpBin,
-    args: terminalServeArgs(),
+    ...preserveServerOptions((doc.mcpServers as Record<string, unknown>).usrcp),
+    ...serverCommand(usrcpBin, terminalServeArgs(), (doc.mcpServers as Record<string, unknown>).usrcp),
   };
 
   await atomicWrite(CONFIG, JSON.stringify(doc, null, 2), EXT, TARGET, existingRaw);

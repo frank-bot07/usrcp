@@ -1,7 +1,7 @@
 {
   "name": "usrcp-cloud",
   "version": "0.1.9",
-  "description": "Hosted ledger for USRCP \u2014 ciphertext-only cross-device sync",
+  "description": "Hosted ledger for USRCP — ciphertext-only cross-device sync",
   "main": "dist/index.js",
   "files": [
     "dist/**/*.js",
@@ -39,6 +39,6 @@
     "@types/pg": "8.23.1",
     "pg-mem": "3.0.14",
     "typescript": "7.0.2",
-    "vitest": "4.1.10"
+    "vitest": "4.1.12"
   }
 }

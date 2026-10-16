@@ -57,6 +57,8 @@ function loadLedger() {
   if (!ledgerPath) {
     throw new Error("Could not locate the usrcp-core ledger module. Reinstall usrcp-extension or build usrcp-core.");
   }
+  const encryption = require(path.resolve(path.dirname(ledgerPath), "../encryption.js"));
+  encryption.selectAdapterUser();
   return require(ledgerPath).Ledger;
 }
 

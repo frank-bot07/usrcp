@@ -1,3 +1,4 @@
+import { getUserSlug } from "usrcp-core/encryption";
 /**
  * Interactive setup wizard for the Google Calendar adapter.
  *
@@ -293,8 +294,8 @@ export async function runGoogleCalendarSetup(
 
   process.stderr.write(`  ✓ Google Calendar adapter configured. Saved to ${getConfigPath()} (mode 0600)\n\n`);
   process.stderr.write("  What's next:\n");
-  process.stderr.write("    usrcp-google-calendar\n");
-  process.stderr.write("    # or: USRCP_PASSPHRASE=<pp> usrcp-google-calendar\n\n");
+  process.stderr.write(`    usrcp-google-calendar --user=${getUserSlug()}\n`);
+  process.stderr.write(`    # or: USRCP_PASSPHRASE=<pp> usrcp-google-calendar --user=${getUserSlug()}\n\n`);
 
   return cfg;
 }

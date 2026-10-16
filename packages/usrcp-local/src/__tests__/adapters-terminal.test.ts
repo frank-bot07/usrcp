@@ -513,7 +513,7 @@ describe("antigravity adapter", () => {
   it("register on empty config writes correct shape", async () => {
     const mod = await import("../adapters/terminal/antigravity.js");
     await mod.register("/usr/local/bin/usrcp");
-    const config = path.join(tmpHome, ".gemini", "antigravity", "mcp_config.json");
+    const config = path.join(tmpHome, ".gemini", "config", "mcp_config.json");
     expect(fs.existsSync(config)).toBe(true);
     const doc = readJson(config);
     expect((doc.mcpServers as Record<string, unknown>).usrcp).toEqual({
@@ -524,7 +524,7 @@ describe("antigravity adapter", () => {
 
   it("register tolerates pre-existing zero-byte mcp_config.json", async () => {
     // Real Antigravity installs ship the file empty (0 bytes). Plain JSON.parse("") would crash.
-    const configDir = path.join(tmpHome, ".gemini", "antigravity");
+    const configDir = path.join(tmpHome, ".gemini", "config");
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(path.join(configDir, "mcp_config.json"), "");
     const mod = await import("../adapters/terminal/antigravity.js");
@@ -534,7 +534,7 @@ describe("antigravity adapter", () => {
   });
 
   it("register preserves existing entries", async () => {
-    const configDir = path.join(tmpHome, ".gemini", "antigravity");
+    const configDir = path.join(tmpHome, ".gemini", "config");
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(
       path.join(configDir, "mcp_config.json"),
@@ -548,7 +548,7 @@ describe("antigravity adapter", () => {
   });
 
   it("creates backup when prior config existed", async () => {
-    const configDir = path.join(tmpHome, ".gemini", "antigravity");
+    const configDir = path.join(tmpHome, ".gemini", "config");
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(path.join(configDir, "mcp_config.json"), JSON.stringify({ mcpServers: {} }));
     const mod = await import("../adapters/terminal/antigravity.js");
@@ -565,7 +565,7 @@ describe("antigravity adapter", () => {
   it("unregister removes only usrcp entry", async () => {
     const mod = await import("../adapters/terminal/antigravity.js");
     await mod.register("/usr/local/bin/usrcp");
-    const config = path.join(tmpHome, ".gemini", "antigravity", "mcp_config.json");
+    const config = path.join(tmpHome, ".gemini", "config", "mcp_config.json");
     const doc = readJson(config);
     (doc.mcpServers as Record<string, unknown>).other = { command: "other" };
     fs.writeFileSync(config, JSON.stringify(doc, null, 2));
@@ -578,7 +578,7 @@ describe("antigravity adapter", () => {
   it("status returns all three states", async () => {
     const mod = await import("../adapters/terminal/antigravity.js");
     expect(await mod.status()).toBe("config_missing");
-    const configDir = path.join(tmpHome, ".gemini", "antigravity");
+    const configDir = path.join(tmpHome, ".gemini", "config");
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(path.join(configDir, "mcp_config.json"), JSON.stringify({ mcpServers: {} }));
     expect(await mod.status()).toBe("not_registered");
@@ -587,7 +587,7 @@ describe("antigravity adapter", () => {
   });
 
   it("status returns not_registered for empty file", async () => {
-    const configDir = path.join(tmpHome, ".gemini", "antigravity");
+    const configDir = path.join(tmpHome, ".gemini", "config");
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(path.join(configDir, "mcp_config.json"), "");
     const mod = await import("../adapters/terminal/antigravity.js");
@@ -607,7 +607,7 @@ describe("opencode adapter", () => {
     // OpenCode uses `mcp` (not `mcpServers`), `command` is an array combining bin+args, type="local"
     expect((doc.mcp as Record<string, unknown>).usrcp).toEqual({
       type: "local",
-      command: ["/usr/local/bin/usrcp", "serve", "--stdio"],
+      command: ["/usr/local/bin/usrcp", "serve", "--stdio", "--user=default", "--agent-id=opencode"],
       enabled: true,
     });
   });

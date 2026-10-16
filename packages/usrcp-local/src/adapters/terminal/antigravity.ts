@@ -1,6 +1,7 @@
+import { serverCommand, preserveServerOptions } from "./shared.js";
 import { terminalServeArgs } from "./shared.js";
 /**
- * Google Antigravity adapter (~/.gemini/antigravity/mcp_config.json)
+ * Google Antigravity adapter (~/.gemini/config/mcp_config.json; legacy IDE path retained)
  *
  * Antigravity is Google's VS Code-derived agentic editor (public preview
  * Nov 2025). It speaks the standard MCP `mcpServers` schema — same shape
@@ -8,24 +9,22 @@ import { terminalServeArgs } from "./shared.js";
  * mirrors cursor.ts.
  */
 
-import { promises as fs } from "node:fs";
-import { join } from "node:path";
+import { existsSync, promises as fs } from "node:fs";
+import { join, dirname } from "node:path";
 import { atomicWrite, readOrNull, homeDir } from "./shared.js";
 
 const TARGET = "antigravity";
 const EXT = "json";
 
-function configDir(): string {
-  return join(homeDir(), ".gemini", "antigravity");
-}
-
-function configPath(): string {
-  return join(configDir(), "mcp_config.json");
+export function getAntigravityConfigPath(home = homeDir()): string {
+  const current = join(home, ".gemini", "config", "mcp_config.json");
+  const legacy = join(home, ".gemini", "antigravity", "mcp_config.json");
+  return existsSync(current) || !existsSync(legacy) ? current : legacy;
 }
 
 export async function register(usrcpBin: string): Promise<{ target: string; path: string; ok: boolean; error?: string }> {
-  const CONFIG = configPath();
-  await fs.mkdir(configDir(), { recursive: true });
+  const CONFIG = getAntigravityConfigPath();
+  await fs.mkdir(dirname(CONFIG), { recursive: true });
 
   const existingRaw = await readOrNull(CONFIG);
   const doc: Record<string, unknown> = existingRaw && existingRaw.trim().length > 0 ? JSON.parse(existingRaw) : {};
@@ -34,8 +33,8 @@ export async function register(usrcpBin: string): Promise<{ target: string; path
     doc.mcpServers = {};
   }
   (doc.mcpServers as Record<string, unknown>).usrcp = {
-    command: usrcpBin,
-    args: terminalServeArgs(),
+    ...preserveServerOptions((doc.mcpServers as Record<string, unknown>).usrcp),
+    ...serverCommand(usrcpBin, terminalServeArgs(), (doc.mcpServers as Record<string, unknown>).usrcp),
   };
 
   await atomicWrite(CONFIG, JSON.stringify(doc, null, 2), EXT, TARGET, existingRaw);
@@ -43,7 +42,7 @@ export async function register(usrcpBin: string): Promise<{ target: string; path
 }
 
 export async function unregister(): Promise<void> {
-  const CONFIG = configPath();
+  const CONFIG = getAntigravityConfigPath();
   const existingRaw = await readOrNull(CONFIG);
   if (!existingRaw || existingRaw.trim().length === 0) return;
 
@@ -55,7 +54,7 @@ export async function unregister(): Promise<void> {
 }
 
 export async function status(): Promise<"registered" | "not_registered" | "config_missing"> {
-  const CONFIG = configPath();
+  const CONFIG = getAntigravityConfigPath();
   const existingRaw = await readOrNull(CONFIG);
   if (existingRaw === null) return "config_missing";
   if (existingRaw.trim().length === 0) return "not_registered";

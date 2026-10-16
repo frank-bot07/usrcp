@@ -1,7 +1,7 @@
 {
   "name": "usrcp-core",
   "version": "0.2.7",
-  "description": "Framework-agnostic USRCP core \u2014 encrypted ledger, crypto, pairing, identity rotation, and scope enforcement. No MCP server, no CLI.",
+  "description": "Framework-agnostic USRCP core — encrypted ledger, crypto, pairing, identity rotation, and scope enforcement. No MCP server, no CLI.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -43,10 +43,10 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "@types/node": "26.1.2",
     "typescript": "5.9.3",
-    "vitest": "4.1.10"
+    "vitest": "4.1.12"
   },
   "repository": {
     "type": "git",

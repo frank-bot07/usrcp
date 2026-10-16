@@ -19,7 +19,7 @@ describe("buildOpenclawMcpServerEntry", () => {
     const entry = buildOpenclawMcpServerEntry("/usr/local/bin/usrcp", false);
     expect(entry).toEqual({
       command: "/usr/local/bin/usrcp",
-      args: ["serve", "--stdio"],
+      args: ["serve", "--stdio", "--user=default"],
     });
     expect(entry.env).toBeUndefined();
   });
@@ -60,7 +60,7 @@ describe("runOpenclawSetup", () => {
     const output = lines.join("\n");
     expect(output).toContain("openclaw mcp set usrcp '");
     expect(output).toContain("/usr/local/bin/usrcp");
-    expect(output).toContain('"args":["serve","--stdio"]');
+    expect(output).toContain('"args":["serve","--stdio","--user=default"]');
     // No passphrase warning when running in dev mode
     expect(output).not.toContain("Passphrase mode detected");
     // No env block in the command itself

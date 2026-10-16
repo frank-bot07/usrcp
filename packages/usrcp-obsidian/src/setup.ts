@@ -1,3 +1,4 @@
+import { getUserSlug } from "usrcp-core/encryption";
 /**
  * Interactive setup wizard for the USRCP Obsidian adapter.
  *
@@ -371,8 +372,8 @@ export async function runObsidianSetup(): Promise<ObsidianConfig> {
 
   process.stderr.write(`  ✓ Obsidian adapter configured. Saved to ${getConfigPath()} (mode 0600)\n\n`);
   process.stderr.write("  What's next:\n");
-  process.stderr.write("    usrcp-obsidian\n");
-  process.stderr.write("    # or: USRCP_PASSPHRASE=<pp> usrcp-obsidian\n\n");
+  process.stderr.write(`    usrcp-obsidian --user=${getUserSlug()}\n`);
+  process.stderr.write(`    # or: USRCP_PASSPHRASE=<pp> usrcp-obsidian --user=${getUserSlug()}\n\n`);
 
   return cfg;
 }

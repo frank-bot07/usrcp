@@ -11,7 +11,7 @@
  * snippet the operator pastes into the agent's MCP config themselves.
  */
 
-import { resolveUsrcpBin } from "../terminal/shared.js";
+import { resolveUsrcpBin, terminalServeArgs, serverCommand } from "../terminal/shared.js";
 import { isPassphraseMode } from "usrcp-core/encryption";
 
 interface Prompts {
@@ -93,19 +93,19 @@ export async function runMcpAgentSetup(prompts: Prompts): Promise<void> {
   });
 
   // Build the args array
-  const args: string[] = ["serve", "--stdio", `--agent-id=${agentId}`];
+  const args: string[] = [...terminalServeArgs(), `--agent-id=${agentId}`];
   if (scopes) args.push(`--scopes=${scopes.join(",")}`);
   if (readonly) args.push("--readonly");
   if (noAudit) args.push("--no-audit");
 
-  const usrcpBin = resolveUsrcpBin();
+  const invocation = serverCommand(resolveUsrcpBin(), args);
 
   // Print the test command
   console.log("");
   console.log("  ✓ Configuration ready.");
   console.log("");
   console.log("  Test it from your shell:");
-  console.log(`    ${usrcpBin} ${args.join(" ")}`);
+  console.log("    " + [invocation.command, ...invocation.args].map(value => "'" + value.replace(/'/g, "'\\''") + "'").join(" "));
   console.log("    (Ctrl-C to exit; this opens an MCP stdio session.)");
   console.log("");
 
@@ -117,8 +117,7 @@ export async function runMcpAgentSetup(prompts: Prompts): Promise<void> {
   const snippet = {
     mcpServers: {
       [serverKey]: {
-        command: usrcpBin,
-        args,
+        ...invocation,
         ...(Object.keys(env).length > 0 ? { env } : {}),
       },
     },

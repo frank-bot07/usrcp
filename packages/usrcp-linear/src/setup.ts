@@ -1,3 +1,4 @@
+import { getUserSlug } from "usrcp-core/encryption";
 /**
  * Interactive setup wizard. Validates the API key by issuing a viewer query
  * before persisting, so a typo fails at the wizard, not at first poll.
@@ -250,8 +251,8 @@ export async function runLinearSetup(
 
   process.stderr.write(`  ✓ Linear adapter configured. Saved to ${getConfigPath()} (mode 0600)\n\n`);
   process.stderr.write("  What's next:\n");
-  process.stderr.write("    usrcp-linear\n");
-  process.stderr.write("    # or: USRCP_PASSPHRASE=<pp> usrcp-linear\n\n");
+  process.stderr.write(`    usrcp-linear --user=${getUserSlug()}\n`);
+  process.stderr.write(`    # or: USRCP_PASSPHRASE=<pp> usrcp-linear --user=${getUserSlug()}\n\n`);
 
   return cfg;
 }

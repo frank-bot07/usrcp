@@ -62,7 +62,7 @@ import {
   ALL_TARGETS,
   type TargetName,
 } from "./adapters/terminal/index.js";
-import { resolveUsrcpBin } from "./adapters/terminal/shared.js";
+import { resolveUsrcpBin, serverCommand, preserveServerOptions } from "./adapters/terminal/shared.js";
 import { refreshContextMd } from "./adapters/terminal/context-md.js";
 import { pilotStatus, setPilotConsent } from "./pilot.js";
 import { buildHandoff, renderHandoff } from "./handoff.js";
@@ -493,6 +493,7 @@ function registerMcpServer(
   const entryName = slug === "default" ? "usrcp" : `usrcp-${slug}`;
   const serverPath = path.resolve(__dirname, "index.js");
 
+  const existing = config.mcpServers[entryName];
   let desired: Record<string, unknown>;
   if (opts.transport === "http") {
     if (!opts.url || !opts.token) {
@@ -505,12 +506,11 @@ function registerMcpServer(
     };
   } else {
     desired = {
-      command: "node",
-      args: [serverPath, "serve", "--transport=stdio", `--user=${slug}`],
+      ...preserveServerOptions(existing?.url ? undefined : existing),
+      ...serverCommand(serverPath, ["serve", "--transport=stdio", `--user=${slug}`], existing),
     };
   }
 
-  const existing = config.mcpServers[entryName];
   if (existing && JSON.stringify(existing) === JSON.stringify(desired)) {
     console.error(`  MCP:       "${entryName}" already registered in ${mcpConfigPath} — unchanged.`);
     return;
@@ -1499,6 +1499,13 @@ export function runCli(): void {
   // Body is intentionally left at its original indentation to keep this an
   // additive wrap; the dispatch logic below is byte-identical to before.
   switch (command) {
+  case "doctor":
+    import("./doctor.js").then(async ({ auditConnections }) => {
+      const connections = await auditConnections({ probe: hasFlag("probe") });
+      console.log(JSON.stringify({ connections, note: "Protocol-ready means startup and tool discovery only. Verify real host capture, recall and freshness separately." }, null, 2));
+      if (connections.some(c => c.state === "failed" || c.state === "invalid")) process.exitCode = 1;
+    }).catch(error => { console.error("Connection audit failed:", error.message); process.exitCode = 1; });
+    break;
   case "pilot":
     try {
       migrateLegacyLayout(); resolveUserSlug();
@@ -1604,6 +1611,7 @@ export function runCli(): void {
     setup            Guided setup wizard — configure ledger + adapters in one flow
     init             Initialize local ledger and register MCP server
     serve            Start MCP server on stdio (or HTTPS with --transport=http)
+    doctor           Audit app connections (--probe checks MCP startup without reading context)
     status           Show ledger status and statistics
     users            List user slugs on this machine
     config <op>      get / set — manage per-user config (e.g., cloud_endpoint)

@@ -1,3 +1,4 @@
+import { getUserSlug } from "usrcp-core/encryption";
 /**
  * Interactive setup wizard for the USRCP iMessage adapter.
  *
@@ -554,8 +555,8 @@ export async function runImessageSetup(
   process.stderr.write(`  ✓ iMessage adapter configured. Config saved to ${getConfigPath()} (mode 0600)\n`);
   process.stderr.write("\n");
   process.stderr.write("  What's next:\n");
-  process.stderr.write("    usrcp-imessage\n");
-  process.stderr.write("    # or: USRCP_PASSPHRASE=<pp> usrcp-imessage\n\n");
+  process.stderr.write(`    usrcp-imessage --user=${getUserSlug()}\n`);
+  process.stderr.write(`    # or: USRCP_PASSPHRASE=<pp> usrcp-imessage --user=${getUserSlug()}\n\n`);
   process.stderr.write("  Note: The first time the bot replies, macOS will ask for\n");
   process.stderr.write("  Automation permission (one-time popup). Approve it.\n\n");
 
