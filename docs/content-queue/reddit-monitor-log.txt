@@ -1,0 +1,1 @@
+Fri Oct 16 12:04:12 UTC 2026: reddit fetch blocked — network policy denied outbound CONNECT to www.reddit.com:443 (proxy 403)
