@@ -26,9 +26,9 @@ A package passing install/build/unit tests is not a verified user experience. A 
 | Claude Code | Real fresh-session write, retrieval and return recall through MCP | Desktop onboarding and ordinary encrypted profile |
 | Codex CLI | Real fresh-session recall, correction and persistence through MCP | Desktop onboarding; default host approval experience |
 | Cursor CLI | Isolated configuration created; CLI refused due to missing authentication | Authenticated CLI replay |
-| Cursor native Agents app | Real fresh-chat attempt reached connection approval, then MCP authentication timed out | Diagnose host connection failure; no fallback counts as success |
+| Cursor native Agents app | Fresh-chat recall passed after correcting the stale global USRCP entry; get_state, status and handoff executed with one-time approvals | Capture/write and encrypted normal-profile rollout |
 | Claude Desktop | Config generation and protocol logic reviewed | Native app fresh-context replay |
-| OpenCode | Profile/JSONC fixes and regression tests | Both installed and freshly downloaded 1.14.28 binaries receive SIGKILL and fail macOS signature verification; host repair required |
+| OpenCode | 1.19.2 isolated install and fresh-session MCP recall passed | Installed 1.14.28 fails signature verification; normal install remains unchanged; write/restart tests pending |
 | Antigravity | Native app fresh-chat recall passed after correcting profile and current config path; six read-only tools discovered | Encrypted normal-profile rollout and write/restart tests |
 | Cline, Continue, Copilot CLI | Configuration writers covered by tests | Actual host onboarding and context replay for each |
 | OpenClaw | Installed CLI supports native MCP registry; generated command fixed | Actual agent replay |
@@ -53,7 +53,7 @@ Codex initially refused tool use under its approval policy. Explicit approvals w
 
 Antigravity then retrieved the same new scenario and corrected time in its native app, using `usrcp_get_state` after a one-time approval. Its final answer identified the original Claude planning and later Codex correction. Temporary test bindings were restored afterward.
 
-This is two-host CLI acceptance plus native Antigravity recall, not a five-app UI demonstration. Cursor's native attempt failed its connection step and was stopped when it tried to fall back to files. It is not included as a success.
+This establishes retrieval across five hosts: Claude Code, Codex and OpenCode CLI sessions, plus native Cursor and Antigravity. Writes and correction persistence are verified in Claude Code and Codex only. This is not a five-app native UI demonstration or proof that every host automatically captures changes. Cursor's first native attempt failed and was stopped before accepting a file fallback. Correcting its global connection resolved the failure, and a new chat then retrieved the scenario and corrected time through get_state and handoff. OpenCode 1.14.28 failed signature verification; an isolated official 1.19.2 install worked. Its fresh-session test passed after explicitly setting the test working directory and passing the existing Google credential under the environment variable required by its provider. No global host installation was changed.
 
 ## Connection architecture
 
@@ -63,9 +63,9 @@ MCP protocol negotiation reduces dependence on exact app versions. It cannot con
 
 ## Release gates still open
 
-- Resolve Cursor native MCP connection and OpenCode host startup; replay remaining advertised native hosts with fresh information and no recap.
+- Roll out the verified global Cursor and current Antigravity configurations to the chosen normal profile, upgrade the broken OpenCode host, and replay write/capture/restart behavior in every advertised host.
 - Test Discord and Telegram after securely reconnecting test-bot credentials; keep other service adapters unverified until dedicated destinations exist.
 - Verify encrypted-profile unlock, restart and upgrade behavior using a durable installation path. Capture adapters currently still depend on an environment passphrase for encrypted ledgers.
 - Validate legacy named-profile config migration without credential loss or wrong-profile binding.
 - Coordinate package version bumps and dependency minimums before publishing new core exports; no package has been published by this audit.
-- Review changes, run exact-commit CI and install released artifacts before upgrading the user's normal app connections.
+- Review changes and install released artifacts before upgrading the user's normal app connections. Code commit 812ec58 passed all 22 applicable PR checks, including PostgreSQL integrity and the fresh Linux packed-consumer job; the macOS-only CI job is skipped for PRs, with macOS package evidence from local runs.
