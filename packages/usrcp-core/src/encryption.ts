@@ -109,6 +109,28 @@ export function listUserSlugs(): string[] {
     .sort();
 }
 
+/** Select the adapter identity explicitly; never silently open another user's ledger. */
+export function selectAdapterUser(args: string[] = process.argv.slice(2)): string {
+  const i = args.indexOf("--user");
+  const explicit = args.find(a => a.startsWith("--user="))?.slice(7) ?? (i >= 0 ? args[i + 1] : undefined);
+  if (i >= 0 && (!explicit || explicit.startsWith("--"))) throw new Error("--user requires a profile name");
+  if (explicit !== undefined) setUserSlug(explicit);
+  else {
+    const users = listUserSlugs();
+    if (users.length > 1) throw new Error("Multiple USRCP profiles exist. Start this adapter with --user=<profile>.");
+    setUserSlug(users[0] ?? "default");
+  }
+  migrateLegacyLayout();
+  if (!fs.existsSync(path.join(getUserDir(), "ledger.db"))) throw new Error("Initialize the selected USRCP profile before starting this adapter.");
+  return getUserSlug();
+}
+
+/** Preserve default-profile paths; other profiles must never share adapter credentials/cursors. */
+export function getAdapterConfigPath(filename: string): string {
+  if (path.basename(filename) !== filename) throw new Error("Adapter config filename must not contain directories");
+  return getUserSlug() === "default" ? path.join(getUsrcpBaseDir(), filename) : path.join(getUserDir(), "adapters", filename);
+}
+
 function getKeysDir(): string {
   return path.join(getUserDir(), "keys");
 }

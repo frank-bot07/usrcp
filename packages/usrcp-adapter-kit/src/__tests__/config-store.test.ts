@@ -327,3 +327,14 @@ describe("writeRaw / readPartialDecryptedConfig", () => {
     expect(dec.demo_api_key).toBe("sk-secret-123");
   });
 });
+
+
+it("refuses to overwrite adapter configuration through a symlink", () => {
+  const store = makeStore();
+  const target = path.join(tmpHome, "unrelated.txt");
+  fs.writeFileSync(target, "must survive");
+  fs.mkdirSync(path.dirname(store.getConfigPath()), { recursive: true });
+  fs.symlinkSync(target, store.getConfigPath());
+  expect(() => store.writeRaw({ domain: "test" })).toThrow();
+  expect(fs.readFileSync(target, "utf8")).toBe("must survive");
+});

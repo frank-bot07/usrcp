@@ -1,7 +1,7 @@
 {
   "name": "usrcp-vscode",
   "displayName": "USRCP",
-  "description": "Browse your encrypted USRCP memory ledger from VS Code \u2014 facts by domain, recent timeline, status",
+  "description": "Browse your encrypted USRCP memory ledger from VS Code: facts by domain, recent timeline, status",
   "version": "0.1.8",
   "publisher": "usrcp",
   "license": "Apache-2.0",
@@ -84,7 +84,7 @@
         "usrcp.user": {
           "type": "string",
           "default": "",
-          "description": "User slug to load (matches `usrcp users` output). Leave empty to use the default user."
+          "description": "User slug to load (matches `usrcp users` output). Select the same user profile as your other apps. An empty value works only when exactly one profile exists."
         }
       }
     }
@@ -97,14 +97,15 @@
   },
   "devDependencies": {
     "@types/node": "26.1.2",
-    "@types/vscode": "^1.125.0",
-    "@vscode/vsce": "^3.9.2",
+    "@types/vscode": "1.85.0",
+    "@vscode/vsce": "^4.0.0",
     "esbuild": "^0.28.1",
     "typescript": "7.0.2",
-    "vitest": "4.1.10"
+    "vite": "8.3.4",
+    "vitest": "4.1.12"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.30.0"
+    "@modelcontextprotocol/sdk": "1.32.1"
   },
   "overrides": {
     "express-rate-limit": "^8.5.2"

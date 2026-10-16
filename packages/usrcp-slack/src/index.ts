@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { selectAdapterUser, getUserSlug } from "usrcp-core/encryption";
 /**
  * USRCP Slack adapter entry point.
  *
@@ -111,11 +112,12 @@ function toCaptureMessage(event: GenericMessageEvent, channelName?: string): Cap
 }
 
 async function main() {
+  selectAdapterUser();
   // --reset-config delegates to the unified wizard instead of prompting inline.
   if (hasFlag("reset-config")) {
     console.error("[usrcp-slack] --reset-config: launching 'usrcp setup --adapter=slack'...");
     try {
-      execSync("usrcp setup --adapter=slack", { stdio: "inherit" });
+      execSync(`usrcp setup --adapter=slack --user=${getUserSlug()}`, { stdio: "inherit" });
     } catch {
       process.exit(1);
     }

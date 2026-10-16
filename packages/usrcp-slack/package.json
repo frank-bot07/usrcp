@@ -1,7 +1,7 @@
 {
   "name": "usrcp-slack",
   "version": "0.2.7",
-  "description": "Slack capture+reader adapter for USRCP \u2014 vision-proof cross-channel memory via @slack/bolt + Socket Mode",
+  "description": "Slack capture+reader adapter for USRCP — vision-proof cross-channel memory via @slack/bolt + Socket Mode",
   "main": "dist/index.js",
   "files": [
     "dist/**/*.js",
@@ -11,7 +11,6 @@
     "usrcp-slack": "dist/index.js"
   },
   "scripts": {
-    "postinstall": "node -e \"const fs=require(\\\"fs\\\"); for (const p of [\\\"node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-core/node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-stream/node_modules/better-sqlite3/build\\\"]) fs.rmSync(p,{recursive:true,force:true})\" && npm rebuild better-sqlite3",
     "prebuild": "(cd ../usrcp-adapter-kit && npm run build) && (cd ../usrcp-stream && npm run build)",
     "build": "tsc",
     "dev": "tsc --watch",
@@ -35,16 +34,16 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
     "@slack/bolt": "^5.0.0",
+    "usrcp-adapter-kit": "file:../usrcp-adapter-kit",
     "usrcp-core": "file:../usrcp-core",
-    "usrcp-stream": "file:../usrcp-stream",
-    "usrcp-adapter-kit": "file:../usrcp-adapter-kit"
+    "usrcp-stream": "file:../usrcp-stream"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
     "@types/node": "26.1.1",
     "better-sqlite3": "12.10.0",
     "typescript": "5.9.3",
-    "vitest": "4.1.4"
+    "vitest": "4.1.12"
   },
   "repository": {
     "type": "git",

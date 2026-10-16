@@ -1,7 +1,7 @@
 {
   "name": "usrcp-imessage",
   "version": "0.2.7",
-  "description": "iMessage capture+reader adapter for USRCP \u2014 macOS-only, shells out to steipete/imsg for chat.db access",
+  "description": "iMessage capture+reader adapter for USRCP — macOS-only, shells out to steipete/imsg for chat.db access",
   "main": "dist/index.js",
   "os": [
     "darwin"
@@ -14,7 +14,6 @@
     "usrcp-imessage": "dist/index.js"
   },
   "scripts": {
-    "postinstall": "node -e \"const fs=require(\\\"fs\\\"); for (const p of [\\\"node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-core/node_modules/better-sqlite3/build\\\",\\\"node_modules/usrcp-stream/node_modules/better-sqlite3/build\\\"]) fs.rmSync(p,{recursive:true,force:true})\" && npm rebuild better-sqlite3",
     "prebuild": "(cd ../usrcp-adapter-kit && npm run build) && (cd ../usrcp-stream && npm run build)",
     "build": "tsc",
     "dev": "tsc --watch",
@@ -38,16 +37,16 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
+    "usrcp-adapter-kit": "file:../usrcp-adapter-kit",
     "usrcp-core": "file:../usrcp-core",
-    "usrcp-stream": "file:../usrcp-stream",
-    "usrcp-adapter-kit": "file:../usrcp-adapter-kit"
+    "usrcp-stream": "file:../usrcp-stream"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
     "@types/node": "26.1.1",
     "better-sqlite3": "12.10.0",
     "typescript": "5.9.3",
-    "vitest": "4.1.4"
+    "vitest": "4.1.12"
   },
   "repository": {
     "type": "git",

@@ -1,3 +1,4 @@
+import { getAdapterConfigPath } from "usrcp-core/encryption";
 /**
  * Configuration I/O for the USRCP Obsidian adapter.
  *
@@ -51,7 +52,7 @@ export function getConfigPath(): string {
   // requireHomeDir(), not os.homedir(): under empty HOME os.homedir() is ""
   // and this join becomes a relative ".usrcp/..." written into the CWD
   // (#192, same class as #174/#183).
-  return path.join(requireHomeDir(), ".usrcp", CONFIG_FILENAME);
+  return getAdapterConfigPath(CONFIG_FILENAME);
 }
 
 export function readPartialConfig(): Partial<ObsidianConfig> {

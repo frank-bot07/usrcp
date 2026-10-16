@@ -1,3 +1,4 @@
+import { getUserSlug } from "usrcp-core/encryption";
 /**
  * `usrcp setup` — unified interactive wizard.
  *
@@ -410,23 +411,23 @@ function printSummary(adapters: string[]): void {
   console.log("What's next:");
   if (adapters.includes("discord")) {
     console.log("  Start the Discord bot:");
-    console.log("    usrcp-discord");
-    console.log("    # or: USRCP_PASSPHRASE=<pp> usrcp-discord");
+    console.log(`    usrcp-discord --user=${getUserSlug()}`);
+    console.log(`    # or: USRCP_PASSPHRASE=<pp> usrcp-discord --user=${getUserSlug()}`);
   }
   if (adapters.includes("telegram")) {
     console.log("  Start the Telegram bot:");
-    console.log("    usrcp-telegram");
-    console.log("    # or: USRCP_PASSPHRASE=<pp> usrcp-telegram");
+    console.log(`    usrcp-telegram --user=${getUserSlug()}`);
+    console.log(`    # or: USRCP_PASSPHRASE=<pp> usrcp-telegram --user=${getUserSlug()}`);
   }
   if (adapters.includes("slack")) {
     console.log("  Start the Slack bot:");
-    console.log("    usrcp-slack");
-    console.log("    # or: USRCP_PASSPHRASE=<pp> usrcp-slack");
+    console.log(`    usrcp-slack --user=${getUserSlug()}`);
+    console.log(`    # or: USRCP_PASSPHRASE=<pp> usrcp-slack --user=${getUserSlug()}`);
   }
   if (adapters.includes("imessage")) {
     console.log("  Start the iMessage watcher:");
-    console.log("    usrcp-imessage");
-    console.log("    # or: USRCP_PASSPHRASE=<pp> usrcp-imessage");
+    console.log(`    usrcp-imessage --user=${getUserSlug()}`);
+    console.log(`    # or: USRCP_PASSPHRASE=<pp> usrcp-imessage --user=${getUserSlug()}`);
   }
   if (adapters.includes("extension")) {
     console.log("  Browser extension:");

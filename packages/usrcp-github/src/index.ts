@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { selectAdapterUser, getUserSlug } from "usrcp-core/encryption";
 /**
  * usrcp-github: capture-only adapter for PRs authored by the configured
  * user, filtered to optional allowlisted orgs.
@@ -544,10 +545,11 @@ export async function pollOnce(
 }
 
 async function main() {
+  selectAdapterUser();
   if (hasFlag("reset-config")) {
     console.error("[usrcp-github] --reset-config: launching 'usrcp setup --adapter=github'...");
     try {
-      execSync("usrcp setup --adapter=github", { stdio: "inherit" });
+      execSync(`usrcp setup --adapter=github --user=${getUserSlug()}`, { stdio: "inherit" });
     } catch {
       process.exit(1);
     }
