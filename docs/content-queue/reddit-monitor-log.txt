@@ -1,0 +1,1 @@
+2026-10-17T12:04:00Z: run failed — www.reddit.com blocked by environment network policy (403 CONNECT rejection); no posts fetched
