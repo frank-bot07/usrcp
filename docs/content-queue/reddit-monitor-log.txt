@@ -1,0 +1,1 @@
+2026-10-19T12:15:03Z: monitor run failed — reddit.com blocked by environment network policy (curl and WebFetch both refused)
