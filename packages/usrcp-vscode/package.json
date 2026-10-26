@@ -96,16 +96,16 @@
     "package": "vsce package --no-dependencies"
   },
   "devDependencies": {
-    "@types/node": "26.1.2",
-    "@types/vscode": "1.85.0",
+    "@types/node": "26.6.5",
+    "@types/vscode": "1.140.0",
     "@vscode/vsce": "^4.0.0",
-    "esbuild": "^0.28.1",
+    "esbuild": "^0.28.2",
     "typescript": "7.0.2",
-    "vite": "8.3.4",
+    "vite": "8.3.5",
     "vitest": "4.1.12"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.32.1"
+    "@modelcontextprotocol/sdk": "1.32.2"
   },
   "overrides": {
     "express-rate-limit": "^8.5.2"
