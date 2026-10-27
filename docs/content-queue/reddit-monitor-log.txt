@@ -1,0 +1,1 @@
+2026-10-27T12:16:02Z: reddit fetch failed — www.reddit.com blocked by network policy (proxy 403 connect_rejected); no posts evaluated
