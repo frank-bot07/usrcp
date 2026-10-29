@@ -1,0 +1,1 @@
+2026-10-29T12:13:00Z: ERROR — Reddit blocked by proxy (403 policy denial on www.reddit.com:443). No posts fetched. Network policy in this environment does not permit outbound connections to reddit.com.
