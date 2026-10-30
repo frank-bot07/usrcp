@@ -1,0 +1,1 @@
+Fri Oct 30 12:11:36 UTC 2026: no new relevant posts found — reddit.com blocked by network proxy (HTTP 403); direct curl and WebFetch both failed
