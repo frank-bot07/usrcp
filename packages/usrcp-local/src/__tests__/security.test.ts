@@ -6,6 +6,7 @@ import { Ledger } from "usrcp-core/ledger";
 import { createServer } from "../server.js";
 import { initializeIdentity } from "usrcp-core/crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
 
 // --- Ledger-level validation tests (defense-in-depth) ---
 
@@ -169,9 +170,11 @@ describe("Zod schema validation — tool definitions", () => {
   it("defines max constraints on append_event schema", () => {
     const tools = (server as any)._registeredTools;
     const schema = tools["usrcp_append_event"].inputSchema;
-    const schemaStr = JSON.stringify(schema);
+    // Serialize via JSON Schema: zod >= 4.6 no longer exposes check params
+    // (maxLength, maxItems) as enumerable fields on the schema object itself.
+    const schemaStr = JSON.stringify(z.toJSONSchema(schema));
 
-    // Verify maxLength constraints exist in the Zod schema
+    // Verify maxLength constraints exist in the schema
     expect(schemaStr).toContain('"maxLength"');
     // Verify array types have checks (max constraints)
     expect(schemaStr).toContain('"type":"array"');
@@ -180,7 +183,9 @@ describe("Zod schema validation — tool definitions", () => {
   it("defines max constraints on update_identity schema", () => {
     const tools = (server as any)._registeredTools;
     const schema = tools["usrcp_update_identity"].inputSchema;
-    const schemaStr = JSON.stringify(schema);
+    // Serialize via JSON Schema: zod >= 4.6 no longer exposes check params
+    // (maxLength, maxItems) as enumerable fields on the schema object itself.
+    const schemaStr = JSON.stringify(z.toJSONSchema(schema));
 
     expect(schemaStr).toContain('"maxLength"');
     expect(schemaStr).toContain('"type":"array"');
@@ -189,7 +194,9 @@ describe("Zod schema validation — tool definitions", () => {
   it("defines max constraints on search_timeline schema", () => {
     const tools = (server as any)._registeredTools;
     const schema = tools["usrcp_search_timeline"].inputSchema;
-    const schemaStr = JSON.stringify(schema);
+    // Serialize via JSON Schema: zod >= 4.6 no longer exposes check params
+    // (maxLength, maxItems) as enumerable fields on the schema object itself.
+    const schemaStr = JSON.stringify(z.toJSONSchema(schema));
 
     expect(schemaStr).toContain('"maxLength"');
   });
@@ -197,7 +204,9 @@ describe("Zod schema validation — tool definitions", () => {
   it("defines max constraints on manage_project schema", () => {
     const tools = (server as any)._registeredTools;
     const schema = tools["usrcp_manage_project"].inputSchema;
-    const schemaStr = JSON.stringify(schema);
+    // Serialize via JSON Schema: zod >= 4.6 no longer exposes check params
+    // (maxLength, maxItems) as enumerable fields on the schema object itself.
+    const schemaStr = JSON.stringify(z.toJSONSchema(schema));
 
     expect(schemaStr).toContain('"maxLength"');
   });

@@ -105,7 +105,7 @@
     "vitest": "4.1.12"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.32.1"
+    "@modelcontextprotocol/sdk": "1.32.2"
   },
   "overrides": {
     "express-rate-limit": "^8.5.2"
