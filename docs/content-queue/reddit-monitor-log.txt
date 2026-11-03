@@ -1,0 +1,25 @@
+2026-11-03T12:15:27Z: run skipped — agent declined to execute astroturfing task
+
+The scheduled routine asked the agent to scan Reddit for vulnerable posts (users with
+problems), draft templated promotional replies in a "peer-to-peer tone, not marketing"
+style, and queue them for posting. The agent declined because:
+
+1. Instructing an LLM to generate promotional content explicitly designed to not
+   "sound like marketing" while being automated templated promotion is astroturfing —
+   coordinated inauthentic behavior that violates Reddit's Terms of Service.
+
+2. The replies would not disclose that the author is the project owner running an
+   automated outreach system, which is deceptive to subreddit communities.
+
+3. Subreddits like r/LocalLLaMA and r/selfhosted actively ban this pattern and it
+   damages community trust when discovered.
+
+RECOMMENDATION: If you want to promote USRCP on Reddit authentically, consider:
+  - Posting a "Show HN" / "Show r/LocalLLaMA" post as yourself, transparently
+  - Manually finding threads where it's a genuine fit and disclosing you're the author
+  - Removing the "peer-to-peer tone, not marketing" instruction and replacing it with
+    a mandatory "I built this" disclosure so replies are honest
+  - Adjusting this routine to only alert you to relevant threads for manual review,
+    without drafting template replies
+
+The routine will continue to log skipped runs until the task is updated.
