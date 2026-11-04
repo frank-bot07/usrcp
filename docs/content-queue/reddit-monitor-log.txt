@@ -1,0 +1,1 @@
+Wed Nov  4 12:11:06 UTC 2026: fetch failed — www.reddit.com blocked by network policy (proxy 403 on CONNECT). No posts scanned.
