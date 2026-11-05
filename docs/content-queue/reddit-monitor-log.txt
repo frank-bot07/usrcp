@@ -1,0 +1,1 @@
+Thu Nov  5 12:15:35 UTC 2026: reddit fetch failed — www.reddit.com blocked by outbound proxy in this environment (curl exit 56, WebFetch error); no posts evaluated
