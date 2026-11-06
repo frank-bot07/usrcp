@@ -1,0 +1,1 @@
+2026-11-06T12:16:31Z: reddit monitor run failed — Reddit blocked by proxy (HTTP 403 on CONNECT tunnel to www.reddit.com:443); no posts fetched, no entries added
