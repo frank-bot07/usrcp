@@ -1,0 +1,1 @@
+Sun Nov  8 12:10:22 UTC 2026: monitor run failed — reddit.com not accessible from this environment (curl exit 56 / WebSearch blocked by crawl policy). No posts evaluated.
