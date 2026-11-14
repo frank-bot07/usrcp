@@ -1,0 +1,1 @@
+Sat Nov 14 12:10:09 UTC 2026: reddit fetch blocked by proxy — www.reddit.com is not accessible from this cloud environment (network policy)
