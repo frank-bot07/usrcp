@@ -9,6 +9,14 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+    # @types/vscode must not outrun usrcp-vscode's engines.vscode floor:
+    # `vsce package` refuses to build the extension when it does.
+    # Raise engines.vscode and this pin together, by hand.
+    ignore:
+      - dependency-name: "@types/vscode"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-major"
     groups:
       dev-and-runtime:
         patterns:
@@ -16,6 +24,14 @@ updates:
         update-types:
           - "minor"
           - "patch"
+      # One PR for a vitest major across every package, instead of one
+      # PR per package that each take a slot under the PR limit.
+      vitest-major:
+        patterns:
+          - "vitest"
+          - "@vitest/*"
+        update-types:
+          - "major"
 
   # GitHub Actions used by the workflows (checkout, setup-node, etc.).
   - package-ecosystem: "github-actions"
