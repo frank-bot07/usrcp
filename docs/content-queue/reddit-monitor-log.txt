@@ -1,0 +1,1 @@
+2026-11-09T12:15:03Z: reddit fetch failed — all 5 subreddits returned curl exit 56 (connection reset by peer); network proxy likely blocks reddit.com
