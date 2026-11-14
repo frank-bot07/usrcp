@@ -33,8 +33,8 @@
     "node": ">=22.13.0"
   },
   "dependencies": {
-    "@googleapis/gmail": "^17.0.0",
-    "google-auth-library": "^10.1.0",
+    "@googleapis/gmail": "^21.0.0",
+    "google-auth-library": "^11.0.0",
     "usrcp-adapter-kit": "file:../usrcp-adapter-kit",
     "usrcp-core": "file:../usrcp-core"
   },
