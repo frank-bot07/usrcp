@@ -1,0 +1,1 @@
+2026-11-10T12:13:24Z: reddit fetch failed — www.reddit.com is blocked by this environment's network policy (curl exit 56, WebFetch denied)
