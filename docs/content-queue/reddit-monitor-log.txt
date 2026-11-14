@@ -1,0 +1,1 @@
+2026-11-13T12:12:51Z: reddit fetch blocked by network proxy (403) — cannot access reddit.com from this environment
