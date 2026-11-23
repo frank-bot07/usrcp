@@ -39,8 +39,8 @@
     "usrcp-local": "file:../usrcp-local"
   },
   "devDependencies": {
-    "@types/chrome": "^0.2.2",
-    "@types/node": "26.1.1",
+    "@types/chrome": "^0.3.7",
+    "@types/node": "26.6.6",
     "esbuild": "^0.28.1",
     "typescript": "5.9.3",
     "vitest": "4.1.12"
